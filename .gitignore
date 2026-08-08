@@ -1,3 +1,12 @@
 *Zone.Identifier
 .DS_Store
 Thumbs.db
+
+# Phase 1 (C1): Gradle / Android build artifacts
+/build
+/app/build
+.gradle/
+local.properties
+*.iml
+.idea/
+build/agent-logs/

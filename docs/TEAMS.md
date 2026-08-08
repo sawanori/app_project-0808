@@ -59,7 +59,7 @@ Phase構成（§64〜§77 ＝ Phase 0〜13）・セクション番号はv1.0と�
 
 本プロジェクトはTDD（Red→Green→Refactor）を**絶対規則**とする（ユーザー指示・2026-08-08）。
 
-- **対応する失敗テストが存在しない本番コードを書かない。** 唯一の例外はPhase 1の契約scaffold（型・interface宣言のみ、実装は`TODO()`）である。
+- **対応する失敗テストが存在しない本番コードを書かない。** 唯一の例外はPhase 1の契約scaffold（型・interface宣言・空の画面Composable/ViewModelスタブを含む。実装は`TODO()`または空実装）**およびC1 Gradleブートストラップ（テストランナー不在のためRed不能。ただしC1完了時にSmokeComposeTest（Robolectric+Compose）のGreen実測を必須とする）**である。
 - テスト後付け（実装後にテストを書く逆順）は**G2違反として差し戻し対象**とする。
 - Red→Green→Refactorの各段階でquality-runnerによる実測を行い、**Refactor後のGreen再実測**を下記§6 G3の証拠に含める。
 - 実装agent（ui-implementer／domain-implementer）は、failingテストのパスが入力に含まれない場合、**着手せず差し戻す**（Phase 1契約scaffoldタスクを除く）。
@@ -125,7 +125,7 @@ Act   → Sonnet（指摘に応じて plan-doc-writer / test-writer / ui-impleme
 
 interface契約の確定とui-implementer／domain-implementerの並列着手は、以下の3工程を順序どおりに経ることで循環依存を避ける。
 
-1. **契約scaffold作成（domain-implementer）**: 承認済み計画書に基づき、PlanningEngine／RecoveryEngine／RoutingService／LocalLanguageModel等の**型・interfaceのみのコンパイル可能なscaffold**を先に作成する。実装本体は`TODO()`で仮置きしてよい（この段階でのGreen化は不要）。
+1. **契約scaffold作成（domain-implementer）**: 承認済み計画書に基づき、PlanningEngine／RecoveryEngine／RoutingService／LocalLanguageModel等の**型・interface宣言・空の画面Composable/ViewModelスタブを含むコンパイル可能なscaffold（実装は`TODO()`または空実装）**を先に作成する。実装本体は`TODO()`で仮置きしてよい（この段階でのGreen化は不要）。
 2. **Redテスト作成（test-writer）**: 上記scaffoldのinterfaceを参照し、Domain側・UI側それぞれのfailingテストを作成する。
 3. **Green化（ui-implementer／domain-implementer）**: scaffoldとRedテストが揃った時点で、ui-implementerとdomain-implementerを並列起動しGreen化する。
 

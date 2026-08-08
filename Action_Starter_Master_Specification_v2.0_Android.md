@@ -22,7 +22,7 @@
 | 2 | §5 MVP対象ユーザー | テスター条件の対応カレンダー・地図アプリ例を「Apple Calendar / Google Calendar / Outlook等」「Google Maps / Apple Maps等」から「Google Calendar / Outlook等（Android端末に同期されるカレンダー）」「Google Maps等」に変更。 |
 | 3 | §7 国際化要件 | Localization手段をSwiftUI String Catalogから Android string resources（`values/strings.xml` / `values-ja/strings.xml`、Composeでは`stringResource()`）に変更。 |
 | 4 | §8 時刻・地域対応 | 内部時刻の分離手段を java.time（`Instant` / `ZonedDateTime` / `ZoneId` / `Locale`）で行うと明記。OS Locale追従の思想は不変。 |
-| 5 | §9 移動手段 | `TransportMode`をKotlin enum classに、`RoutingService`をKotlin interfaceに変更。MVP第一候補をGoogle Maps Platform Routes APIとし、Mapbox / HERE / OSM系（GraphHopper等）へのProvider抽象を必須化。従量課金である点とMVP規模での無料枠試算を注記。 |
+| 5 | §9 移動手段 | `TransportMode`をKotlin enum classに、`RoutingService`をKotlin interfaceに変更。MVP第一候補をGoogle Maps Platform Routes APIとし、Mapbox / HERE / OSM系（GraphHopper等）へのProvider抽象を必須化。従量課金である点とMVP規模での無料枠試算を注記。RoutingServiceのコード例を§46と同一シグネチャに統一（ADR-0004）。 |
 | 6 | §11 Local AIのユーザー価値 | 日本語ブランドメッセージ内の「あなたのiPhoneの中にいます」を「あなたのAndroid端末の中にいます」に修正。 |
 | 7 | §15 LLMに禁止すること | 「決定的処理はSwift側。」を「決定的処理はKotlin側。」に修正。 |
 | 8 | §16 Local LLM Runtime | `LocalLanguageModel` protocolをKotlin interface（suspend fun）に変更。 |
@@ -393,10 +393,11 @@ enum class TransportMode {
 
 ```kotlin
 interface RoutingService {
-    suspend fun route(
-        from: Coordinate,
-        to: Coordinate,
-        mode: TransportMode
+    suspend fun estimateRoute(
+        origin: Coordinate,
+        destination: Coordinate,
+        mode: TransportMode,
+        departureDate: Instant
     ): RouteEstimate
 }
 ```
