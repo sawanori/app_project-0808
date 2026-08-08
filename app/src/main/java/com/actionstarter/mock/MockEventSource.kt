@@ -28,9 +28,14 @@ class MockEventSource(
      * [now]を基準に、未来かつ未開始の候補イベント一覧を返す設計とする
      * （開始済み・過去のイベントは除外。§48にはイベント終了時刻の概念がないため、
      * 「進行中」と「過去」は`startDate <= now`として同一の除外条件で扱う想定）。
+     * 戻り値は[ExecutionEvent.startDate]昇順に正規化する（コンストラクタ引数[events]の
+     * 入力順序に依存しない。C4 domain-implementer追補：現状の呼び出し元は[nextEvent]
+     * （`minByOrNull`で独立に最小値を求めるため本ソートに非依存）のみだが、複数件リストを
+     * 直接表示する将来の呼び出し元がこの契約に依存し得るため、フィルタのみで未整列のまま
+     * 返さない）。
      */
     fun upcomingEvents(now: Instant): List<ExecutionEvent> {
-        return events.filter { it.startDate.isAfter(now) }
+        return events.filter { it.startDate.isAfter(now) }.sortedBy { it.startDate }
     }
 
     /**

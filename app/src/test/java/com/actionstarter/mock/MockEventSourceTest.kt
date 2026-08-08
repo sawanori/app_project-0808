@@ -109,4 +109,22 @@ class MockEventSourceTest {
             source.createEvent(title = "Valid Title", startDate = Instant.MIN)
         }
     }
+
+    /**
+     * 実装先行で発見・修正されたソート欠落（bd30158後の+6/-1修正）の回帰ロック。
+     * TDD例外としてFable 5が承認。
+     */
+    // T-MOCK-11（回帰・Fable 5裁定 2026-08-09）
+    @Test
+    fun upcomingEvents_withUnorderedEventList_returnsListSortedByStartDateAscending() {
+        val first = event(title = "First", startDate = now.plusSeconds(3600))
+        val second = event(title = "Second", startDate = now.plusSeconds(7200))
+        val third = event(title = "Third", startDate = now.plusSeconds(10800))
+        // 時系列順でない投入順（second, third, first）でソート漏れを検出する。
+        val source = MockEventSource(events = listOf(second, third, first))
+
+        val result = source.upcomingEvents(now)
+
+        assertEquals(listOf(first.startDate, second.startDate, third.startDate), result.map { it.startDate })
+    }
 }

@@ -533,3 +533,6 @@ C4でui-implementerとdomain-implementerを並列起動する際、以下の共�
 - Phase 1完了後もバックスタック起因のPlan破棄防止は未対応（既知の制限。§10.5、Phase 5で再検討）。
 - ADR-0002／0003／0007／0008／0009は本計画メモ内でandroid-plannerが提示した技術判断であり、Fable 5裁定U1〜U3（ADR-0004／0005／0006）とは異なり、本計画書自体のG1レビュー（Pass1/Pass2＋Geminiクロスレビュー）を経て確定する（`docs/plans/phase0-repo-docs.md`§8にも同旨を記載）。
 - 計画メモに記載のなかった内容の追加、および転記漏れは確認していない（本書は計画メモ§4〜§14の全項目を転記済み）。
+- T-DM-9はファクトリ層契約（MockRecoveryFactoryTest）として再定義済み（Fable 5裁定 2026-08-08）
+- T-REC-4は画面レベル検証へ再定義済み（同上）
+- T-MOCK-11（upcomingEvents昇順の回帰テスト）を追加（Fable 5裁定 2026-08-09）。テストケース総数は68件→69件
