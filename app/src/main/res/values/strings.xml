@@ -2,4 +2,43 @@
 <resources>
     <string name="app_name">Action Starter</string>
     <string name="hello_smoke">Smoke test build is working</string>
+
+    <!-- Event Selection (Screen 1, spec §24/§35). Added in C3b (test-writer) for T-SEL-1..7. -->
+    <string name="event_selection_title">Next Event</string>
+    <string name="event_selection_prepare_button">Prepare this event</string>
+    <string name="event_selection_empty_title">No upcoming events</string>
+    <string name="event_selection_empty_message">You\'re all caught up. Nothing to prepare for right now.</string>
+
+    <!-- Plan Review (Screen 2, spec §26/§35). Added in C3b (test-writer) for T-PLAN-1..6. -->
+    <string name="plan_review_title">Your plan</string>
+    <string name="plan_review_start_button">Start</string>
+    <string name="plan_review_edit_button">Edit</string>
+    <string name="plan_review_edit_disabled_reason">Editing plans isn\'t available yet.</string>
+    <string name="plan_review_no_steps_message">No preparation steps needed.</string>
+    <string name="plan_review_behind_schedule_warning">You\'re behind schedule.</string>
+
+    <!-- Execution / One Action (Screen 3, spec §27-28/§35). Added in C3b for T-EXEC-1..9. -->
+    <string name="execution_now_label">NOW</string>
+    <string name="execution_done_button">Done</string>
+    <string name="execution_five_min_later_button">5 min later</string>
+    <string name="execution_simulate_delay_debug_button">Simulate delay (debug)</string>
+    <string name="execution_restored_snackbar_message">We couldn\'t restore your progress. Pick your next event again.</string>
+
+    <!-- Departure (Screen 4, spec §29/§35). Added in C3b for T-DEP-1..4. -->
+    <string name="departure_title">Leave now</string>
+    <string name="departure_estimated_arrival_label">Estimated arrival</string>
+    <string name="departure_event_label">Event</string>
+    <string name="departure_buffer_label">Buffer</string>
+    <string name="departure_start_navigation_button">Start navigation</string>
+    <string name="departure_start_navigation_disabled_reason">Navigation isn\'t available yet.</string>
+    <string name="departure_eta_unavailable_message">Travel time not available</string>
+    <string name="departure_buffer_negative_warning">You may be late</string>
+
+    <!-- Recovery (Screen 5, spec §31-34/§35). Added in C3b for T-REC-1..6. -->
+    <string name="recovery_title">Plan updated</string>
+    <string name="recovery_subtitle">You\'re behind schedule.</string>
+    <string name="recovery_use_this_plan_button">Use this plan</string>
+    <string name="recovery_see_alternatives_button">See alternatives</string>
+    <string name="recovery_no_options_message">No alternatives available. Please proceed manually.</string>
+    <string name="recovery_option_eta_label">ETA</string>
 </resources>
