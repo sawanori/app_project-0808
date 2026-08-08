@@ -14,18 +14,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.actionstarter.navigation.ActionStarterNavHost
 
 /**
- * C1 bootstrap entry point. This is a minimal skeleton used solely to prove that the
- * Gradle + AGP + Kotlin + Compose version pins (see docs/plans/phase1-ui-skeleton-domain.md
- * section 5) build, lint and unit-test successfully. Real navigation and feature screens
- * are added in later PDCA cycles (C2+).
+ * App entry point (real 5-screen navigation graph wired in C5). [MainScreen] below is the
+ * original C1 bootstrap composable, kept unused by [onCreate] but still directly exercised by
+ * `SmokeComposeTest` (must not be removed/changed — see that test's own scope).
  */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MainScreen()
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    ActionStarterNavHost()
+                }
+            }
         }
     }
 }

@@ -6,9 +6,8 @@ package com.actionstarter.navigation
  * `kotlinx.serialization`追加を避けるため型安全Navigation（Nav3のtype-safe destinations等）は
  * 使用せず、sealed interfaceによる文字列ルート方式とする（依存追加はスコープ外）。
  *
- * 契約scaffold追補（C2b）時点ではルート文字列の宣言のみ。[ActionStarterNavHost]への
- * 実際の結線（各ルートとComposableの対応付け・引数付きルートの要否判断を含む）はC5で
- * integration owner（domain-implementer）が行う。
+ * 本オブジェクトはルート文字列の宣言のみを持つ。[ActionStarterNavHost]への実際の結線
+ * （各ルートとComposableの対応付け）はC5でintegration owner（domain-implementer）が実装済み。
  */
 sealed interface Destinations {
     val route: String

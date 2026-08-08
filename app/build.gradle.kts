@@ -1,3 +1,4 @@
+import com.android.build.api.variant.HostTestBuilder
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -16,6 +17,10 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        // C6: androidTest（`src/androidTest`）実行用ランナー。`app/src/androidTest/java/com/
+        // actionstarter/e2e/MainUxFlowTest.kt`のコンパイル・実行（G4-E、KVM解決後）に必要。
+        // 未設定だったため本サイクルで追加（計画書§15 C6行の必須項目）。
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -31,12 +36,26 @@ android {
 
     buildFeatures {
         compose = true
+        // Enables BuildConfig generation (計画書§10.4). Prepares the ground for the
+        // ExecutionScreen debug-build gate (`execution_simulate_delay_debug_button`) to be
+        // switched from the interim `ApplicationInfo.FLAG_DEBUGGABLE` check to
+        // `BuildConfig.DEBUG`; that Kotlin-side replacement is C6 (ui-implementer) scope.
+        buildConfig = true
     }
 
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
         }
+    }
+}
+
+// C6追加修正（ADR-0013）: release変種のホスト側unit testを無効化する。releaseはComponentActivity非宣言の
+// マージ済みManifest（ui-test-manifestはdebug専用）とBuildConfig.DEBUG=false（§10.4 U4裁定）により
+// UIテストが構造的にpassし得ないため、`:app:testDebugUnitTest`のみを検証面とする（計画書§11.1）。
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { variantBuilder ->
+        variantBuilder.hostTests[HostTestBuilder.UNIT_TEST_TYPE]?.enable = false
     }
 }
 
@@ -62,6 +81,13 @@ dependencies {
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.compose.ui.test.junit4)
     testImplementation(libs.kotlinx.coroutines.test)
+
+    // C6: `src/androidTest`（instrumented E2E、`e2e/MainUxFlowTest.kt`。実行はG4-E待ち）の
+    // コンパイルに必要な依存。C3bまで未解決だった申し送り事項（計画書§15 C6行）を解消する。
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

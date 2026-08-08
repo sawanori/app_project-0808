@@ -23,6 +23,8 @@
     <string name="execution_five_min_later_button">5 min later</string>
     <string name="execution_simulate_delay_debug_button">Simulate delay (debug)</string>
     <string name="execution_restored_snackbar_message">We couldn\'t restore your progress. Pick your next event again.</string>
+    <!-- C4 (ui-implementer): placeholder step title fallback while Plan injection (C5) is pending. -->
+    <string name="execution_placeholder_step_title">Next step</string>
 
     <!-- Departure (Screen 4, spec §29/§35). Added in C3b for T-DEP-1..4. -->
     <string name="departure_title">Leave now</string>
@@ -33,6 +35,8 @@
     <string name="departure_start_navigation_disabled_reason">Navigation isn\'t available yet.</string>
     <string name="departure_eta_unavailable_message">Travel time not available</string>
     <string name="departure_buffer_negative_warning">You may be late</string>
+    <!-- C4 (ui-implementer): formatted buffer minutes display, added to avoid hardcoded "min" text. -->
+    <string name="departure_buffer_minutes_format">%1$d min</string>
 
     <!-- Recovery (Screen 5, spec §31-34/§35). Added in C3b for T-REC-1..6. -->
     <string name="recovery_title">Plan updated</string>
@@ -41,4 +45,9 @@
     <string name="recovery_see_alternatives_button">See alternatives</string>
     <string name="recovery_no_options_message">No alternatives available. Please proceed manually.</string>
     <string name="recovery_option_eta_label">ETA</string>
+
+    <!-- Navigation guard (F9, spec T-NAV-4). Added in C5 (integration owner): shown when the
+         Execution screen is reached without a confirmed Plan; the user is redirected to
+         Event Selection. -->
+    <string name="nav_plan_not_confirmed_snackbar_message">Your plan isn\'t confirmed yet. Please select an event again.</string>
 </resources>

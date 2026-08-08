@@ -9,9 +9,16 @@ package com.actionstarter.domain.model
  * `init { require(options.size <= 3) }`で即時失敗させる設計）。候補0件でも生成は成功し、
  * UI側で「案なし」表示に写像される（T-DM-8）。
  *
- * 契約scaffold（C2）時点では上記`init`検証は未実装。C3のRedテスト作成後、C4で実装する
- * （C2で実装するとC3のRedが成立しなくなるため）。
+ * C4でinit検証を実装（T-DM-7: 4件以上は`IllegalArgumentException`、T-DM-8: 0件は成功）。
+ * `data class`のまま`copy()`もコンストラクタを経由するため、`copy()`実行時にも同じ検証が
+ * 再実行される（ADR-0010）。
  */
 data class RecoveryPlan(
     val options: List<RecoveryOption>
-)
+) {
+    init {
+        require(options.size <= 3) {
+            "RecoveryPlan.options must contain at most 3 options, but had ${options.size}"
+        }
+    }
+}

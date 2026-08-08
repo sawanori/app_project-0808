@@ -14,9 +14,9 @@ import java.util.UUID
  * 生まれる。状態変更は`copy()`を介して行い、`copy()`はコンストラクタを経由するため
  * `init`が再実行され、検証が常に効く状態を保証する。
  *
- * 契約scaffold（C2）時点では`estimatedDuration`の負値拒否等の不変条件（`init`検証）は
- * 未実装。C3のRedテスト作成後、C4で実装する（本ファイルではTDDのため意図的に未実装のまま
- * 据え置く。C2で実装するとC3のRedが成立しなくなるため）。
+ * C4でinit検証を実装（T-DM-11: `estimatedDuration`の負値拒否）。`data class`のまま
+ * `copy()`もコンストラクタを経由するため、`copy()`実行時にも同じ検証が再実行される
+ * （ADR-0010）。
  */
 data class ExecutionStep(
     val id: UUID,
@@ -28,4 +28,10 @@ data class ExecutionStep(
     val skippable: Boolean,
     val scheduledStart: Instant?,
     val completedAt: Instant?
-)
+) {
+    init {
+        require(!estimatedDuration.isNegative) {
+            "ExecutionStep.estimatedDuration must not be negative, was $estimatedDuration"
+        }
+    }
+}

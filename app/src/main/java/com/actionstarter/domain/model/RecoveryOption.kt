@@ -11,9 +11,10 @@ import java.util.UUID
  * `action_type`に相当する言語非依存な内部ID、UI表示文言は別途[title]／[explanation]
  * として分離する。
  *
- * 契約scaffold（C2）時点では、[StepPriority.REQUIRED]のステップIDを[skippedStepIds]に
- * 含められないという不変条件（仕様§33、エラー＆レスキューマップ#13）は未実装
- * （C3のRedテスト作成後、C4で実装する）。
+ * [StepPriority.REQUIRED]のステップIDを[skippedStepIds]に含められないという不変条件
+ * （仕様§33、エラー＆レスキューマップ#13）は、生成側（C4実装の
+ * [com.actionstarter.mock.MockRecoveryFactory]）の責務として満たす。本クラス自体の`init`では
+ * 検証しない（KDoc・[StepPriority]参照）。
  */
 data class RecoveryOption(
     val id: UUID,

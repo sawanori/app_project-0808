@@ -16,8 +16,9 @@ import kotlinx.coroutines.flow.asStateFlow
  * 戻す）の前提条件判定は、本クラスの[confirmedPlan]がnullかどうかで行う想定
  * （NavHost側のガードロジックとしてC5で実装）。
  *
- * 契約scaffold追補（C2b）時点では保持プロパティの宣言と初期値（いずれもnull＝未選択・
- * 未確定）のみを定義する。選択・確定操作のロジックは未実装（C4/C5で実装）。
+ * C5（統合サイクル）で選択・確定操作のロジックを実装した。選択・確定操作のロジックは
+ * 単純な状態代入のみで構成し（決定的計算・LLM不使用、仕様§13/§15）、[ActionStarterNavHost]や
+ * 各画面ViewModel（`PlanReviewViewModel`／`RecoveryViewModel`）から結線される。
  *
  * プロセス再生成時の復元は本クラスの責務としない：計画書§11.2のテストケースを確認した
  * 限り、プロセス死後の復元を明示的に要求するのは[com.actionstarter.features.execution.ExecutionViewModel]
@@ -31,4 +32,24 @@ class SharedPlanViewModel : ViewModel() {
 
     private val _confirmedPlan = MutableStateFlow<ExecutionPlan?>(null)
     val confirmedPlan: StateFlow<ExecutionPlan?> = _confirmedPlan.asStateFlow()
+
+    /**
+     * Event Selection画面での「Prepare this event」相当の操作（T-SEL-2、NavHost結線）。
+     * 新しいイベントを選択した時点で、以前確定していたPlan（別イベント由来の可能性がある）
+     * を無効化する（[confirmedPlan]をnullへ戻す。T-NAV-4ガードが正しく機能するための
+     * 前提でもある）。
+     */
+    fun selectEvent(event: ExecutionEvent) {
+        _selectedEvent.value = event
+        _confirmedPlan.value = null
+    }
+
+    /**
+     * Plan Review画面での「Start」相当の操作（T-PLAN-3、NavHost結線）。Planを確定させる。
+     * T-NAV-4ガード（Plan未確定のままexecutionへ到達しようとした場合の防御）は
+     * [confirmedPlan]のnull判定で行う。
+     */
+    fun confirmPlan(plan: ExecutionPlan) {
+        _confirmedPlan.value = plan
+    }
 }

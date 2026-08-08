@@ -5,7 +5,8 @@ package com.actionstarter.domain.model
  *
  * [REQUIRED]のステップはRecovery省略候補として提示してはならない（仕様§33、
  * エラー＆レスキューマップ#13）。この制約はC4で[com.actionstarter.recovery.RecoveryEngine]
- * 実装時にRecoveryOption生成ロジックとして実装する（契約scaffold時点=C2では未実装）。
+ * 実装（[com.actionstarter.mock.MockRecoveryFactory]、Phase 1限定）のRecoveryOption生成
+ * ロジックとして実装済み。
  */
 enum class StepPriority {
     REQUIRED,

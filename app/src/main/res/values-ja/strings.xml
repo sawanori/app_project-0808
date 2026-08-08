@@ -23,6 +23,8 @@
     <string name="execution_five_min_later_button">5分後にする</string>
     <string name="execution_simulate_delay_debug_button">遅延をシミュレート（デバッグ）</string>
     <string name="execution_restored_snackbar_message">進行状況を復元できませんでした。もう一度予定を選び直してください。</string>
+    <!-- C4（ui-implementer）: Plan注入（C5）までの間の暫定ステップタイトルのフォールバック文言。 -->
+    <string name="execution_placeholder_step_title">次のステップ</string>
 
     <!-- Departure (Screen 4, 仕様§29/§35)。C3bでT-DEP-1..4向けに追加。 -->
     <string name="departure_title">今すぐ出発</string>
@@ -33,6 +35,8 @@
     <string name="departure_start_navigation_disabled_reason">ナビはまだ利用できません。</string>
     <string name="departure_eta_unavailable_message">移動時間を取得できませんでした</string>
     <string name="departure_buffer_negative_warning">遅れる可能性があります</string>
+    <!-- C4（ui-implementer）: バッファ分数の書式付き表示。"min"のハードコード回避のため追加。 -->
+    <string name="departure_buffer_minutes_format">%1$d分</string>
 
     <!-- Recovery (Screen 5, 仕様§31-34/§35)。C3bでT-REC-1..6向けに追加。 -->
     <string name="recovery_title">プランを更新しました</string>
@@ -41,4 +45,8 @@
     <string name="recovery_see_alternatives_button">他の案を見る</string>
     <string name="recovery_no_options_message">代替案はありません。手動で対応してください。</string>
     <string name="recovery_option_eta_label">到着予定</string>
+
+    <!-- Navigationガード（F9、仕様T-NAV-4）。C5（integration owner）で追加：
+         Planが未確定のままExecution画面へ到達した際に表示し、Event Selectionへ戻す。 -->
+    <string name="nav_plan_not_confirmed_snackbar_message">プランがまだ確定していません。もう一度予定を選び直してください。</string>
 </resources>

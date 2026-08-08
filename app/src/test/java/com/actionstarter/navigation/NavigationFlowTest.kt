@@ -2,6 +2,7 @@ package com.actionstarter.navigation
 
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -89,17 +90,19 @@ class NavigationFlowTest {
     }
 
     // T-NAV-5: エッジケース - プロセス再生成後もdestinationが復元される
-    // ActivityScenario.recreate()でActivity自体を破棄・再生成し、真のプロセス再生成に近い
-    // 形でdestination復元を検証する（createAndroidComposeRuleが公開するactivityRule経由）。
+    // recreate()は素のComponentActivityホストでは再setContent経路がなく構造的に失敗するため、
+    // Fable 5裁定（2026-08-08）によりStateRestorationTester方式へ修繕。
+    // ケース意図は計画書§11.2 T-NAV-5のまま（プロセス再生成後もdestinationが復元されることの検証）。
     @Test
     fun tNav5_processRecreation_restoresDestination() {
         val context = RuntimeEnvironment.getApplication()
-        composeTestRule.setContent { ActionStarterNavHost() }
+        val restorationTester = StateRestorationTester(composeTestRule)
+        restorationTester.setContent { ActionStarterNavHost() }
 
         composeTestRule.onNodeWithText(context.getString(R.string.event_selection_prepare_button)).performClick()
         composeTestRule.onNodeWithText(context.getString(R.string.plan_review_title)).assertIsDisplayed()
 
-        composeTestRule.activityRule.scenario.recreate()
+        restorationTester.emulateSavedInstanceStateRestore()
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithText(context.getString(R.string.plan_review_title)).assertIsDisplayed()

@@ -10,10 +10,17 @@ package com.actionstarter.domain.valueobject
  * 入り得るため、範囲検証（緯度±90／経度±180）とNaN拒否を`init`で行う設計とする
  * （計画書§9.2）。
  *
- * 契約scaffold（C2）時点では上記`init`検証は未実装。C3のRedテスト作成後、C4で実装する
- * （C2で実装するとC3のRedが成立しなくなるため）。
+ * C4でinit検証を実装（T-DM-1〜T-DM-5）。`data class`のまま`copy()`もコンストラクタを
+ * 経由するため、`copy()`実行時にも同じ検証が再実行される（ADR-0010）。
  */
 data class Coordinate(
     val lat: Double,
     val lon: Double
-)
+) {
+    init {
+        require(!lat.isNaN()) { "Coordinate.lat must not be NaN" }
+        require(!lon.isNaN()) { "Coordinate.lon must not be NaN" }
+        require(lat in -90.0..90.0) { "Coordinate.lat must be within -90..90, was $lat" }
+        require(lon in -180.0..180.0) { "Coordinate.lon must be within -180..180, was $lon" }
+    }
+}

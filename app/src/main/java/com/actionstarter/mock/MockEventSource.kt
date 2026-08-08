@@ -17,8 +17,7 @@ import java.util.UUID
  * （翌日イベント）／T-MOCK-6（進行中イベント）等、`now`との相対関係で分岐するテスト
  * シナリオをテスト側で構築可能にするため。
  *
- * 契約scaffold追補（C2b）時点では全メソッドの本文は`TODO("C4で実装")`とし、
- * ロジックは未実装。
+ * 全メソッドはC4で実装済み（決定的計算のみで構成し、LLMは使用しない。仕様§13/§15）。
  */
 class MockEventSource(
     private val events: List<ExecutionEvent> = emptyList()
@@ -31,7 +30,7 @@ class MockEventSource(
      * 「進行中」と「過去」は`startDate <= now`として同一の除外条件で扱う想定）。
      */
     fun upcomingEvents(now: Instant): List<ExecutionEvent> {
-        TODO("C4で実装")
+        return events.filter { it.startDate.isAfter(now) }
     }
 
     /**
@@ -40,13 +39,14 @@ class MockEventSource(
      * へ写像する。エラー＆レスキューマップ#4）。
      */
     fun nextEvent(now: Instant): ExecutionEvent? {
-        TODO("C4で実装")
+        return upcomingEvents(now).minByOrNull { it.startDate }
     }
 
     /**
      * T-MOCK-8／T-MOCK-9が対象とする「MockEventSourceのイベント生成」操作。
-     * [title]が空文字列、または[startDate]が`Instant.MIN`の場合は`require()`により
-     * 即時失敗する設計とする（エラー＆レスキューマップ#3：不正なMockデータの握り潰し禁止）。
+     * [title]が空文字列（または空白のみ）、または[startDate]が`Instant.MIN`の場合は
+     * `require()`により即時失敗する設計とする（エラー＆レスキューマップ#3：不正なMockデータの
+     * 握り潰し禁止）。
      */
     fun createEvent(
         title: String,
@@ -58,6 +58,17 @@ class MockEventSource(
         coordinates: Coordinate? = null,
         sourceCalendar: CalendarSource = CalendarSource(id = "mock", displayName = "Mock Calendar")
     ): ExecutionEvent {
-        TODO("C4で実装")
+        require(title.isNotBlank()) { "MockEventSource.createEvent: title must not be blank" }
+        require(startDate != Instant.MIN) { "MockEventSource.createEvent: startDate must not be Instant.MIN" }
+        return ExecutionEvent(
+            id = id,
+            externalCalendarId = externalCalendarId,
+            title = title,
+            notes = notes,
+            startDate = startDate,
+            locationName = locationName,
+            coordinates = coordinates,
+            sourceCalendar = sourceCalendar
+        )
     }
 }

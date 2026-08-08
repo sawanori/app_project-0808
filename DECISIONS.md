@@ -241,6 +241,8 @@
 **検証方法**: Domain modelのunit testで、`copy()`経由の不正値が`init`により再検証・拒否されることを確認する。
 **再検討トリガー**: `copy()`のパフォーマンスコストが実測で問題化した場合（現時点では想定薄）。
 
+**付記（C4、Fable 5承認済み）**: `ExecutionPlan`はT-DM-6（`steps`昇順正規化）を満たすため、`data class`ではなく通常の`class`として実装する。理由：`data class`はコンストラクタ引数と同名の公開プロパティしか持てず、「コンストラクタでは未整列の`steps`を受け取りつつ、公開する`steps`プロパティは正規化済みの値にする」実装ができないため。`equals`/`hashCode`/`toString`/`copy`は`data class`が自動生成する場合と同じフィールド単位の構造的等価性・複製セマンティクスになるよう手動実装し、公開コンストラクタの形（引数名・型・順序・可視性）は変更していない。`copy()`もコンストラクタを経由するため`init`再検証（ADR-0010本文）は維持される。
+
 ---
 
 ### ADR-0011: AndroidXライブラリ4本のバージョン降格（minCompileSdk制約対応）
@@ -261,3 +263,56 @@
 **検証方法**: T-BUILD-1/2/3全pass＋SmokeComposeTest 1/1 pass（ログ: `build/agent-logs/c1-*.log`）。
 **再検討トリガー**: compileSdk引き上げ時（ADR-0007と同時）。
 **付記（C1で実測確定した知見）**: Robolectric 4.16.1はSDK 35対応済み（`@Config`固定不要）／LintのHardcodedTextはComposeのKotlinコード内文字列を検出しない（プローブ実測。i18n強制はT-I18NテストとG4レビューで担保）／`createComposeRule()`にdeprecated警告あり（v2 APIへの将来移行を申し送り）。
+
+---
+
+### ADR-0012: `androidTest`ソースセットの依存関係を追加する（androidx.test.ext:junit / androidx.test:runner）
+
+- 日付: 2026-08-08 ／ ステータス: 承認 ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（C6）
+
+**背景**: C3b時点で`app/src/androidTest/java/com/actionstarter/e2e/MainUxFlowTest.kt`が作成されたが、`app/build.gradle.kts`に`androidTestImplementation`依存が一切なく、同ファイルのimport（`androidx.compose.ui.test.*`／`androidx.test.ext.junit.runners.AndroidJUnit4`／`androidx.test.platform.app.InstrumentationRegistry`）が解決できず`:app:compileDebugAndroidTestKotlin`がコンパイル不能だった（C3b完了報告で申し送り済み、C6/G4-Eの前提）。
+
+**決定**: `gradle/libs.versions.toml`へ`androidx-test-ext-junit`（**1.3.0**）・`androidx-test-runner`（**1.7.0**）を追加し、`app/build.gradle.kts`の`androidTestImplementation`に`platform(libs.androidx.compose.bom)`・`androidx.compose.ui.test.junit4`（既存カタログエントリを流用）・`androidx-test-ext-junit`・`androidx-test-runner`を追加する。あわせて`defaultConfig.testInstrumentationRunner`（未設定だった）へ`"androidx.test.runner.AndroidJUnitRunner"`を設定する。バージョンはdl.google.comのmaven-metadata.xmlで実在を確認した最新安定版（1.3.0 / 1.7.0）を採用した。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| espresso-core も追加する | `MainUxFlowTest.kt`はEspresso APIを使用せずCompose UI Testのみで構成されているため、未使用依存の追加は避けた |
+| androidx.test:core を明示的に追加する | `androidx.test.ext:junit:1.3.0`が推移的にandroidx.test:core 1.7.0・androidx.test:monitor 1.8.0（`InstrumentationRegistry`提供元）を引き込むため、明示追加は不要と判断した |
+
+**影響範囲**: `gradle/libs.versions.toml`・`app/build.gradle.kts`（`androidTestImplementation`構成・`testInstrumentationRunner`のみ。既存の`implementation`／`testImplementation`構成は変更なし）。
+**検証方法**: `:app:compileDebugAndroidTestKotlin` BUILD SUCCESSFUL実測（ログ: `build/agent-logs/c6-androidtest-compile.log`）。ADR-0011同様のminCompileSdk制約超過（`checkDebugAndroidTestAarMetadata`失敗）は発生しなかった（compileSdk 35のまま解決）。実機／エミュレータでの実行（`connectedDebugAndroidTest`）はG4-E（KVM解決後）まで未実施。
+**再検討トリガー**: G4-E実行時にランタイムのAAR/バイトコード非互換が判明した場合。compileSdk引き上げ時（ADR-0007／ADR-0011と同時）。
+
+---
+
+### ADR-0013: release変種のホスト側unit testを無効化する
+
+- 日付: 2026-08-08 ／ ステータス: 承認済み（Fable 5裁定） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（C6追加修正） ／ 関連仕様§: 計画書`docs/plans/phase1-ui-skeleton-domain.md`§10.4（U4裁定）・§11.1
+
+**背景**: G4-JVM実測で`./gradlew build`が`:app:testReleaseUnitTest`の38件失敗により失敗した（ログ: `build/agent-logs/c6-g4jvm-build.log`）。失敗38件は全件「release変種のマージ済みManifestに`androidx.activity.ComponentActivity`が未宣言」（Robolectric #4736）が原因であり、ComponentActivity宣言を提供する`ui-test-manifest`はdebug専用依存（`debugImplementation(libs.androidx.compose.ui.test.manifest)`、`app/build.gradle.kts`）のためrelease変種には適用されない。加えて§10.4（U4裁定）により「Simulate delay (debug)」ボタンは`BuildConfig.DEBUG=false`のrelease変種では非搭載となる設計であり、これを操作する`T-NAV-3`等はrelease変種では設計上必ず失敗する。つまりrelease変種でのUIテスト全passは構造的に不可能である。計画書§11.1はJVM/Robolectricテストの検証面を`:app:testDebugUnitTest`と定義しており、release変種でのunit test実行はそもそも検証面に含まれていない。
+
+**決定**: `app/build.gradle.kts`へAGP `androidComponents` API（`ApplicationAndroidComponentsExtension`）を用いてrelease変種のホスト側unit testを無効化する。
+
+```kotlin
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { variantBuilder ->
+        variantBuilder.hostTests[HostTestBuilder.UNIT_TEST_TYPE]?.enable = false
+    }
+}
+```
+
+実測により、`ApplicationVariantBuilder`が継承する`HasUnitTestBuilder.enableUnitTest`はAGP 8.13.2時点でコンパイル・実行可能だが非推奨（`Will be removed in AGP 9.0`、Gradle Configure時にdeprecation警告実測）と判明したため、非推奨でない後継API`HasHostTestsBuilder.hostTests[HostTestBuilder.UNIT_TEST_TYPE].enable`を採用した（`com.android.build.api.variant.HostTestBuilder`のimportを追加）。これにより`:app:testReleaseUnitTest`タスク自体がタスクグラフから消え、`:app:build`は`:app:testDebugUnitTest`（72件）のみを実行して成立する。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| release変種のManifestへ`ui-test-manifest`由来のComponentActivity宣言を混入させる | debug専用の仕組みをreleaseへ持ち込むと、テスト専用Activity等がreleaseの実マージ済みManifestに混入するリスクがあり、リリース成果物の健全性を損なう。releaseは本来「テスト用ホスト」を必要としない変種であり、本質的な解決にならない |
+| `T-NAV-3`等release非搭載機能に依存するテストのみを`assumeTrue(BuildConfig.DEBUG)`等でrelease時にスキップさせる | ComponentActivity未宣言の根本原因（Manifest側）は解決しないため、他の37件は依然として失敗する。個別テストへの分岐追加は対症療法でありrelease変種unit test全体を無効化する本裁定より複雑性が高い |
+| `enableUnitTest = false`（非推奨API）のまま採用する | コンパイル・実行は可能だが「deprecated APIは避ける」方針、およびAGP 9.0で削除予定である旨がConfigure時に実測されたため、非推奨でない後継APIへ調整した |
+
+**影響範囲**: `app/build.gradle.kts`（`androidComponents`ブロック追加・`HostTestBuilder`のimport追加のみ）。debug変種のテスト実行（`:app:testDebugUnitTest`）・release変種のビルド（`assembleRelease`・lint等）には影響しない。
+**検証方法**: `./gradlew build --console=plain`のBUILD SUCCESSFUL実測（ログ: `build/agent-logs/c6-g4jvm-build-2.log`）。同ログに`:app:testReleaseUnitTest`タスクが一切出現しないこと（タスクグラフから除外）、`:app:testDebugUnitTest`が実行され`app/build/test-results/testDebugUnitTest/`配下のJUnit XML集計でtests=72・failures=0・errors=0であることを確認した。
+**再検討トリガー**: release固有ロジック（release専用の分岐処理・release専用Feature Flag等）が増え、release変種特有のunit testが必要になった場合。AGP 9.0への移行時（`enableUnitTest`非推奨API自体は本ADRでは未使用のため直接の影響はないが、`hostTests`系APIの変更有無を再確認する）。
