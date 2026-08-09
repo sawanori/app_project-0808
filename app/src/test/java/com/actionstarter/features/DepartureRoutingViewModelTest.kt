@@ -17,6 +17,7 @@ import com.actionstarter.services.location.GeocodeResult
 import com.actionstarter.services.location.GeocodingService
 import com.actionstarter.services.location.LocationResult
 import com.actionstarter.services.location.LocationService
+import com.actionstarter.services.permission.PermissionGate
 import com.actionstarter.services.routing.RoutingException
 import com.actionstarter.services.routing.RoutingService
 import kotlinx.coroutines.Dispatchers
@@ -132,6 +133,16 @@ class DepartureRoutingViewModelTest {
         }
     }
 
+    /**
+     * P3-C8fix（欠陥2、T-DEPVM-10）: 実機の`AndroidPermissionGate`相当を模したfake。
+     * 既定`granted = true`は本番の[com.actionstarter.features.departure.DepartureViewModel]
+     * 既定値`AlwaysGrantedPermissionGate`と同じ意味（常に許可扱い）であり、
+     * 明示的に渡さない既存9ケース（T-DEPVM-1〜9）の挙動を変えない。
+     */
+    private class FakePermissionGate(private val granted: Boolean = true) : PermissionGate {
+        override fun isGranted(permission: String): Boolean = granted
+    }
+
     private class FakeRoutingService(
         var result: RouteEstimate? = null,
         var exceptionToThrow: RoutingException? = null
@@ -196,18 +207,25 @@ class DepartureRoutingViewModelTest {
      * P3-C5実装済み: [DepartureViewModel]の実コンストラクタ（計画書§9.7）へ委譲する。
      * 呼び出し側（各`@Test`）は本関数のシグネチャ変更なしにそのまま利用できる（Redフェーズ
      * 時点の設計意図どおり、本体のみを実コンストラクタ呼び出しへ置き換えた）。
+     *
+     * **P3-C8fix追補（欠陥2、T-DEPVM-10）**: [permissionGate]を末尾に既定値付きで追加した。
+     * 既定値[FakePermissionGate]（`granted = true`）は本番既定の`AlwaysGrantedPermissionGate`と
+     * 同義のため、明示的に渡さない既存9ケース（T-DEPVM-1〜9）の呼び出し・アサーションは無変更で
+     * 成立する。
      */
     private fun createDepartureViewModel(
         sharedPlanViewModel: SharedPlanViewModel,
         locationService: LocationService,
         geocodingService: GeocodingService,
         routingService: RoutingService,
-        clock: Clock = Clock.systemUTC()
+        clock: Clock = Clock.systemUTC(),
+        permissionGate: PermissionGate = FakePermissionGate(granted = true)
     ): DepartureViewModel = DepartureViewModel(
         sharedPlanViewModel = sharedPlanViewModel,
         locationService = locationService,
         geocodingService = geocodingService,
         routingService = routingService,
+        permissionGate = permissionGate,
         clock = clock
     )
 
@@ -477,4 +495,70 @@ class DepartureRoutingViewModelTest {
             )
         }
     }
+
+    // T-DEPVM-10（P3-C8fix・欠陥2のRedテスト、Fable 5承認済み追加）: 異常系 -
+    // permissionGateがFINE/COARSE双方を拒否と報告する場合、geocode／location／routingの
+    // いずれも呼ばれることなく即座にpermissionState=DENIEDへ遷移する。
+    //
+    // 実機事実（T-E2E3-2、`p3c8-e2e-denied-result.xml`）: 位置権限をrevokeした状態でDeparture
+    // 画面へ到達すると`travel_time_manual_label`が表示されなかった。既存のT-PERM3-3
+    // （DENIED状態のUiStateを直接DepartureScreenへ渡す）はGreenのため、DepartureScreen側の
+    // 表示条件（showManualFallback = permissionState==DENIED || isDestinationUnresolved ||
+    // etaFailureReason!=null）自体は正しい。欠陥はDepartureViewModel側にあった：
+    // recalculateRoute()内の権限チェックはgeocodeService.geocode()（suspend、実機では実際の
+    // 非同期Geocoder/ネットワーク呼び出しを伴う）が`GeocodeResult.Success`を返した後にしか
+    // 実行されないようネストされていたため、permissionState==DENIEDへの遷移がgeocode完了という
+    // 非同期処理の完了に依存していた。JVMテスト（StandardTestDispatcherの仮想時間）では
+    // geocodeが即時解決するためこの経路依存は表面化しない
+    // （既存のFakeGeocodingServiceは同期的にSuccessを返すため、recalculateRoute内の
+    // 既存チェックだけでpermissionState==DENIEDに“結果としては”到達してしまい、Redにならない）。
+    // そこで本テストは「結果状態」だけでなく「呼び出し順序」を固定する：permissionGateが
+    // 拒否済みと分かっている場合、そもそもgeocodeを呼ぶべきではない
+    // （geocodingService.callCount==0）と主張することで、権限チェックがgeocode呼び出しより
+    // 前段（同期的にpermissionGate.isGrantedを評価できる地点）で行われることを強制する。
+    @Test
+    fun tDepVm10_permissionGateDeniesBothFineAndCoarse_setsDeniedStateWithoutCallingGeocodeOrLocationOrRouting() =
+        runTest(testDispatcher) {
+            val eventStart = Instant.parse("2026-08-10T10:00:00Z")
+            val event = sampleEvent(startDate = eventStart, locationName = "Tokyo Tower")
+            val sharedPlanViewModel = confirmedSharedPlanViewModel(event)
+
+            val locationService = FakeLocationService(defaultLocationSuccess)
+            val geocodingService = FakeGeocodingService(defaultGeocodeSuccess)
+            val routingService = FakeRoutingService()
+            val deniedPermissionGate = FakePermissionGate(granted = false)
+
+            val viewModel = createDepartureViewModel(
+                sharedPlanViewModel = sharedPlanViewModel,
+                locationService = locationService,
+                geocodingService = geocodingService,
+                routingService = routingService,
+                permissionGate = deniedPermissionGate
+            )
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            val uiState = viewModel.uiState.value
+            assertEquals(
+                "permissionState must become DENIED without waiting on any async geocode/location call",
+                LocationPermissionState.DENIED,
+                uiState.permissionState
+            )
+            assertEquals(
+                "geocoding must not be called once permissionGate already reports no location " +
+                    "permission at all (permission pre-check must run before the async geocode call, " +
+                    "not nested after it succeeds — this is the real-device race behind T-E2E3-2)",
+                0,
+                geocodingService.callCount
+            )
+            assertEquals(
+                "LocationService must not be called when there is no location permission",
+                0,
+                locationService.callCount
+            )
+            assertEquals(
+                "RoutingService must not be called when there is no location permission",
+                0,
+                routingService.callCount
+            )
+        }
 }

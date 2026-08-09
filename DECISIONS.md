@@ -524,3 +524,33 @@ androidComponents {
 **影響範囲**: `services/routing/RoutingException.kt`・`UnconfiguredRoutingService.kt`（新規）、`services/location/ForegroundGate.kt`・`ActivityLifecycleForegroundGate.kt`（新規）、`ActionStarterApplication.kt`（登録呼び出し追加）。
 **検証方法**: `:app:testDebugUnitTest`が123/123 Green（P3-C1前と同一件数、回帰なし）であることを実測（ログ: `build/agent-logs/p3c1-regression.log`）。`UnconfiguredRoutingService`／`ActivityLifecycleForegroundGate`の網羅的な単体テスト（T-ROUTESVC-8相当・ForegroundGate相当）はP3-C2（Red）／P3-C3・C4（Green）で別途固定する。
 **再検討トリガー**: P3-C2でのテスト作成時にActivityLifecycleForegroundGateのカウンタロジックに不備が判明した場合。S-4がFable 5により「戻り値型の変更」へ裁定変更された場合（R18参照、TEAMS§5契約変更経路の発動）。
+
+---
+
+### ADR-0029: Routes APIルート0件応答形状とDRIVEのTRAFFIC_AWARE
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定、curl実測2026-08-09。本番同一FieldMask`routes.duration`使用） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P3-C9） ／ 関連仕様§: 計画書`docs/plans/phase3-routing-location.md`§7.2・§12.1（P3-C8fixで「新規の第3の欠陥（暫定名: P3-C9候補）」として申し送られた事項の解消。記録トリガー③実装中に発覚した仕様/実装ギャップの記録）
+- **ADR番号の付番根拠**: `DECISIONS.md`の実測最新確定ADRはADR-0023だが、`docs/plans/phase5-notification-execution.md`が本Phase 5の決定をADR-0024〜0028として記録する想定であることを事前に`grep`で確認した（予約済み）。「予約と衝突するなら更に+1へずらす」規則に従い、0024〜0028を避けた最小の空き番号としてADR-0029を採番した。
+
+**背景**: P3-C8fixのT-OPTIN-1実行（TRANSIT・東京タワー→明治神宮）で`RoutingException$MalformedResponse: Unparsable response`（cause=`response JSON has no top-level "routes" array`）が発生し、HTTPステータス200かつ`routes`キー不在の有効なJSONオブジェクトが返っていることをスタックトレースから確認した（P3-C8fix §12.1行）。同サイクルは「proto3 JSON既定のフィールド省略規則により有効経路0件時は`routes`キー自体が省略される可能性」を未検証の仮説として申し送り、修正はスコープ外（変更許可ファイル外）としていた。本サイクルでFable 5がcurlにより本番同一のFieldMask（`routes.duration`）を使って実測し、以下4点を確定した：(1) TRANSIT・東京タワー(35.6586,139.7454)→明治神宮(35.6595,139.7005) → HTTP 200・body`{}`（`routes`キー自体が省略される。Google Routes APIは日本の公共交通データを提供していない）。(2) DRIVE + departureTime（routingPreference未指定＝既定`TRAFFIC_UNAWARE`） → HTTP 400 `"Timestamp cannot be set for TRAFFIC_UNAWARE routing mode."`（現行実装はDRIVEが常に失敗する未発見の別欠陥だったと判明）。(3) DRIVE + departureTime + `"routingPreference":"TRAFFIC_AWARE"` → HTTP 200・duration`"1045s"`。(4) WALK/BICYCLE + departureTime → HTTP 200（`"4158s"`／`"1400s"`、routingPreferenceなしで正常）。
+
+**決定**:
+1. **`RoutesApiResponseParser`**: レスポンスが「JSONオブジェクトだが`routes`キーが無い」場合を`RoutingException.NoRoute`へマップする（従来は`MalformedResponse`だった誤分類の修正）。レスポンスroot自体が配列・文字列などオブジェクト以外の場合は従来どおり`MalformedResponse`を維持する（レスポンス形状そのものが想定と異なるため）。`"routes":[]`（空配列）→`NoRoute`は既存挙動のまま変更しない。
+2. **`RoutesApiRequestBuilder`**: `travelMode`が`DRIVE`の場合のみ`"routingPreference":"TRAFFIC_AWARE"`をリクエストbodyへ追加する。WALK／BICYCLE／TRANSITには付与しない（ドキュメント記載どおりAPIがDRIVE系以外へのrouting Preference指定を拒否するため、かつ実測でも不要）。`departureTime`は全モードで維持する（本アプリは未来出発時刻のETAがコア機能のため）。
+3. **T-OPTIN-1の前提修正**: `RoutesApiLiveTest.kt`のmodeをTRANSIT→WALKへ変更する。TRANSITは対象座標間で構造的にHTTP 200・有効経路0件（上記(1)）を返すため、「正のDurationを確認する」というT-OPTIN-1本来の役割（計画書§9.9）を果たせない。WALKは実測(4)によりHTTP 200・正のdurationが確認されており、正常系検証の役割を引き継げる。
+4. **T-OPTIN-2の新設**: 同ファイルへ、TRANSIT・同座標で`RoutingException.NoRoute`が送出されることを検証するopt-inテストを追加する。「日本TRANSIT＝API非提供→NoRoute縮退」という(1)の実測結果を回帰ロックとして固定する。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| rootの型を問わず「`routes`キーが見つからない」すべてのケースを`NoRoute`とする | レスポンスrootが配列・文字列等の完全に異なる形状で返った場合（サーバ側の重大な破損応答等）まで「経路が無い」と誤診断し、真の構造異常を握り潰すリスクを負う。実測（(1)）で確認できたのは「オブジェクトroot＋キー欠落」の1パターンのみであり、確定した実測範囲に限定してマップする |
+| 全`travelMode`に一律で`routingPreference:TRAFFIC_AWARE`を付与する | ドキュメント記載（`RoutesApiRequestBuilder.kt`KDoc既存記述）どおり`TRAFFIC_AWARE`はDRIVE／TWO_WHEELERの場合のみ指定可であり、それ以外は失敗する旨が明記されている。実測でもWALK/BICYCLEはrouting Preference**なし**でHTTP 200を確認したのみであり、あえて未検証の指定を全モードに広げる理由がない |
+| `departureTime`の送信自体をDRIVE以外で省略し、DRIVEのTRAFFIC_UNAWARE 400を回避する | 未来出発時刻のETAが本アプリのコア機能（計画書§7.2既存記述）であり、`departureTime`省略は全モードで主要機能を損なう。根本原因（TRAFFIC_UNAWAREとdepartureTimeの組み合わせ拒否）はrouting Preference指定で解消できるため不要な代替 |
+| T-OPTIN-1のmodeをTRANSITのまま残し、アサーションを「NoRouteが送出されること」の異常系検証へ転用する | T-OPTIN-1は計画書§9.9で「正常系・正のDuration確認」という役割が明示されている（テスト名`...ReturnsPositiveDuration`とも整合）。役割を転用するとテスト名・既存KDocとの不整合が生じる。モードを差し替えて正常系の役割を維持し、異常系はT-OPTIN-2として新設する方が既存の正常/異常の役割分担を崩さない |
+
+**影響範囲**: `services/routing/RoutesApiResponseParser.kt`（`parse`のroutesキー欠落判定ロジック）・`services/routing/RoutesApiRequestBuilder.kt`（`build`のDRIVE限定routingPreference追加）・`services/routing/RoutesApiResponseParserTest.kt`（T-ROUTEPARSE-6〜8追加）・`services/routing/RoutesApiRequestBuilderTest.kt`（T-ROUTEREQ-4〜5追加）・`e2e/RoutesApiLiveTest.kt`（T-OPTIN-1のmode変更、T-OPTIN-2新設）。`RoutesApiRoutingService.kt`・`DepartureViewModel.kt`等の呼び出し側は変更していない（例外型の網羅whenで既に`NoRoute`／`MalformedResponse`双方をハンドリング済みのため、パーサ側のマップ先変更のみで呼び出し側は無改修）。
+
+**検証方法**: 対象2クラスのJVMテスト（`RoutesApiResponseParserTest`・`RoutesApiRequestBuilderTest`）でRed（新規5件中3件が意図した期待値差分で失敗、ログ: `build/agent-logs/p3c9-red.log`）→Green（同2クラス13件全pass）を実測後、`:app:testDebugUnitTest --rerun`で全JVMスイート**245件・failures 0・errors 0・skipped 1**（`tCfg2`のみ、P3-C8fixの240件から新規5件の純増）を実測（`build/agent-logs/p3c9-green.log`）。実機（emulator-5554、`actionstarter_test` AVD）で`:app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.actionstarter.e2e.RoutesApiLiveTest`を実行し、T-OPTIN-1（WALK・正のDuration）／T-OPTIN-2（TRANSIT・NoRoute）とも生JUnit XML（`TEST-actionstarter_test(AVD) - 15-_app-.xml`）で`tests="2" failures="0" errors="0"`を確認した（ログ: `build/agent-logs/p3c9-optin.log`）。**付記**: 計画書§9.1が記載する`--tests`フィルタ構文はAGP 8.13.2の`DeviceProviderInstrumentTestTask`が対応しておらず（`gradlew help --task`実測で登録オプションは`--serial`／`--rerun`のみ）使用不可だったため、標準の`-Pandroid.testInstrumentationRunnerArguments.class=`プロパティ方式へ切り替えた。**付記2（次サイクル申し送り、未検証）**: 実機診断中に、`departureDate = Instant.now()`（バッファ0）をDRIVE/WALK系へ送るとネットワーク往復の間に過去時刻へずれ`"Timestamp must be set to a future time."`（HTTP 400）と競合しうることを新規に実測した（host/emulator/Google自身のサーバ時計が数秒以内で一致することを確認済みのため時計ズレが原因ではない）。TRANSITはバッファ0でもT-OPTIN-2がPASSしており競合しない（またはより緩い）可能性がある。`RoutesApiLiveTest.kt`にのみ2分バッファ（`FUTURE_DEPARTURE_BUFFER`）を追加して回避したが、本番`DepartureViewModel`が計算する`departureDate`がこの競合を実運用で踏むかは`DepartureViewModel.kt`が本サイクルの変更許可ファイル外のため未検証のまま残す。
+
+**再検討トリガー**: Routes APIが将来`routes`キー省略以外の形状（例: 明示的なエラーオブジェクトを伴う0件応答）へ変更された場合。`TWO_WHEELER`モードを本プロジェクトへ追加する場合（DRIVEと同様`routingPreference:TRAFFIC_AWARE`要否の再検証が必要）。次サイクルで`DepartureViewModel`の実際の`departureDate`計算値が「現在時刻に極めて近い」ケース（例: 予定開始直前のETA再計算）を持つと判明し、上記付記2の競合が実運用で顕在化した場合。

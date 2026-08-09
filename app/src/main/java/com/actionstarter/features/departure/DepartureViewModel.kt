@@ -136,11 +136,33 @@ class DepartureViewModel(
 
     /**
      * 再計算パイプライン本体（クラスKDoc参照）。`plan.event.locationName`のgeocodeから開始する。
+     *
+     * **P3-C8fix（欠陥2）**: 位置権限の事前チェックは、以前は[recalculateRoute]内にのみ存在し、
+     * `geocodingService.geocode`（suspend。実機では実際の非同期Geocoder／ネットワーク呼び出しを
+     * 伴う）が[GeocodeResult.Success]を返した後にしか実行されなかった。そのため
+     * [DepartureUiState.permissionState]が[LocationPermissionState.DENIED]へ遷移するタイミングが
+     * geocode完了という非同期処理に依存しており、実機のE2E（T-E2E3-2、cold start直後の
+     * `pm revoke`後）ではCompose testの`waitForIdle`がgeocodeの完了を待たずにアサーションへ
+     * 進むことがあり、`permissionState`が初期値`NOT_REQUESTED`のまま観測され
+     * `travel_time_manual_label`（手動Travel Time入力導線）が表示されないことがあった
+     * （`DepartureScreen.showManualFallback`参照）。[permissionGate.isGranted]は同期関数のため、
+     * geocode呼び出し（本メソッド最初のsuspension point）より前で評価すれば、非同期処理の完了を
+     * 待たずに[DepartureUiState.permissionState]を確定できる（T-DEPVM-10）。権限が無いと分かって
+     * いる場合はgeocode／location／routingのいずれも呼ばない（無駄な呼び出しを避ける）。
      */
     private suspend fun recalculate(plan: ExecutionPlan, mode: TransportMode) {
         val locationName = plan.event.locationName
         if (locationName.isNullOrBlank()) {
             markDestinationUnresolved()
+            return
+        }
+
+        if (!hasAnyLocationPermission()) {
+            _uiState.value = _uiState.value.copy(
+                permissionState = LocationPermissionState.DENIED,
+                etaFailureReason = null,
+                isEtaStale = false
+            )
             return
         }
 
@@ -172,10 +194,23 @@ class DepartureViewModel(
         )
     }
 
-    private suspend fun recalculateRoute(destination: Coordinate, mode: TransportMode) {
-        val hasAnyLocationPermission = permissionGate.isGranted(Manifest.permission.ACCESS_FINE_LOCATION) ||
+    /**
+     * P3-C8fix: [recalculate]（geocode呼び出し前の早期判定）と[recalculateRoute]（防御的
+     * 二重チェック）が共有する同期判定。[permissionGate.isGranted]はsuspendではないため、
+     * 呼び出し元のsuspend関数内で最初のsuspension pointより前に評価すれば、非同期処理の完了を
+     * 待たずに結果を確定できる。
+     */
+    private fun hasAnyLocationPermission(): Boolean =
+        permissionGate.isGranted(Manifest.permission.ACCESS_FINE_LOCATION) ||
             permissionGate.isGranted(Manifest.permission.ACCESS_COARSE_LOCATION)
-        if (!hasAnyLocationPermission) {
+
+    private suspend fun recalculateRoute(destination: Coordinate, mode: TransportMode) {
+        // [recalculate]が同じ判定で先に早期returnしているため、この分岐へ到達する時点では
+        // 通常は真になっている。ただし[permissionGate]の既定値（`AlwaysGrantedPermissionGate`）
+        // 使用時のように、権限自体は「あり」と判定されても[locationService]側が実際の権限剥奪を
+        // 検出するケース（T-DEPVM-2）があるため、防御的チェックとしてここでも残す
+        // （クラスKDoc「[locationService]の応答を権威とする」の設計を変えない）。
+        if (!hasAnyLocationPermission()) {
             _uiState.value = _uiState.value.copy(
                 permissionState = LocationPermissionState.DENIED,
                 etaFailureReason = null,

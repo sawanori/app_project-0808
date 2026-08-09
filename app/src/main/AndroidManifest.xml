@@ -16,6 +16,14 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
+    <!-- 仕様§95.4（INTERNET行）。Routes API（F24/F25、RoutesApiRoutingService経由のHTTP POST）
+         呼び出しに必須のnormal permission（実行時要求不要、インストール時に自動付与）。
+         P3-C8（quality-runner、実機実測）でT-OPTIN-1がHTTP 403ではなく
+         java.lang.SecurityException: Permission denied (missing INTERNET permission?)
+         （android_getaddrinfo failed: EPERM、DNS解決時点で失敗）で落ち、本宣言の欠落を
+         実測確認した（P3-C1実装漏れ）。P3-C8fixで追加。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:name=".ActionStarterApplication"
         android:allowBackup="true"

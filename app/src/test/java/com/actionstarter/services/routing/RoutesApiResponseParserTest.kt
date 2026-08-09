@@ -79,4 +79,44 @@ class RoutesApiResponseParserTest {
 
         assertEquals(Duration.ofSeconds(600), RoutesApiResponseParser.parse(json))
     }
+
+    // T-ROUTEPARSE-6〜8（P3-C9、Fable 5裁定・curl実測2026-08-09）: 東京タワー→明治神宮間の
+    // TRANSIT実測でHTTP 200・body`{}`（routesキー自体が省略される）ことが確定した。
+    // Google Routes APIは日本の公共交通データを提供しておらず、有効経路0件時は
+    // `"routes":[]`ではなく`routes`キー自体を省略する（proto3 JSON既定のフィールド省略規則）。
+    // 「JSONオブジェクトだがroutesキーが無い」場合はNoRouteへマップする（従来は
+    // MalformedResponseだった、P3-C8fixで発見された第3の欠陥の修正）。
+    // ルートが配列・文字列などオブジェクト以外の場合は従来どおりMalformedResponseを維持する。
+
+    // T-ROUTEPARSE-6: 異常 - レスポンスが空オブジェクト`{}` → NoRoute（0件応答の実測形状）
+    @Test
+    fun parse_withEmptyObjectResponse_throwsNoRoute() {
+        val json = "{}"
+
+        assertThrows(RoutingException.NoRoute::class.java) {
+            RoutesApiResponseParser.parse(json)
+        }
+    }
+
+    // T-ROUTEPARSE-7: 異常 - JSONオブジェクトだがroutesキーが無い（他のフィールドは存在する）
+    // → NoRoute
+    @Test
+    fun parse_withObjectMissingRoutesKey_throwsNoRoute() {
+        val json = """{"fallbackInfo":{}}"""
+
+        assertThrows(RoutingException.NoRoute::class.java) {
+            RoutesApiResponseParser.parse(json)
+        }
+    }
+
+    // T-ROUTEPARSE-8: エッジ - レスポンスroot自体が配列（オブジェクトではない）
+    // → 従来どおりMalformedResponseを維持（NoRoute化の対象はrootがオブジェクトの場合のみ）
+    @Test
+    fun parse_withArrayRootResponse_throwsMalformedResponse() {
+        val json = "[]"
+
+        assertThrows(RoutingException.MalformedResponse::class.java) {
+            RoutesApiResponseParser.parse(json)
+        }
+    }
 }

@@ -34,8 +34,17 @@ import java.time.Instant
  *   →本プロジェクトの[TransportMode]｛WALKING, DRIVING, TRANSIT, CYCLING｝は
  *   ｛WALK, DRIVE, TRANSIT, BICYCLE｝へ写像する実装が必要（T-ROUTEREQ-2で漏れなく検証）
  * - `routingPreference: TRAFFIC_AWARE`はtravelModeがDRIVEまたはTWO_WHEELERの場合のみ
- *   指定可（それ以外は失敗する旨がドキュメントに明記、同上）。**MVPでは指定しない**方針
- *   （§95.2コスト方針、計画書§7.2）に変更なし
+ *   指定可（それ以外は失敗する旨がドキュメントに明記、同上）。~~**MVPでは指定しない**方針
+ *   （§95.2コスト方針、計画書§7.2）に変更なし~~ → **P3-C9でこの方針を修正（Fable 5裁定、
+ *   curl実測2026-08-09）**: `DRIVE + departureTime`（routingPreference未指定＝既定の
+ *   `TRAFFIC_UNAWARE`）はHTTP 400
+ *   `"Timestamp cannot be set for TRAFFIC_UNAWARE routing mode."`を返すことが実測確定し、
+ *   **現行実装はDRIVEが常に失敗する**バグだったと判明した。`DRIVE + departureTime +
+ *   "routingPreference":"TRAFFIC_AWARE"`はHTTP 200（duration実測あり）。したがって
+ *   travelModeがDRIVEの場合のみ`"routingPreference":"TRAFFIC_AWARE"`をbodyへ追加する
+ *   （WALK/BICYCLE/TRANSITはrouting Preferenceなしで実測済みHTTP 200のため付与しない。
+ *   APIがDRIVE系以外へのroutingPreference指定を拒否するため）。departureTimeは全モード
+ *   維持する（本アプリは未来出発時刻のETAがコア機能のため）
  * - Android REST直叩き時の`X-Android-Package`/`X-Android-Cert`ヘッダについて、Googleの
  *   セキュリティベストプラクティスは "Android: Use the X-Android-Package and
  *   X-Android-Cert HTTP headers" と案内する一方、"Android and iOS application
@@ -65,6 +74,12 @@ object RoutesApiRequestBuilder {
             append(",\"longitude\":").append(destination.lon)
             append("}}},")
             append("\"travelMode\":\"").append(travelMode).append("\",")
+            // P3-C9実測確定（本ファイルKDoc）: DRIVEはTRAFFIC_AWAREを明示しないと
+            // departureTime付きリクエストがHTTP 400になる。DRIVE以外（WALK/BICYCLE/TRANSIT）
+            // はrouting Preferenceなしで実測済みHTTP 200のため付与しない。
+            if (travelMode == "DRIVE") {
+                append("\"routingPreference\":\"TRAFFIC_AWARE\",")
+            }
             // Instant.toString()はナノ秒=0のときRFC3339（例: "2026-08-09T01:23:45Z"）を
             // 小数部なしで返す（java.time.Instant契約、ISO_INSTANTフォーマッタ準拠）。
             append("\"departureTime\":\"").append(departureTime).append('"')

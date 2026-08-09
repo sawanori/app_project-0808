@@ -85,6 +85,49 @@ class RoutesApiRequestBuilderTest {
         assertEquals("2020-01-01T00:00:00Z", extractString(json, "departureTime"))
     }
 
+    // T-ROUTEREQ-4〜5（P3-C9、Fable 5裁定・curl実測2026-08-09）: DRIVE + departureTime
+    // （routingPreference未指定）はHTTP 400「Timestamp cannot be set for TRAFFIC_UNAWARE
+    // routing mode.」を返すことが実測確定した。DRIVE + departureTime +
+    // "routingPreference":"TRAFFIC_AWARE"はHTTP 200（duration実測あり）。WALK/BICYCLEは
+    // routingPreferenceなしでHTTP 200（実測あり）。routingPreference: TRAFFIC_AWAREは
+    // travelModeがDRIVE（またはTWO_WHEELER、本プロジェクト未使用）の場合のみ指定可能という
+    // ドキュメント記載（本ファイルKDoc P3-P6実測）とも整合する。したがってtravelModeがDRIVEの
+    // 場合のみroutingPreference: TRAFFIC_AWAREをbodyへ追加する（WALK/BICYCLE/TRANSITには
+    // 付与しない。departureTimeは全モード維持＝未来出発時刻のETAはMVPのコア機能）。
+
+    // T-ROUTEREQ-4: 正常 - DRIVINGモードのときbodyに"routingPreference":"TRAFFIC_AWARE"が
+    // 含まれる（TRAFFIC_UNAWARE既定値のままdepartureTimeを送るとHTTP 400になる実測を回避）
+    @Test
+    fun build_withDrivingMode_includesTrafficAwareRoutingPreference() {
+        val origin = Coordinate(lat = 35.681236, lon = 139.767125)
+        val destination = Coordinate(lat = 34.733611, lon = 135.500138)
+        val departureTime = Instant.parse("2026-08-09T01:23:45Z")
+
+        val json = RoutesApiRequestBuilder.build(origin, destination, TransportMode.DRIVING, departureTime)
+
+        assertEquals("TRAFFIC_AWARE", extractString(json, "routingPreference"))
+        assertEquals("DRIVE", extractString(json, "travelMode"))
+    }
+
+    // T-ROUTEREQ-5: 正常 - WALKING/TRANSIT/CYCLING（DRIVE以外の3モード）はbodyに
+    // routingPreferenceキーを含まない（APIがDRIVE系以外へのrouting Preference指定を拒否する
+    // ため）
+    @Test
+    fun build_withNonDrivingModes_omitsRoutingPreference() {
+        val origin = Coordinate(lat = 35.681236, lon = 139.767125)
+        val destination = Coordinate(lat = 34.733611, lon = 135.500138)
+        val departureTime = Instant.parse("2026-08-09T01:23:45Z")
+        val nonDrivingModes = listOf(TransportMode.WALKING, TransportMode.TRANSIT, TransportMode.CYCLING)
+
+        nonDrivingModes.forEach { mode ->
+            val json = RoutesApiRequestBuilder.build(origin, destination, mode, departureTime)
+            assertFalse(
+                "mode=$mode must not set routingPreference",
+                containsKey(json, "routingPreference")
+            )
+        }
+    }
+
     // ---- 共有ヘルパー（org.json非依存の正規表現ベース抽出。クラスKDoc参照） --------------
 
     private fun originSegment(json: String): String {

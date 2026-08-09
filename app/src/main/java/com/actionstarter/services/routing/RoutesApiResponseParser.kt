@@ -5,9 +5,19 @@ import kotlin.math.roundToLong
 
 /**
  * L1純粋関数（F24、計画書§6.1・§7.2 P3-P6）。ComputeRoutesレスポンスJSON（`String`）→
- * `Duration`。`routes`配列が空なら[RoutingException.NoRoute]、不正JSON・フィールド欠損
- * なら[RoutingException.MalformedResponse]を送出する（0秒へ潰さない、
- * エラー＆レスキューマップ#20）。
+ * `Duration`。`routes`配列が空、または`routes`キー自体が存在しない（P3-C9参照）なら
+ * [RoutingException.NoRoute]、不正JSON・フィールド欠損なら[RoutingException.MalformedResponse]
+ * を送出する（0秒へ潰さない、エラー＆レスキューマップ#20）。
+ *
+ * **P3-C9実測確定内容（2026-08-09、Fable 5がcurlで本番同一FieldMask`routes.duration`を
+ * 使用し実測）**: 東京タワー(35.6586,139.7454)→明治神宮(35.6595,139.7005)間のTRANSITは
+ * HTTP 200・body`{}`（`routes`キー自体が省略される）。Google Routes APIは日本の公共交通
+ * データを提供しておらず、有効経路0件時は`"routes":[]`ではなく`routes`キー自体が省略される
+ * （proto3 JSON既定のフィールド省略規則）。P3-C8fixまでは「JSONオブジェクトだがroutesキーが
+ * 無い」場合を誤って[RoutingException.MalformedResponse]に分類していた（第3の欠陥として
+ * P3-C8fixで発見・申し送り）。本サイクルで[RoutingException.NoRoute]へ修正した。rootが
+ * オブジェクトでない（配列・文字列等）場合は、レスポンス形状そのものが想定と異なるため
+ * 従来どおり[RoutingException.MalformedResponse]のまま維持する。
  *
  * **P3-P6実測確定内容（2026-08-09、出典は
  * […/reference/rest/v2/TopLevel/computeRoutes](
@@ -36,9 +46,24 @@ object RoutesApiResponseParser {
             throw RoutingException.MalformedResponse(e)
         }
 
-        val routes = (root as? MinimalJson.Value.Obj)?.members?.get("routes") as? MinimalJson.Value.Arr
+        // P3-C9実測確定（Fable 5、curl実測2026-08-09）: Google Routes APIは有効経路0件の場合、
+        // `"routes":[]`ではなくトップレベルの`routes`キー自体を省略する（proto3 JSON既定の
+        // フィールド省略規則。実例: 日本国内のTRANSITはAPIが公共交通データを提供しないため
+        // 常にこの形状になる）。したがって「JSONオブジェクトだがroutesキーが無い」は
+        // NoRouteへマップする（P3-C8fixまではMalformedResponseに誤分類していた欠陥の修正）。
+        // root自体がオブジェクトでない（配列・文字列等）場合は、レスポンス形状そのものが
+        // 想定と異なるためMalformedResponseのまま維持する。
+        val rootObj = root as? MinimalJson.Value.Obj
             ?: throw RoutingException.MalformedResponse(
-                IllegalStateException("response JSON has no top-level \"routes\" array")
+                IllegalStateException("response JSON root is not an object")
+            )
+
+        val routesField = rootObj.members["routes"]
+            ?: throw RoutingException.NoRoute()
+
+        val routes = routesField as? MinimalJson.Value.Arr
+            ?: throw RoutingException.MalformedResponse(
+                IllegalStateException("response JSON \"routes\" field is not an array")
             )
 
         if (routes.items.isEmpty()) {
