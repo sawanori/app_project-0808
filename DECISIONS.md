@@ -527,6 +527,132 @@ androidComponents {
 
 ---
 
+### ADR-0024: Hilt再判定（S-2）— 手動DI継続、ADR-0014却下理由の実測訂正、再検討トリガーの付け替え
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定S-2、計画書§1・§4.1・§7.2） ／ 決定者: Fable 5 ／ 起案agent: android-planner（計画メモ§1・§7.2） ／ 関連仕様§: ADR-0014再検討トリガー「Phase 5（§69）着手時」への対応（ADR-0014却下理由①の実測訂正）
+- **ADR番号の確定根拠**: 本ADR-0024〜0028は`docs/plans/phase5-notification-execution.md`が2026-08-09時点で予約していた番号帯であり、同日付のADR-0029・ADR-0030（Phase 3側、`grep -n "ADR-00" DECISIONS.md`実測に基づき「予約と衝突するなら更に+1へずらす」規則で0024〜0028を明示的にスキップ）が温存した番号を、予約どおりに充当するものである。
+
+**背景**: ADR-0014はHilt Android Gradle plugin 2.60.1がAGP 9.0.0以上を要求するためHilt導入をPhase 5（本Phase）へ延期し、再検討トリガーを「Phase 5（§69）着手時」と定めていた。本Phaseはこのトリガーに到達した。加えてPhase 5ではForeground Service・BroadcastReceiver 2種という、Hiltが本来得意とするframework実体化コンポーネントが新規に増える。
+
+**決定**: 手動DI（`AppContainer`）を継続する（③）。実測（M5-1・M5-2）により、ADR-0014が却下理由として書いた「AGP 8.x対応の旧Hilt版が存在しない」という前提は不正確であったと訂正する——Hilt Gradle pluginは2.59（2026-01-21公開、最新2.60.1のわずか2マイナー前）まではAGP≥8.4.0で動作し、本プロジェクトのAGP 8.13.2で利用可能である。ただし採用可否の焦点はAGPからKotlin/KSP互換へ移っており（Kotlin 2.4.10×KSP 2.3.11×Dagger 2.59の三者互換はM5-4/M5-5のとおり未検証）、かつ新規に増える2コンポーネントは既存の`(context.applicationContext as ActionStarterApplication).appContainer`パターンで1行ずつ解決できるため、Hiltの限界価値は依然ゼロと判断する。再検討トリガーをPhase到達ベース（Phaseごとの再判定）からAGP移行ベースへ付け替える——次回はAGP 9系への引き上げ時（ADR-0007の再検討と同時）とする。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| ①AGP 8.x対応の旧Hilt版（2.59）を採用する | 却下理由の実測訂正により版そのものは存在するが、Kotlin 2.4.10×KSP 2.3.11×Dagger 2.59の三者互換が未検証（M5-4/M5-5）であり、確認にはP2-C1と同型の探索プローブが再度必要。新規に増える2コンポーネントの限界価値がゼロである以上、探索コストに見合わない（P5-P7として本Phaseでは非実施と裁定済み、計画書§10.2） |
+| ②AGP 9系へ引き上げる | 9.3.1がstableで入手可能（M5-3）だが、ビルド基盤の全面移行でありPhase 5の主題（exact alarm／FGS）と無関係。variant API・Gradle下限・`buildFeatures`既定値等の広範な影響があり、245件（P5-C1再実測時点）のベースラインを主題外の理由で壊すリスクを負う。ADR-0007の再検討トリガー（Phase 13配布前）を前倒しする理由が本Phaseには存在しない |
+
+**影響範囲**: `di/AppContainer.kt`（変更なし、既存の手動DI構成を継続）。新規Service（`ExecutionForegroundService`）・Receiver（`NotificationTriggerReceiver`／`ScheduleRestoreReceiver`）はいずれも`applicationContext as ActionStarterApplication`パターンで依存解決する設計とする（実装はP5-C3）。
+**検証方法**: 本ADRは既存アーキテクチャの継続（変更なし）の記録であるため新規のビルド検証は不要。P5-C1のコンパイル成功実測（`build/agent-logs/p5c1-compile.log`）が本決定と矛盾しないことを確認済み。
+**再検討トリガー**: 旧トリガー「Phaseごとの着手時」を廃し、新トリガー「AGP 9系への引き上げ時（ADR-0007の再検討と同時）」を採用する。Phase 6以降での毎Phase再判定は行わない。
+
+---
+
+### ADR-0025: Boot後アラーム復元の永続化方式（S-1）と取り逃したトリガーの猶予復元（S-9）
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定S-1・S-9、計画書§1・§4.1・§4.2・§7.3・§9・§12.2） ／ 決定者: Fable 5 ／ 起案agent: android-planner（計画メモ§2） ／ 関連仕様§: §69・§95.1・§95.6（S-1＝記録トリガー③仕様推奨からの逸脱、S-9＝記録トリガー②仕様未定義箇所の補完）
+
+**背景**: §95.1／§95.6は「Room（`ExecutionStore`）の未完了Planから再スケジュール」と明記するが、§64〜§77のどのPhaseにも`ExecutionStore`（Room実装）を割り当てるPhaseが存在しない（§74 Phase 10は`UserProfileStore`/`AnalyticsStore`側であり別物）。再登録の断念は選択肢にならない——§69がboot再スケジュールをPhase 5成果物として明示し、§95.6に専用行があるため、断念すれば「再起動後に通知が一切来ることを誰にも知らせない」というPass 1 CRITICALのサイレント障害になる。加えて、停止中に発火時刻を過ぎた「取り逃した」トリガーの扱いは仕様に一切規定がない（§12.1項目8）。
+
+**決定**:
+1. **S-1**: `persistence/ExecutionScheduleStore`（契約）＋`SharedPreferencesExecutionScheduleStore`（実装）をPhase 5で新設する。Room（KSP必須、Kotlin 2.4.10との互換未検証）・DataStore（新規依存、かつ`BroadcastReceiver.onReceive`はコルーチン非対応で同期・短時間処理に構造的に不適合）を退け、SharedPreferencesの同期読みを採用する。保存するのは最小レコード（`ExecutionScheduleRecord`: `schemaVersion`／`planId`／`eventStartEpochMillis`／`estimatedArrivalEpochMillis`／`triggers: List<Trigger>`）のみとし、イベントタイトル・住所・座標は一切含めない（PIIゼロ、§58/§60）。仕様の明示記述（Room）からの逸脱にあたるため**ADR記録トリガー③「仕様推奨からの逸脱」**として本項を記録する（メモ§2原文はトリガー②「仕様未定義箇所の補完」と表記していたが、メモ§10ユーザー確認事項1はトリガー③としており、メモ内で表記が割れている。`docs/plans/phase5-notification-execution.md`§4.1脚注1のとおり、本書はFable 5裁定に従いトリガー③を採用する）。Phase 10でRoomへ吸収する場合もinterface契約は不変（実装差し替え1点）とする。
+2. **S-9**: 復元時に`triggerAt <= now`のトリガーは、(a) `now`がイベント開始時刻より前かつ経過が猶予（既定15分）以内なら即時発火し、(b) それ以外は発火せず破棄してExecution画面に「一部の通知を逃しました」を表示する。無条件即時発火は、電源を切って翌日起動したユーザーに古い出発通知を投げる事故になるため却下する。猶予値は仕様未定義プレースホルダとして`NotificationDefaults`へ隔離する（ADR-0015が確立した「仕様未定義の既定値はDefaultsオブジェクトへ隔離する」パターンの踏襲）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| 仕様の字面どおりRoomを導入する | KSP導入が必須で、Kotlin 2.4.10×KSP 2.3.11の互換が未検証（M5-4/M5-5）。Phase 5の主題（exact alarm／FGS）に対して不釣り合いなリスクであり、ADR-0014がAGP 9引き上げを却下したのと同じ「Phase本題に不釣り合い」論理が当てはまる |
+| DataStore（`androidx.datastore:datastore-preferences`）を導入する | 新規依存であることに加え、`BroadcastReceiver.onReceive`はコルーチン非対応（`goAsync()`か`runBlocking`が要る）ため、boot復元という同期・短時間処理にはSharedPreferencesの同期読みのほうが構造的に適合する |
+| boot再登録データの永続化自体を断念する | §69が明示的にPhase 5成果物として列挙し§95.6に専用行がある機能を欠くことになり、「再起動後に通知が一切来ないことを誰にも知らせない」Pass 1 CRITICALのサイレント障害になるため不可 |
+| 取り逃したトリガーを無条件で即時発火する | 電源を切って翌日起動したユーザーに古い出発通知を投げる事故になる（S-9却下根拠） |
+| 取り逃したトリガーを無条件で破棄する（猶予判定なし） | 短時間のバックグラウンド制限等で本来ユーザーに届くべきだった直近の通知まで一律に握り潰すことになり、§95.6が要求する「通知の到達」を不必要に犠牲にする |
+
+**影響範囲**: `persistence/ExecutionScheduleStore.kt`・`SharedPreferencesExecutionScheduleStore.kt`（新規、契約はP5-C1で宣言済み・実装はP5-C3）・`services/notification/NotificationDefaults.kt`（新規、猶予値の隔離）・`services/notification/ScheduleRestoreReceiver.kt`（S-9の復元判定ロジック、実装はP5-C3）。
+**検証方法**: 契約scaffoldのコンパイル成功をP5-C1で実測済み（`build/agent-logs/p5c1-compile.log`）。S-1のラウンドトリップ・PIIゼロ・schemaVersion不一致時の破棄はT-STORE-1〜8（`persistence/ExecutionScheduleStoreTest.kt`、P5-C2でRed作成済み）、S-9の猶予復元判定はT-BOOT-1〜7（`services/notification/ScheduleRestoreReceiverTest.kt`、P5-C2でRed作成済み）で、いずれもP5-C3のGreen実装時に固定する。
+**再検討トリガー**: Phase 10（§74）着手時、Room導入への吸収要否を再判定する。猶予値（既定15分）が実運用で不適切と判明した場合。
+
+---
+
+### ADR-0026: Foreground Serviceのtype宣言と位置権限なし時の運用（S-3）、およびexact alarm許可誘導の強度（S-4）
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定S-3・S-4、計画書§1・§4.1・§4.2・§7.4・§9・§12.2。P5-P1・P5-P2実機実測により追加確認済み、`build/agent-logs/p5-probes-device.md`） ／ 決定者: Fable 5 ／ 起案agent: android-planner（計画メモ§2） ／ 関連仕様§: §95.1(b)・§95.4・§95.5・§95.6（S-3＝記録トリガー②仕様未定義箇所の補完・記録トリガー⑤権限に関わる変更、S-4＝記録トリガー②仕様未定義箇所の補完・記録トリガー⑤権限に関わる変更）
+
+**背景**: §95.4は「FOREGROUND_SERVICE（+用途別type、例：FOREGROUND_SERVICE_LOCATION等）」と例示にとどまり型を確定していない。§95.1(b)は「location typeのFGSはフォアグラウンド中に開始した場合のみ位置アクセスを継続できる」と明記する。一方§95.1は`SCHEDULE_EXACT_ALARM`と`USE_EXACT_ALARM`の両方を挙げつつ「`USE_EXACT_ALARM`はカレンダー/アラームアプリに限定される特別権限」と注記しており、本アプリが該当するかが未定義である。
+
+**決定**:
+1. **S-3（FGS type）**: `android:foregroundServiceType="location"`単独宣言を採用し、位置権限が許可されているときのみFGSを起動する。位置権限が拒否されている場合はFGSを起動せず、exact alarm＋通知のみで動作を継続し、精度低下（Doze保護を受けられない残存リスク）を画面に明示する（`ExecutionServiceController.start()`が`Degraded(FOREGROUND_SERVICE_UNAVAILABLE)`を返す設計。エラー&レスキューマップ#5）。却下案は`specialUse`（Play審査での用途正当化が必要）・`dataSync`（用途と宣言の不一致、Android 15で6/24時間制限）・`shortService`（3分上限で不成立）。
+2. **S-4（USE_EXACT_ALARM不採用）**: `SCHEDULE_EXACT_ALARM`のみ宣言し`USE_EXACT_ALARM`は宣言しない。本アプリはアラームクロック/カレンダーアプリそのものではなく、誤宣言はPlay審査での拒否リスク（§95.5）を負う。帰結として、targetSdk 35（≥33）のため`SCHEDULE_EXACT_ALARM`は新規インストール時に既定で不許可となり、**inexactフォールバックが例外パスではなく既定パスになる**ことを製品として受け入れる。許可誘導はバナー＋ワンタップ導線の中強度とし、ブロッキング（モーダルで進行不能にする等）は禁止する。
+
+**実機実測による裏付け（P5-C1、`build/agent-logs/p5-probes-device.md`、2026-08-09実施）**: 本裁定後に実施された実機プローブ（API 35実機、AVD `actionstarter_test`）により、以下が確認された。(a) `canScheduleExactAlarms()`は本番`com.actionstarter`（無改変）・テストAPK baseline・`SCHEDULE_EXACT_ALARM`追加宣言・`USE_EXACT_ALARM`追加宣言の4パターンすべてで`false`——「宣言していないからfalse」ではなく「宣言してもfalseのまま」であり、S-4のinexactフォールバック必須判断をより強固に裏付けた。(b) 位置権限なしで`FOREGROUND_SERVICE_TYPE_LOCATION`起動を試みると`java.lang.SecurityException`（メッセージ要旨: `Starting FGS with type location ... requires permissions: all of the permissions allOf=true [android.permission.FOREGROUND_SERVICE_LOCATION] any of the permissions allOf=false [android.permission.ACCESS_COARSE_LOCATION, android.permission.ACCESS_FINE_LOCATION] ...`）が発生し、S-3「位置権限なし時はFGSを起動しないDegraded運用」の設計と整合することを実機で確認した。(c) manifestでtype宣言済みのServiceに`FOREGROUND_SERVICE_TYPE_NONE`を渡すと、計画書の当初仮説（`IllegalArgumentException`の可能性）とは異なり`android.app.InvalidForegroundServiceTypeException`（`ForegroundServiceTypeException`→`ServiceStartNotAllowedException`→`IllegalStateException`の子孫）が発生することが判明した。`RuntimeException`の子孫である点は変わらず、エラー&レスキューマップ#6の「catchして...握り潰さない」設計はそのまま成立するが、例外クラスで分岐する場合は`IllegalArgumentException`ではなく`InvalidForegroundServiceTypeException`系を参照する必要がある。(d) `Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM`は`package:`データURI付きでアプリ個別設定画面へ実機で問題なく解決する。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `specialUse`（`PROPERTY_SPECIAL_USE_FGS_SUBTYPE`） | Play審査での用途正当化が必要（§95.5の審査リスク増）。全ユーザーを保護できる利点はあるが、S-3裁定は位置権限なしユーザーの残存リスク受容を優先した |
+| `dataSync` | 用途と宣言が一致しない（Play審査リスク）。Android 15で6時間/24時間の実行時間制限があり、Execution中の継続利用に不向き |
+| `shortService` | 3分の上限があり、Executionフェーズ全体をカバーできず不成立 |
+| `USE_EXACT_ALARM`を宣言する | 実機実測（(a)）により`granted=true`表示にもかかわらず`canScheduleExactAlarms()`はfalseのままであることを確認しており、宣言による実益がない。加えて本アプリのカテゴリはPlay審査上カレンダー/アラームアプリに該当せず拒否リスクを負う |
+| 許可誘導をブロッキング（モーダルで進行不能）にする | inexactフォールバックが既定パスである以上、通知自体は届く。ブロッキングは§28 One Action原則（1アクションのみに集中させる）と相容れず、ユーザーを不必要に足止めする |
+
+**影響範囲**: `AndroidManifest.xml`（`<service android:foregroundServiceType="location">`宣言、統合ウィンドウP5-C6で追加）・`services/execution/ExecutionForegroundService.kt`／`ExecutionServiceController.kt`（S-3実装、契約はP5-C1で宣言済み）・`services/notification/AlarmManagerAlarmScheduler.kt`（S-4のinexactフォールバック実装、契約はP5-C1で宣言済み・シームはP5-C2bで追加）・Execution画面の劣化バナー（`ExecutionUiState`の`isExactAlarmDegraded`／`isForegroundServiceDegraded`フィールド、P5-C2bで追加）。
+**検証方法**: S-3はT-FGS-1〜6（`services/execution/ExecutionForegroundServiceTest.kt`、P5-C2bでRed作成）・S-4はT-ALARM-1〜2（`services/notification/AlarmSchedulingTest.kt`、P5-C2でRed作成済み）で固定する。実機実測は`build/agent-logs/p5-probes-device.md`（P5-P1・P5-P2）参照。
+**再検討トリガー**: Google Play審査ポリシーが`specialUse`の要件を緩和した場合。位置権限なしユーザーの残存Dozeリスクが実運用上許容できないと判明した場合。
+
+---
+
+### ADR-0027: 通知本文の文言解決経路の非Compose化（S-8）とSnooze量の単一情報源維持（S-6）
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定S-6・S-8、計画書§1補足・§4.1・§4.2・§6.1・§7.3） ／ 決定者: Fable 5 ／ 起案agent: android-planner（計画メモ§2） ／ 関連仕様§: §7（UI文字列ハードコード禁止）・§69（Snooze）・§89（重複実装の禁止）（S-8＝記録トリガー①interface契約の変更、S-6＝記録トリガー②仕様未定義箇所の補完）
+
+**背景**: ADR-0018は`semanticId → stringResource`の解決をUI層（`features/common/StepTitle.kt`の`resolveStepTitle`）に置いたが、この関数は`@Composable`限定であり、通知本文の組み立て（Composeの外＝`services/notification/`）から呼び出せない（M5-16補足の実測）。§89「No duplicated domain logic」に反せずに再利用するには非Composeの解決経路が必要である。一方、§69は"Snooze"とだけ書き量を定めず、既存`ExecutionViewModel.POSTPONE_DURATION`が唯一の手がかりである。
+
+**決定**:
+1. **S-8**: `semanticId → @StringRes Int`の対応表を非Composeの中立パッケージ`i18n/StepTitleKeys.kt`へ抽出する。`features/common/StepTitle.kt`（Compose層）と通知本文ビルダ`services/notification/NotificationContentBuilder.kt`の双方がこれを参照する。`features/common/StepTitle.kt`は本抽出後、1行委譲化のみを行う（統合ウィンドウP5-C6扱い）。これにより複製実装（§89違反）と`services/ → features/`の層逆転の双方を避ける。
+2. **S-6**: §27のUI表記"[5 min later]"に合わせ5分固定とし、既存定数`ExecutionViewModel.POSTPONE_DURATION`を単一の出所として維持する（ADR-0015が確立した「仕様未定義の既定値はDefaultsオブジェクト等へ隔離し複数箇所に値を重複させない」パターンと同じ扱い）。新しい定数を`NotificationDefaults`等に重複定義しない。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `features/common/StepTitle.kt`の`resolveStepTitle`を`@Composable`のまま`services/notification/`から直接呼ぶ | コンパイル不能（`@Composable`関数は`@Composable`コンテキストからしか呼べない）。仮に呼べたとしても`services/ → features/`という層逆転（下位層が上位UI層に依存する設計崩れ）を招く |
+| 通知本文用に文言解決ロジックを`services/notification/`側へ複製する | §89「No duplicated domain logic」に反する。将来`semanticId`とstring resourceの対応が変更された際、2箇所を同期させ忘れるサイレントな不整合リスクを負う |
+| Snoozeの量を通知側で独自に再定義する（例: `NotificationDefaults`に別の5分値を追加） | `ExecutionViewModel.POSTPONE_DURATION`と値が重複し、片方だけ変更されると挙動が画面と通知で食い違うサイレント障害になる。単一の出所を維持する方針（S-6推奨根拠）に反する |
+
+**影響範囲**: `i18n/StepTitleKeys.kt`（新規、ui-implementer担当）・`features/common/StepTitle.kt`（1行委譲化、統合ウィンドウ）・`services/notification/NotificationContentBuilder.kt`（新規、`StepTitleKeys`参照）。`ExecutionViewModel.POSTPONE_DURATION`は変更しない（既存の唯一の出所のまま）。
+**検証方法**: S-8はT-NOTIF-1〜2（通知文言がstring resource由来であることの検証、P5-C2でRed作成済み）で固定する。S-6はT-P5UI-3（「5 min later」でのアラーム再登録、P5-C2bでRed作成）で固定する。
+**再検討トリガー**: `features/common/StepTitle.kt`の抽出後、Compose側テスト（`ExecutionScreenTest`等）に回帰が生じた場合。Snoozeの量が製品要件として可変化する場合（現状は固定値のみ）。
+
+---
+
+### ADR-0028: Execution One Action多段階前進に伴う`ExecutionViewModel`のコンストラクタ契約変更（R-3）と「next action」の解釈（S-7）
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定R-3・S-7、計画書§4.1・§4.2・§7.2・§11 R-3・§12.2。TEAMS§5「interface契約のバージョン付き変更経路」に基づく必須ADR記録） ／ 決定者: Fable 5 ／ 起案agent: android-planner（計画メモ§8） ／ 関連仕様§: §27・§28（One Action多段階前進）・§62（通知3種の閉じた集合）（記録トリガー①interface契約の変更）
+
+**背景**: F58（Execution One Actionの多段階前進、Done→次ステップの本番結線）はM5-14が記録した既知の制限（`ActionStarterNavHost`が`ExecutionViewModel`を経由せず`SharedPlanViewModel.confirmedPlan`から直接`ExecutionUiState`を構築し、`onDone = null`を渡す設計）を解消する§27／§28の核心機能である。しかし既存テスト（`ExecutionViewModelTest`／`ExecutionScreenTest`は`SavedStateHandle`のみのコンストラクタに束縛。`NavigationFlowTest`のT-NAV-1／T-NAV-3は「Doneタップ1回でExecutionから離脱する」ことを前提にUI操作列を組んでいる）が、この前提と正面から衝突する。加えて§69「next action」が通知種別を指すのかアプリ内遷移を指すのか仕様上未定義であり（§62は通知を3種に固定しているため「next action通知」と解釈すると矛盾する）、この解釈がF58の設計範囲を左右する。
+
+**決定**:
+1. **S-7**: 「next action」はアプリ内のOne Action前進（§27/§28）と解釈し、専用の通知種別は作らない。§62「通知を増やすアプリにしない／通知疲れを避ける」との整合を優先した解釈であり、自己補完ではなくFable 5裁定として明記する。この解釈により、F58の実装はもっぱら`ExecutionViewModel`／`ExecutionUiState`の拡張で完結し、`NotificationKind`（§62の3種閉じた集合）へ4番目の値を追加する必要はない。
+2. **R-3**: TEAMS§5「interface契約のバージョン付き変更経路」（変更提案→android-planner影響分析→Fable 5承認→ADR記録→両側テスト更新）を発動し、`ExecutionViewModel`のコンストラクタへ新引数（`sharedPlanViewModel: SharedPlanViewModel?`／`notificationService: NotificationService?`／`permissionGate: PermissionGate?`）を追加する契約変更を承認する。既存テスト（`SavedStateHandle`のみで構築する`ExecutionViewModelTest`／`ExecutionScreenTest`）を壊さないため、**新引数はすべてデフォルト値`null`付きで追加し、`null`時は現行プレースホルダ挙動（3ステップ固定・Snoozeはメモリ上+5分のみ）を維持する**。`T-NAV-1`／`T-NAV-3`の期待値更新（「Doneタップ1回で離脱」から「多段階Done後に離脱」への書き換え）自体は承認するが、実施タイミングは本ADRの決定に含める（下記参照）。テストを回避するためのハードコードや特殊分岐は禁止する。
+
+**NavigationFlowTest期待値更新のタイミング（Fable 5裁定2026-08-09、P5-C2差し戻し対応）**: `NavigationFlowTest`（T-NAV-1/T-NAV-3）の期待値更新はNavHost実配線と同時（P5-C6統合ウィンドウ）に行う——早期更新は既存クラスへ意図的Redを持ち込み全レーンの回帰判定を汚染するため（Fable 5裁定2026-08-09）。本サイクル（P5-C2b、`ExecutionViewModel`／`ExecutionUiState`のscaffold拡張のみを行う段階）では`NavigationFlowTest`を一切変更しない。`ActionStarterNavHost`は本サイクルでも引き続き`SharedPlanViewModel.confirmedPlan`から直接`ExecutionUiState`を構築する現行設計のままであり（M5-14の結線は本サイクルでは変更しない）、T-NAV-1／T-NAV-3は現行アサーション（Doneタップ1回で離脱）のままGreenを維持する（本サイクルでの実測: `build/agent-logs/p5c2b-scaffold.log`）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `ExecutionViewModel`のコンストラクタを非nullable必須引数へ変更する | `ExecutionViewModelTest`／`ExecutionScreenTest`（`SavedStateHandle`のみで構築）を即座に壊す。TEAMS§5の契約変更経路は「両側テスト更新」を要求するが、更新前に破壊するのは経路の趣旨に反する |
+| `NavigationFlowTest`のT-NAV-1／T-NAV-3の期待値を本サイクル（P5-C2b）で先行更新する | `ActionStarterNavHost`の実配線（M5-14の結線変更）はP5-C6統合ウィンドウまで行わないため、先行更新すると「本番結線が伴わない意図的Red」を`NavigationFlowTest`という既存の安定クラスへ持ち込むことになり、P5-C2b／P5-C3／P5-C4等、並行する全レーンの回帰判定（既存クラスは全てGreen維持という判定基準）を汚染する |
+| 「next action」を新しい通知種別として実装する | §62が通知を3種（TRANSITION_START/DEPARTURE/RECOVERY）に固定しており矛盾する。§62「通知を増やすアプリにしない」の精神にも反する |
+
+**影響範囲**: `features/execution/ExecutionViewModel.kt`・`ExecutionUiState.kt`（P5-C2bでscaffold拡張。新引数・新フィールドはすべてデフォルト値付き）。`navigation/ActionStarterNavHost.kt`・`test/java/com/actionstarter/navigation/NavigationFlowTest.kt`は本サイクルでは変更しない（P5-C6統合ウィンドウで同時実施）。
+**検証方法**: 本サイクルでの検証は、拡張後も既存`ExecutionViewModelTest`／`ExecutionScreenTest`／`NavigationFlowTest`がGreen維持であることを`./gradlew :app:testDebugUnitTest --rerun`で実測することにより行う（`build/agent-logs/p5c2b-scaffold.log`）。新引数を用いた多段階遷移の振る舞い自体はT-P5UI-1〜8（`features/ExecutionOneActionTest.kt`、P5-C2bでRed作成）がP5-C3のGreen実装時に固定する。
+**再検討トリガー**: P5-C6統合ウィンドウでの実配線時、`ExecutionViewModel`の新引数だけでは表現不能な追加要件が判明した場合。`NavigationFlowTest`の期待値更新自体がP5-C6で新たな設計課題を提起した場合。
+
+---
+
 ### ADR-0029: Routes APIルート0件応答形状とDRIVEのTRAFFIC_AWARE
 
 - 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定、curl実測2026-08-09。本番同一FieldMask`routes.duration`使用） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P3-C9） ／ 関連仕様§: 計画書`docs/plans/phase3-routing-location.md`§7.2・§12.1（P3-C8fixで「新規の第3の欠陥（暫定名: P3-C9候補）」として申し送られた事項の解消。記録トリガー③実装中に発覚した仕様/実装ギャップの記録）

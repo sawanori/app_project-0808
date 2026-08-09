@@ -34,6 +34,13 @@ interface NotificationService {
 
     /** F54。永続化済み[com.actionstarter.persistence.ExecutionScheduleRecord]群から再登録する。 */
     fun restoreFromStore(): ScheduleResult
+
+    /**
+     * exact alarm可否は現在の能力状態であり、[schedule]の一回の結果ではない——ユーザーが設定画面
+     * から随時許可/剥奪し得るため読み取り専用照会を契約化。ADR-0026・P5-P1実測（API 35初期値
+     * false）参照。Fable 5承認済み契約追加2026-08-09。
+     */
+    fun isExactAlarmAvailable(): Boolean
 }
 
 /**

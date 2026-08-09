@@ -1,6 +1,10 @@
 package com.actionstarter.services.execution
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import com.actionstarter.domain.model.ExecutionPlan
 import com.actionstarter.services.location.ActivityLifecycleForegroundGate
 import com.actionstarter.services.notification.DegradationReason
@@ -46,13 +50,49 @@ class ExecutionServiceController(
     var isRunning: Boolean = false
         private set
 
-    /** [plan]でExecution Foreground Serviceを起動する（T-FGS-1〜T-FGS-6）。 */
-    fun start(plan: ExecutionPlan): ExecutionServiceStartResult = TODO()
+    /**
+     * P5-C3実装。[plan]でExecution Foreground Serviceを起動する（T-FGS-1〜T-FGS-6）。
+     * 2段階でガードし、いずれも例外を待たず事前チェックで判定する（P5-P2実測に基づく
+     * `ContextCompat.checkSelfPermission`事前チェック方式、`build/agent-logs/
+     * p5-probes-device.md`「実装ガードレール」）:
+     * 1. §95.1(b)の前提保護（T-FGS-5）: [foregroundGate]の`isAppInForeground()`が
+     *    `false`なら起動を試みず[ExecutionServiceSkipReason.NOT_IN_FOREGROUND]で
+     *    [ExecutionServiceStartResult.Skipped]を返す。
+     * 2. 位置権限事前チェック（T-FGS-6）: `ACCESS_FINE_LOCATION`／`ACCESS_COARSE_LOCATION`の
+     *    いずれも許可されていなければ起動を試みず
+     *    [DegradationReason.FOREGROUND_SERVICE_UNAVAILABLE]で
+     *    [ExecutionServiceStartResult.Degraded]を返す（P5-P2実測の`SecurityException`
+     *    メッセージが要求する「いずれか1つ」の条件と一致）。
+     *
+     * いずれのガードも通過した場合のみ`startForegroundService`を実際に呼び、[isRunning]を
+     * `true`にする。
+     */
+    fun start(plan: ExecutionPlan): ExecutionServiceStartResult {
+        if (!foregroundGate.isAppInForeground()) {
+            return ExecutionServiceStartResult.Skipped(ExecutionServiceSkipReason.NOT_IN_FOREGROUND)
+        }
+
+        val hasLocationPermission = hasAnyLocationPermission()
+        if (!hasLocationPermission) {
+            return ExecutionServiceStartResult.Degraded(DegradationReason.FOREGROUND_SERVICE_UNAVAILABLE)
+        }
+
+        context.startForegroundService(Intent(context, ExecutionForegroundService::class.java))
+        isRunning = true
+        return ExecutionServiceStartResult.Started
+    }
 
     /** Execution Foreground Serviceを停止する（T-FGS-2）。 */
     fun stop() {
-        TODO()
+        context.stopService(Intent(context, ExecutionForegroundService::class.java))
+        isRunning = false
     }
+
+    private fun hasAnyLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
 }
 
 /** [ExecutionServiceController.start]の戻り値。 */

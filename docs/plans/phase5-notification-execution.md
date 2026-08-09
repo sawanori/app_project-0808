@@ -492,6 +492,171 @@ E2E群は実行するまでpassとして報告することを禁止し、G2／G3
 - コンパイル: `./gradlew :app:compileDebugKotlin :app:compileDebugUnitTestKotlin` → **BUILD SUCCESSFUL**（ログ: `build/agent-logs/p5c1-compile.log`）。
 - 回帰: `./gradlew :app:testDebugUnitTest --rerun` → **BUILD SUCCESSFUL、tests=245 / failures=0 / errors=0 / skipped=1**（ログ: `build/agent-logs/p5c1-regression.log`）。既存テストへの回帰なし。
 
+### 10.4 P5-C2完了記録（Red、2026-08-09、test-writer）
+
+**作成件数**: §8の全53件（JVM/Robolectric 49件＝E1 1件＋E2 48件）のうち**34件を作成しRed実測した**。残り15件（JVM/Robolectric対象内でのT-ALARM-9の1件＋T-FGS群6件＋T-P5UI群8件）は下記理由によりP5-C2では作成しなかった（差し戻し事項）。E3区分4件（T-P5E2E-1〜4）は本タスクの指示（「JVM/Robolectricテスト」のみを対象とする）により本サイクルの対象外とした（作成自体は§8.2「作成のみ・実行はG4-E」の規定どおり別途必要）。
+
+**作成した6ファイル・34件の内訳**:
+
+| ファイル | 対象ケース | 件数 | Red内訳 |
+|---|---|---|---|
+| `services/notification/AlarmSchedulingTest.kt` | T-ALARM-1〜8, 10（T-ALARM-9除く） | 9 | 9件`NotImplementedError` |
+| `services/notification/AndroidNotificationServiceTest.kt` | T-NOTIF-1〜8 | 8 | 6件`NotImplementedError`／2件Green（T-NOTIF-4, T-NOTIF-8） |
+| `services/notification/NotificationLlmIsolationTest.kt` | T-NOTIF-9 | 1 | 1件Green |
+| `services/notification/NotificationTriggerReceiverTest.kt`（新規ファイル） | T-NOTIF-10 | 1 | 1件`NotImplementedError` |
+| `persistence/ExecutionScheduleStoreTest.kt` | T-STORE-1〜8 | 8 | 7件`NotImplementedError`／1件Green（T-STORE-7） |
+| `services/notification/ScheduleRestoreReceiverTest.kt` | T-BOOT-1〜7 | 7 | 7件`NotImplementedError` |
+| **合計** | | **34** | **30件Red／4件Green** |
+
+**T-NOTIF-10の格納先判断**: 計画書§6.1のファイル配置表はG1（Gemini CRITICAL反映）以前の一覧のままでT-NOTIF-10に対応する行がない。`NotificationTriggerReceiver`は独立クラスのため、専用の新規ファイル`NotificationTriggerReceiverTest.kt`をクラス名と1:1対応させて新設した。
+
+**Green（Red不成立）だった4件と理由**: T-NOTIF-4（`NotificationKind`要素数3）・T-NOTIF-8／T-STORE-7（`NotificationPayload`/`ExecutionScheduleRecord`/`Trigger`の宣言済みフィールドにPII名なし。T-NOTIF-8は「通知IntentにPII文字列が含まれない」を、`notifyNow`が実装未済のため通知Intentそのものではなく入力型`NotificationPayload`の型構造で検証する設計とした）・T-NOTIF-9（`services/notification/`がAI package非参照）の4件は、検証対象の型・ソースがP5-C1契約scaffold時点で既に確定済みであるため作成時点からGreenだった。これは`docs/plans/phase4-basic-engine.md`のT-BPE-28（`PlanningLlmIsolationTest`）と同型の**将来の回帰を防ぐための回帰ガード**であり、「現状が誤っていることを示す」ことを目的としないケース類型として、同計画書の先例どおり許容されると判断した。恒常passする甘いassertionではなく、将来の変更で3種固定・PII非保持・AI非依存が破られた場合に確実に検知できることを`AndroidNotificationServiceTest`実行時（T-NOTIF-8）に実際に確認している（後述の実装バグ発見を参照）。
+
+**Red実測時に発見した自テストの不具合と修正**: 初回Red実行（`build/agent-logs/p5c2-red.log`の元となった実行前の試行）でT-NOTIF-8が`NotImplementedError`ではなく`java.lang.AssertionError`で失敗した。原因はPII語ブロックリストの`"lat"`が正当なフィールド名`estimatedArrivalAt`（"...rrivalAt"の部分文字列として"lat"を含む）に誤って部分一致したためで、テスト側の不具合と判明した。`"lat"`/`"lon"`を`"latitude"`/`"longitude"`へ差し替えて修正し（`AndroidNotificationServiceTest.kt`・`ExecutionScheduleStoreTest.kt`の両方）、再実行でGreen（意図どおり）になることを確認した。テストを通すための特殊分岐やハードコードではなく、ブロックリストの精度を上げる修正である。
+
+**差し戻し事項（P5-C2で作成しなかった15件と理由）**:
+
+| 区分 | ケース | 件数 | 理由 |
+|---|---|---|---|
+| 計画書R-2の明示的延期 | T-FGS-1〜6 | 6 | 計画書§10.3（P5-C1実測結果、P5-P2行）が「R-2の方針どおり、結果が出るまでP5-C2のT-FGS群は着手しない」と明記済み。P5-P2（位置権限なしlocation type起動時の例外種別等）は実機/エミュレータ必要のためP5-C1で延期されたまま未解決であり、本タスクの制約（エミュレータ・adb使用禁止）下でも解決できない。自己解釈で着手せず計画書の既存記述に従い見送った |
+| スキャフォールド未到達（契約変更未実施） | T-P5UI-1〜8 | 8 | F58（Execution One Actionの多段階前進）はR-3の契約変更（`ExecutionViewModel`への`sharedPlanViewModel`等の新引数追加、計画書§7.2）を前提とするが、TEAMS§5の契約変更経路（変更提案→**android-planner影響分析**→**Fable 5承認**→ADR記録→両側テスト更新）はP5-C2着手前に発動される計画（計画書§10.1 P5-C2行）だったにもかかわらず、本セッション開始時点で`DECISIONS.md`にADR-0024〜0028の記録がなく、`NavigationFlowTest.kt`のT-NAV-1/T-NAV-3も未更新であることを確認した（=契約変更プロセスの主要ステップが未実施）。`features/execution/ExecutionViewModel.kt`・`ExecutionUiState.kt`は現在もPhase 1のプレースホルダ3ステップ実装のままで、F58が要求する新API面（確定Planのステップ列・劣化表示フィールド等）が一切スキャフォールドされていない。test-writerは本番コード変更が禁止されており、かつ「コンパイルエラーによるRedは不可」の制約下では、存在しない新API面を呼ぶテストを正当に作成できない。android-planner／Fable 5による契約変更手続きの完了後、対応するscaffold追加を経てから作成する必要がある |
+| Robolectricでの再現不能（実測確認済み） | T-ALARM-9 | 1 | `AlarmManagerAlarmScheduler`は`Context`のみを受け取り実`android.app.AlarmManager`を内部解決するためテストから例外注入経路がない。本サイクルで`shadows-framework-4.16.1.jar`の`ShadowAlarmManager`／`ShadowAlarmManager$ScheduledAlarm`を実際に`javap`した結果、`ShadowService.setThrowInStartForeground`に相当する例外注入用メソッドが一切存在しないことを実測確認した（P5-C1 probe P5-P3の実測「実`setExactAndAllowWhileIdle`は例外を投げない」と合わせ、`SecurityException`経路はRobolectric上で構築不能と確定）。P5-C3実装時に別技術（instrumented実機での許可取消しシミュレーション等）が必要か、Fable 5判断を仰ぐ |
+
+**仮の取り決め（P5-C3実装整合確認事項、確定した契約ではない）**: 以下は`persistence`層の内部フォーマットがP5-C1契約scaffold時点で未確定（`SharedPreferencesExecutionScheduleStore`のKDocも`NAME`をプレースホルダとして書くのみ）であることに起因し、test-writerが暫定的に採用した値である。P5-C3実装時に整合を確認すること。
+
+| 仮の取り決め | 使用箇所 | 値 | 確度 |
+|---|---|---|---|
+| SharedPreferences名 | T-ALARM-10（`AlarmSchedulingTest.kt`）、T-BOOT-1〜4（`ScheduleRestoreReceiverTest.kt`） | `"com.actionstarter.execution_schedule_store"` | 中（単一の文字列定数のため整合コストは低い） |
+| 破損JSON注入先キー名 | T-STORE-4（`ExecutionScheduleStoreTest.kt`） | `"records"` | 低（1レコード1キー方式等、内部構造自体が異なる可能性がある） |
+| 通知タップIntentのroute extraキー名 | T-NOTIF-6（`AndroidNotificationServiceTest.kt`） | `"route"` | 高（計画書F60・エラー&レスキューマップ#17/#18が一貫してこの語を使用） |
+
+上記のうち整合が取れない場合、Red理由が`NotImplementedError`から「期待値差分によるアサーション失敗」に変わりうる（コンパイルエラーにはならない）。
+
+**T-ALARM-2/6/7/8/10の配置に関する補足**: これらは計画書の文面上L3（`AlarmScheduler`）の挙動として記述されているが、P5-C1で確定した`AlarmScheduleOutcome`（`EXACT`/`DEGRADED_INEXACT`の2値のみ）・`AndroidNotificationService`のKDoc（「`AlarmSchedulingCoordinator`の責務は本クラス内へ折り込む」）と整合させるため、T-ALARM-6/7/8は`AndroidNotificationService.schedule`（fake`AlarmScheduler`注入）を、T-ALARM-10は`ScheduleRestoreReceiver`を対象に検証した（いずれも§6.1のファイル配置＝`AlarmSchedulingTest.kt`は維持）。各ファイルのKDocに詳細な根拠を記載済み。
+
+**Red実測**: `build/agent-logs/p5c2-red.log`（新規6クラスを`--tests`指定・`--rerun`で個別実行。34 tests completed, 30 failed, 4 passed。30件全てが`kotlin.NotImplementedError`によるもので、非`NotImplementedError`の失敗は0件であることを確認済み）。
+
+**回帰確認**: `./gradlew :app:testDebugUnitTest --rerun` → `build/agent-logs/p5c2-regression.log`（346 tests completed, 90 failed, 1 skipped）。90件の内訳を3分類で集計:
+- (a) 自分の新規テストの意図的Red: 30件（上記の通り）。
+- (b) 並行するPhase 6のC2レーンの意図的Red: 60件。新規テストクラス5件（`BasicRecoveryEngineTest` 31／`LatenessDetectorTest` 10／`RecoveryPlanApplierTest` 7／`RecoveryOptionDisplayTest` 6／`RecoveryViewModelTest` 4、いずれも`git status`で`??`＝未追跡の新規ファイルと確認済み）で58件、および既存ファイル`di/AppContainerTest.kt`への追補2件（`tP6Di1_recoveryEngine_isBasicRecoveryEngineType`／`tP6Di2_mockRecoveryFactoryKtFile_doesNotExistUnderSrcMain`）。後者は`git diff --stat`で47 insertions・0 deletionsの純追加のみと確認済みで、失敗2件はいずれもPhase 6が新規追加したメソッド自身のKDocに「P6-C2時点ではRedが正しい」と明記されている（既存アサーションの改変・破壊ではない）。干渉していない。
+- (c) 既存クラス（P1〜P4由来）の失敗: **0件**。P5-C1が実測したベースライン（tests=245, failures=0, skipped=1）に対応する既存テストは、`AppContainerTest.kt`の従来メソッドを含め全て引き続きPassしている。skipped=1（`AppContainerRoutingConfigTest.tCfg2_apiKeyEmpty_...`、ROUTES_API_KEY設定環境での意図的スキップ）もP5-C1時点と同一で変化なし。
+
+JUnit XML（`app/build/test-results/testDebugUnitTest/`）の`tests=`属性をPythonで集計し直した内訳: 本サイクル新規（本6ファイル）34件＋Phase 6 C2新規6ファイル（`BasicRecoveryEngineTest`/`LatenessDetectorTest`/`RecoveryPlanApplierTest`/`RecoveryOptionDisplayTest`/`RecoveryViewModelTest`/`RecoveryLlmIsolationTest`）63件＋それ以外（既存クラス全体。`AppContainerTest`の6件＝既存4件＋Phase 6追補2件を含む）249件＝**346件**（34+63+249=346で算術一致）。「それ以外」249件はP5-C1が実測したベースライン245件（`build/agent-logs/p5c1-regression.log`）より4件多いが、この差はAppContainerTestへのPhase 6追補2件（前述）に加え、P5-C1自身が「M5-16の239件から+6件の増加はP3-C9の並行テスト追加によるものと推測される」と記録した**ベースライン自体が並行マルチエージェント作業により変動しうる**という同計画書内の既存の前例と整合する範囲であり、本サイクルの失敗0件という結論には影響しない（失敗が発生した11クラスは全て上記「本サイクル新規」または「Phase 6 C2新規」に属し、「それ以外」249件からの失敗は皆無であることをXML集計で確認済み）。
+
+**制約遵守の確認**: 本サイクルでは`src/main`配下のファイルを一切変更していない（読み取りのみ）。`AppContainer`／`ActionStarterNavHost`／`strings.xml`／`AndroidManifest.xml`は変更していない。エミュレータ・adbは使用していない。`docs/plans/phase6-recovery-basic.md`および`recovery/`配下のsrc/mainファイルは変更していない（Phase 6が新規追加した`src/test`ファイル・`di/AppContainerTest.kt`への追補にも一切手を加えていない）。git commitは行っていない。Gradleロック競合は発生しなかった（全実行が初回試行で成功）。
+
+### 10.5 P5-C2b完了記録（scaffold＋Red、2026-08-09、実装/テスト担当）
+
+**背景**: §10.4（P5-C2完了記録）が記録した差し戻し15件（T-ALARM-9・T-FGS-1〜6・T-P5UI-1〜8）を、Fable 5裁定に基づき2段階（①R-3契約変更のscaffold＋ADR記録、②残余Redテスト15件の作成）で解消した。
+
+**段階1（scaffold＋ADR記録）**:
+- `ExecutionViewModel`へ§7.2が定める方式（新引数はすべてデフォルト値`null`）で3引数を追加した: `sharedPlanViewModel: SharedPlanViewModel? = null`／`notificationService: NotificationService? = null`／`permissionGate: PermissionGate? = null`。**うち`notificationService`／`permissionGate`の2引数は§7.2原文が明示するのは`sharedPlanViewModel`のみであるため、F58/F59（アラーム再登録の委譲先）・T-P5UI-6（POST_NOTIFICATIONS照会）の要求から本サイクルで補完した判断であり、確定した契約ではない**（ADR-0022と同型の契約scaffold補完。P5-C3実装時に見直しの余地がある）。いずれも本サイクルではロジックに使用しない（保持のみ）。
+- `ExecutionUiState`へ計画書§6.2が定める劣化表示3フィールドを追加した: `isNotificationPermissionDenied`／`isExactAlarmDegraded`／`isForegroundServiceDegraded`（いずれも既定値`false`）。
+- `AlarmManagerAlarmScheduler`へT-ALARM-9用の`internal`関数型シーム`scheduleExactAlarm: (AlarmManager, Int, Long, PendingIntent) -> Unit`を追加した（既定値=実`AlarmManager.setExactAndAllowWhileIdle`への委譲。`CursorSource`／`RawLocationSource`と同じ、プラットフォームAPI呼び出しを注入可能な形へ切り出す家内様式）。`schedule`/`cancel`本体は`TODO()`のまま維持した。
+- `DECISIONS.md`へADR-0024〜0028を記録した（要約は下表）。
+
+**ADR-0024〜0028の記録内容（要約）**:
+
+| ADR | 対象 | 決定 |
+|---|---|---|
+| ADR-0024 | S-2（Hilt再判定） | 手動DI継続。ADR-0014却下理由①を実測訂正、再検討トリガーをAGP 9系移行時へ付け替え |
+| ADR-0025 | S-1（永続化方式）＋S-9（取り逃したトリガーの猶予復元） | SharedPreferences方式`ExecutionScheduleStore`採用（ADR記録トリガー③仕様推奨からの逸脱）。猶予15分以内なら即時発火、それ以外は破棄 |
+| ADR-0026 | S-3（FGS type）＋S-4（USE_EXACT_ALARM不採用） | `location`単独宣言・位置権限なし時Degraded運用／inexact既定パスの受容。P5-P1・P5-P2実機実測結果（`build/agent-logs/p5-probes-device.md`）を裏付けとして追記 |
+| ADR-0027 | S-8（i18n非Compose化）＋S-6（Snooze単一情報源維持） | `i18n/StepTitleKeys.kt`への抽出／`ExecutionViewModel.POSTPONE_DURATION`を単一の出所として維持 |
+| ADR-0028 | R-3（`ExecutionViewModel`コンストラクタ契約変更）＋S-7（「next action」の解釈） | 新3引数の追加を承認（next actionはアプリ内One Action前進と解釈）。**`NavigationFlowTest`（T-NAV-1/T-NAV-3）の期待値更新はNavHost実配線と同時（P5-C6統合ウィンドウ）に行う旨を明記**（早期更新は既存クラスへ意図的Redを持ち込み全レーンの回帰判定を汚染するため、Fable 5裁定2026-08-09） |
+
+**S-5（Recovery通知のenum宣言のみ）の扱い**: メモ§4.2本文にS-1／S-6のような明示的な「ADRとして記録」の文言がなく、R-7（リスク表）のKDoc要求により空プレースホルダ化のリスクは既に緩和されている。9件の裁定事項（S-1〜S-9）＋R-3の計10件を5枠のADRへ配分する必要があったため、本サイクルはS-5を独立ADR化せず対象外とした（実装/テスト担当の判断。異論があれば次回同期ポイントで再検討を要請する）。
+
+**検証（段階1）**: `./gradlew :app:compileDebugKotlin :app:compileDebugUnitTestKotlin` BUILD SUCCESSFUL、および対象クラス個別実行で`ExecutionViewModelTest`（3/3）・`ExecutionScreenTest`（6/6）・`NavigationFlowTest`（5/5、T-NAV-1/T-NAV-3含む）がGreen、`AlarmSchedulingTest`の既存9件が変化なく`NotImplementedError`のままであることを実測した（ログ: `build/agent-logs/p5c2b-scaffold.log`）。`NavigationFlowTest`・`ActionStarterNavHost`・`AppContainer`・`strings.xml`・Manifestは無変更。
+
+**段階2（残余Redテスト15件）**:
+
+| ファイル | 対象 | 件数 | 結果 |
+|---|---|---|---|
+| `services/notification/AlarmSchedulingTest.kt`（追補） | T-ALARM-9 | 1 | Red（`NotImplementedError`） |
+| `services/execution/ExecutionForegroundServiceTest.kt`（新規） | T-FGS-1〜6 | 6 | Red（`NotImplementedError`）全6件 |
+| `features/ExecutionOneActionTest.kt`（新規） | T-P5UI-1〜8 | 8 | Red（期待値差分`AssertionError`）7件・Green 1件 |
+| **合計** | | **15** | **Red 14件／Green 1件（意図した回帰ガード）** |
+
+T-P5UI-8（画面回転でのcurrentStepIndex保持）は、新規3引数を実引数で与えても既存の`SavedStateHandle`復元ロジック自体は本サイクルで変更していないため作成時点からGreenになる。これは§10.4がT-NOTIF-4/8/9・T-STORE-7について記録した「現状が誤っていることを示すことを目的としない回帰ガード」と同型のケースであり、テストを通すための特殊分岐やハードコードではない。
+
+T-FGS-1〜3は`ExecutionForegroundService`自身を`Robolectric.buildService`で直接構築・駆動して検証し、T-FGS-4〜6は`ExecutionServiceController`を直接構築して検証した。`ExecutionServiceController.start()`とService内部で発生する例外（P5-P2実測の`SecurityException`／`InvalidForegroundServiceTypeException`）の伝播経路はP5-C1契約scaffold時点で確定していないため、T-FGS-3はService単体の責務（best-effort通知への切替・クラッシュしない）として検証し、Controller側の`Degraded(FOREGROUND_SERVICE_UNAVAILABLE)`への写像はP5-C3の実装判断に委ねた（詳細は`ExecutionForegroundServiceTest.kt`冒頭KDoc「テスト設計方針」を参照。確定した契約ではない）。
+
+**Red実測**: 新規・追補クラスを個別実行（`--tests`指定・`--rerun`）し、24 tests completed, 23 failed（本サイクルの意図的Red 14件＋既存`AlarmSchedulingTest`のT-ALARM-1〜8,10の9件が変化なく引き続きRed）であることを確認した（ログ: `build/agent-logs/p5c2b-red.log`）。23件の内訳は`NotImplementedError`16件（既存9件＋本サイクル新規のT-ALARM-9・T-FGS-1〜6の7件）／期待値差分`AssertionError`7件（T-P5UI-1〜7）であり、それ以外の理由（コンパイルエラー・意図しない例外）は0件であることを確認済み。
+
+**回帰確認**: `./gradlew :app:testDebugUnitTest --rerun` → 364 tests completed, 63 failed, 1 skipped（ログ: `build/agent-logs/p5c2b-regression.log`）。63件を3分類で集計:
+- (a) 本サイクル新規の意図的Red: **14件**（上表のRed 14件と一致）。
+- (b) 並行する既存Red（Phase 5・Phase 6いずれも本サイクルの変更対象外）: **49件**。内訳はP5-C2由来の既存Red 30件（`AlarmSchedulingTest`のT-ALARM-1〜8,10で9件・`AndroidNotificationServiceTest`6件・`NotificationTriggerReceiverTest`1件・`ExecutionScheduleStoreTest`7件・`ScheduleRestoreReceiverTest`7件、いずれも§10.4記録の件数と一致し変化なし）と、並行Phase 6 C2レーンの新規Red 19件（`AppContainerTest`の`tP6Di1`/`tP6Di2`2件・`RecoveryOptionDisplayTest`6件・`RecoveryViewModelTest`7件・`BasicRecoveryEngineTest`4件。個別ファイルの内訳件数は§10.4記録時点〔`BasicRecoveryEngineTest`31件等〕から変動しているが、これはPhase 6が本サイクルと並行して進行中であることによるものであり、本タスクの制約（recovery系・phase6計画書変更禁止）遵守下では件数の変動要因を追跡しない）。
+- (c) 既存P1〜P4クラスの失敗: **0件**。63件の失敗クラスを全て確認したところ、P1〜P4由来の既存クラスは1件も含まれていない。特に`ExecutionViewModelTest`（JUnit XML実測`tests="3" failures="0"`）・`NavigationFlowTest`（同`tests="5" failures="0"`、T-NAV-1/T-NAV-3を含む）・`ExecutionScreenTest`（同`tests="6" failures="0"`）はGreen維持を実測確認した。`AppContainerTest`は6件中失敗2件のみで、いずれもPhase 6が追加した`tP6Di1`/`tP6Di2`であり、既存4メソッドはGreenのまま（同`tests="6" failures="2"`）。
+
+14(a)+49(b)+0(c)=63で算術一致。364-63-1=300件がGreen。ベースライン（§10.4記録時346件）からの純増+18件のうち+15件は本サイクルの新規テスト（Red 14＋Green 1）、残り+3件は並行Phase 6レーンの変動によるもの（P5-C1・P5-C2でも同型の並行変動が記録済みであり、本サイクルの失敗0件〔P1〜P4〕という結論には影響しない）。
+
+**制約遵守の確認**: `recovery/`・`docs/plans/phase6-recovery-basic.md`・`docs/plans/phase3-routing-location.md`は変更していない。`NavigationFlowTest`・`ActionStarterNavHost`・`AppContainer`・`strings.xml`・`AndroidManifest.xml`は変更していない。エミュレータ・adbは使用していない。git commitは行っていない。Gradleロック競合は発生しなかった（全実行が初回試行で成功）。
+
+### 10.6 P5-C3完了記録（Green、2026-08-09、domain-implementer）
+
+**結論**: §10.4/10.5が記録した意図的Red 44件のうち**42件をGreen化した**。残り2件（`ExecutionForegroundServiceTest.start_thenStop_togglesIsRunning`＝T-FGS-4、`ExecutionOneActionTest.tP5ui7_exactAlarmNotPermitted_setsExactAlarmDegradedFlag`＝T-P5UI-7）は、下記「未解決2件」に記載する実測に基づく理由により本サイクルでは実装側の変更のみでは解消できないと判断し、テスト自体は変更せず**Redのまま報告する**（正直な報告。テストを通すための特殊分岐・ハードコードは行っていない）。既存クラス（P1〜P4）への回帰は0件（`ExecutionViewModelTest`3/3・`ExecutionScreenTest`6/6・`NavigationFlowTest`5/5・`CalendarNavigationFlowTest`1/1すべてGreen維持を個別実測）。
+
+**T-FGS-3の設計確定内容（`ExecutionForegroundService`の`startForeground`境界）**: `onStartCommand`で`NotificationChannelCompat`経由のチャネル生成後、`ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, FOREGROUND_SERVICE_TYPE_LOCATION)`を`try`で囲み、**`Exception`全体をcatch**する（P5-P2実測の`SecurityException`／`InvalidForegroundServiceTypeException`〔`IllegalStateException`系〕をいずれも捕捉するため、かつT-FGS-3自体が`RuntimeException`を注入する設計のため）。catch時は`NotificationManagerCompat.notify`で同一Notificationをbest-effort（非foreground）通知として提示し`stopSelf()`で自己停止する（エラー&レスキューマップ#6）。`onDestroy`で`ServiceCompat.stopForeground(STOP_FOREGROUND_REMOVE)`を明示呼び出しする（`Service.onDestroy()`は自動でforeground解除しないとRobolectric実測で確認、T-FGS-2）。`ExecutionServiceController`側は、Service内部の例外を待たず**`start()`時点で`ContextCompat.checkSelfPermission`によりACCESS_FINE_LOCATION／ACCESS_COARSE_LOCATIONのいずれかを事前チェックし**（P5-P2実測の「`FOREGROUND_SERVICE_LOCATION`はALL必須・位置権限は`ANY`必須」という要件と一致）、いずれも不許可なら`startForegroundService`自体を呼ばず`Degraded(FOREGROUND_SERVICE_UNAVAILABLE)`を返す（T-FGS-6）。§95.1(b)の前提保護（`foregroundGate.isAppInForeground()`、T-FGS-5）はこれより前段でガードする。
+
+**ExecutionViewModel新3引数の使用開始確認**: P5-C2bのADR-0028で承認済みの`sharedPlanViewModel`／`notificationService`／`permissionGate`（すべて既定値`null`）を、本サイクルで実際に使用するロジックへ結線した。`sharedPlanViewModel?.confirmedPlan?.value`が非nullのときのみ確定Planのステップ列を使うF58経路へ切り替わり、`null`のときは既存プレースホルダ挙動を1バイトも変えずに維持する（`ExecutionViewModelTest`／`ExecutionScreenTest`が無改造でGreenのまま、実測済み）。
+
+**クラス別Green化記録**（個別`--tests`実行、ログは各`build/agent-logs/p5c3-green-<class>.log`）:
+
+| クラス | 対象T-ID | 結果 |
+|---|---|---|
+| `ExecutionScheduleStoreTest` | T-STORE-1〜8 | 8/8 Green |
+| `AlarmSchedulingTest` | T-ALARM-1〜10 | 10/10 Green |
+| `AndroidNotificationServiceTest` | T-NOTIF-1〜8 | 8/8 Green |
+| `NotificationLlmIsolationTest` | T-NOTIF-9 | 1/1 Green |
+| `NotificationTriggerReceiverTest` | T-NOTIF-10 | 1/1 Green |
+| `ScheduleRestoreReceiverTest` | T-BOOT-1〜7 | 7/7 Green |
+| `ExecutionForegroundServiceTest` | T-FGS-1〜6 | 5/6 Green（T-FGS-4のみRed、後述） |
+| `ExecutionOneActionTest` | T-P5UI-1〜8 | 7/8 Green（T-P5UI-7のみRed、後述） |
+
+**未解決2件（実測により設計側での解消が不可能と判断、テスト変更は行っていない）**:
+
+1. **T-FGS-4（`start_thenStop_togglesIsRunning`）**: 使い捨てprobeテスト（実行後削除）で実測したところ、Robolectric（本プロジェクト固定版4.16.1）は`ACCESS_FINE_LOCATION`／`ACCESS_COARSE_LOCATION`をmanifest宣言済みでも**既定で`PackageManager.PERMISSION_DENIED`を返す**（`ContextCompat.checkSelfPermission`実測: `fine=-1 granted=false coarse=-1 granted=false`）。これは本プロジェクトの既存テスト`FusedLocationServiceTest`が「granted」シナリオでも`shadowOf(application).grantPermissions(...)`を明示的に呼んでいる既存パターンと整合する実測結果である。T-FGS-4は`ExecutionServiceController(context(), foregroundGate)`を権限grant/deny一切なしで構築し`start()`成功（`isRunning=true`）を期待するが、T-FGS-6は同じ権限チェック機構に対し明示的`denyPermissions`で`Degraded`を期待する。位置権限チェック（`checkSelfPermission`、T-FGS-6・エラー&レスキューマップ#5が要求）を実装しつつ、T-FGS-4を権限grant無しでGreenにする方法はない（チェックを外せばT-FGS-6が壊れる）。指示（「テストKDocの想定と食い違う場合はテスト期待を変えず設計側で満たし、不可能なら報告」）に従い、P5-P2実測・エラー&レスキューマップ#5と整合する設計（`checkSelfPermission`事前チェック）を維持し、本件を報告する。**推奨対応**: T-FGS-4冒頭に`shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)`を追加（`FusedLocationServiceTest`の既存パターンと同型）。
+2. **T-P5UI-7（`tP5ui7_exactAlarmNotPermitted_setsExactAlarmDegradedFlag`）**: `ExecutionUiState.isExactAlarmDegraded`を得る手段は`NotificationService.schedule()`（非suspend）の戻り値のみだが、同一`notificationService`インスタンスへの呼び出し回数について、T-P5UI-4（`postponeタップごとにちょうど1回だけ`＝2回postponeで`scheduleCallCount`が厳密に`2`）とT-P5UI-7（`onPostpone`等を一切呼ばず**コンストラクタ直後**に`isExactAlarmDegraded=true`を要求）が両立不能な前提を置いている。`init`で`schedule()`を1回呼べばT-P5UI-7は満たせるがT-P5UI-4は`3`を観測し破綻し、`init`で呼ばなければT-P5UI-4は満たせるがT-P5UI-7は既定値`false`のまま破綻する（実装を両方式で実測し、理論どおりの排他的な結果を確認済み）。本実装はT-P5UI-4（重複アラーム登録という実害のある回帰を防ぐ既存の厳密カウント規約）を優先し、`init`では`schedule()`を呼ばない設計を採用した。**推奨対応**: T-P5UI-7の`viewModel`構築直後に何らかの明示的トリガー（例: `notificationService.schedule(plan)`相当の呼び出しを促す1アクション）を追加するか、T-P5UI-4の期待値を「タップ起因の呼び出しは`initialCount + 2`」に緩めるか、いずれかをFable 5判断で決定する必要がある。
+
+**3分類集計**（`./gradlew :app:testDebugUnitTest --rerun`、`build/agent-logs/p5c3-full.log`。364 tests completed, 4 failed, 1 skipped）:
+- (a) Phase 5系の失敗: **2件**（T-FGS-4・T-P5UI-7、上記のとおり）。**0件ではないため「未完了」として正直に報告する**（指示どおり）。
+- (b) 並行Phase 6 C3レーンの失敗: **2件**（`AppContainerTest.tP6Di1_recoveryEngine_isBasicRecoveryEngineType`・`tP6Di2_mockRecoveryFactoryKtFile_doesNotExistUnderSrcMain`。いずれもP6-C2が追加したメソッドで、`recovery/`・`di/AppContainer.kt`いずれも本サイクルでは変更していない。件数のみ報告し内容には干渉しない）。
+- (c) それ以外の既存クラス（P1〜P4）の失敗: **0件**（回帰なし。`ExecutionViewModelTest`3/3・`ExecutionScreenTest`6/6・`NavigationFlowTest`5/5・`CalendarNavigationFlowTest`1/1を個別実測）。
+- skipped=1は既存の`AppContainerRoutingConfigTest.tCfg2_apiKeyEmpty_...`（変化なし）。
+
+2(a)+2(b)+0(c)=4で364件中の失敗内訳と算術一致。360件がGreen。
+
+**P5-C5/P5-C6統合ウィンドウへの申し送り**:
+- **Manifest宣言一覧**（`AndroidManifest.xml`、P5-C6で追加が必要）: `<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>`・`<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>`・`<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>`・`<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>`・`<uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>`（計画書§6.3どおり5件）／`<service android:name=".services.execution.ExecutionForegroundService" android:foregroundServiceType="location" android:exported="false"/>`／`<receiver android:name=".services.notification.NotificationTriggerReceiver" android:exported="false"/>`／`<receiver android:name=".services.notification.ScheduleRestoreReceiver" android:exported="false"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/><action android:name="android.intent.action.TIME_SET"/><action android:name="android.intent.action.TIMEZONE_CHANGED"/><action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"/></intent-filter></receiver>`／`MainActivity`に`android:launchMode="singleTop"`。
+- **AppContainer結線内容**: `notificationService: NotificationService`（`AndroidNotificationService(context, ExecutionScheduleStore実装, AlarmManagerAlarmScheduler(context), NotificationContentBuilder(context), permissionGate)`として構築）・`executionServiceController: ExecutionServiceController(context, foregroundGate)`をプロパティとして追加。永続化は`context.getSharedPreferences(SharedPreferencesExecutionScheduleStore.PREFS_NAME, MODE_PRIVATE)`（定数は`persistence.SharedPreferencesExecutionScheduleStore.PREFS_NAME`＝`"com.actionstarter.execution_schedule_store"`）経由で`SharedPreferencesExecutionScheduleStore`を構築する。`ActionStarterApplication.onCreate()`に`foregroundGate.isExecutionServiceRunning = executionServiceController::isRunning`の1行を追加（M5-13、§7.4）。
+- **strings追加が必要な分**: 本サイクルは`strings.xml`凍結制約により**新規stringを一切追加せず**、既存の`departure_title`／`departure_estimated_arrival_label`／`departure_event_label`／`departure_buffer_label`／`departure_buffer_minutes_format`／`step_title_transition`／`execution_now_label`を`NotificationContentBuilder`から`context.getString(...)`で直接組み合わせて通知文言を構築した（`services/notification/NotificationContentBuilder.kt`KDoc参照）。DEPARTURE通知はDepartureScreenと同じラベル構成のため意味的に正確だが、TRANSITION_START本文（`"$execution_now_label: $step_title_transition"`）は専用stringがなく暫定的。**P5-C4/C5でui-implementerが通知専用の文言（例: `notification_transition_title`／`notification_transition_text`／`notification_departure_channel_name`等、ja/en対）を追加し、`NotificationContentBuilder`の該当箇所を差し替えることを推奨する**（S-8が想定した`i18n.StepTitleKeys`経由への一本化もこの機会に行う）。通知チャネル名（`channel_transition_start`="Transition"、`channel_departure`="Leave now"、`channel_execution_foreground`="NOW"）も同様に既存流用の暫定値。
+- **NavHost配線内容**: `ActionStarterNavHost`のExecution route内で、現在`SharedPlanViewModel.confirmedPlan`から直接`ExecutionUiState`を構築している箇所（M5-14）を`ExecutionViewModel(savedStateHandle, sharedPlanViewModel, appContainer.notificationService, appContainer.permissionGate)`経由へ切り替える。これにより`onDone`が非nullになり、F58の多段階遷移が本番結線される（`NavigationFlowTest`のT-NAV-1／T-NAV-3期待値更新をADR-0028どおり同時に行う必要がある）。PlanReview画面の「Start」ボタンハンドラで`appContainer.notificationService.schedule(plan)`を1回呼ぶ（Execution突入時ではなくPlan確定時にスケジュールする設計。本ファイルKDoc「`isExactAlarmDegraded`の算出タイミング」参照）。Execution画面の`onNavigateToDeparture`/画面破棄相当の箇所で`notificationService.cancelAll(planId)`・`executionServiceController.stop()`を呼ぶ（データ残留防止、T-STORE-6文脈）。Execution画面表示開始時（フォアグラウンド）に`executionServiceController.start(plan)`を呼ぶ（F56/F57）。通知タップ→`MainActivity.onNewIntent`→NavHostのroute解決（route extraキー`"route"`、値は`Destinations.Execution.route`／`Destinations.Departure.route`）はC6側で新規実装が必要（`AndroidNotificationService`側は実装済み、受け側が未配線）。Phase 6用`LatenessDetector.evaluate()`呼び出しフック（execution route内、プレースホルダコメント設置のみ）も計画書§6.3どおり本ウィンドウの予約項目。
+- **制約遵守の確認**: `AppContainer.kt`／`ActionStarterNavHost.kt`／`strings.xml`／`AndroidManifest.xml`は本サイクルで一切変更していない（読み取りのみ）。`recovery/`・`mock/MockRecoveryFactory.kt`・`docs/plans/phase6-recovery-basic.md`・`docs/plans/phase3-routing-location.md`は変更していない。テストファイル（`src/test`配下）は1件も変更していない（未解決2件はテスト側ではなく実装側のみで検討し、変更せず報告する指示に従った）。エミュレータ・adbは使用していない。git commitは行っていない。Gradleロック競合は発生しなかった（全実行が初回試行で成功）。
+
+### 10.7 P5-C3fix完了記録（Green、2026-08-09、domain-implementer）
+
+**結論**: §10.6が報告した残余Red 2件（T-FGS-4・T-P5UI-7）を、Fable 5裁定に基づく構造的な設計変更で解消した。全JVMスイート実測は364 tests completed, **2 failed**（`AppContainerTest.tP6Di1_recoveryEngine_isBasicRecoveryEngineType`・`tP6Di2_mockRecoveryFactoryKtFile_doesNotExistUnderSrcMain`のみ。いずれもP6-C5統合ウィンドウ待ちの既存Red、P5-C3fixの変更対象外）, 1 skipped（既存`AppContainerRoutingConfigTest.tCfg2_apiKeyEmpty_...`、変化なし）。§10.6時点の4 failedから2 failed（Phase 5起因の失敗は0件）に減少した。
+
+**裁定1（T-FGS-4、承認済みfixture修正）の実装**: `ExecutionForegroundServiceTest.kt`の`start_thenStop_togglesIsRunning`冒頭に`shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)`を追加（`FusedLocationServiceTest`の`grantedPermissionGate()`と同型のShadowApplication方式）。アサーション本体は無変更。「Fable 5承認済みfixture修正（2026-08-09）: Robolectric既定denyとcheckSelfPermission事前チェック（エラーマップ#5）の両立のため。T-FGS-6のdeny経路検証と対をなす」を1行コメントで記載した。
+
+**裁定2（T-P5UI-7、承認済み契約追加＋テスト更新）の実装**:
+1. **契約追加**: `services/notification/NotificationService.kt`のインターフェースへ読み取り専用メソッド`fun isExactAlarmAvailable(): Boolean`を追加。KDocは指示文言をそのまま採用（ADR-0026・P5-P1実測参照、Fable 5承認済み契約追加2026-08-09）。
+2. **`AndroidNotificationService`実装（判定ロジック非重複の設計判断）**: `services/notification/AlarmManagerAlarmScheduler.kt`へ、`schedule()`のexact/inexact分岐が使う判定（`AlarmManagerCompat.canScheduleExactAlarms`）をトップレベル`internal fun canScheduleExactAlarms(alarmManager: AlarmManager): Boolean`として切り出し、`schedule()`内の呼び出しをこの共有関数経由に置き換えた（`AlarmManagerCompat.canScheduleExactAlarms`の呼び出し箇所を全体で1箇所に集約）。`AndroidNotificationService.isExactAlarmAvailable()`はこの共有関数を`context`から解決した実`AlarmManager`で呼ぶ形で実装した。**`AlarmScheduler`インターフェース自体は変更していない**（`AlarmScheduler`に照会メソッドを追加する案も検討したが、`NoOpAlarmScheduler`〔`AndroidNotificationServiceTest.kt`〕・`SpyAlarmScheduler`〔`AlarmSchedulingTest.kt`〕という、今回の裁定が明示的に許可していないテストファイルへの変更が必須になるため採用しなかった。「上記裁定以外のテスト変更禁止」制約を厳守する選択）。`AlarmManagerAlarmScheduler.schedule()`の外部契約（戻り値・副作用）は無変更のためT-ALARM-1〜10への影響はない（実測確認済み、下記）。
+3. **`ExecutionViewModel`**: `initialExactAlarmDegraded`フィールドを新設し、`notificationService`が非nullのときのみconstruction時に`isExactAlarmAvailable()`を1回照会して`!available`を保持する（`schedule()`は呼ばない）。`isExactAlarmDegraded()`は`lastScheduleResult`が設定済み（＝postponeが1回以上成功済み）ならその戻り値を優先し、未設定なら`initialExactAlarmDegraded`にフォールバックする形へ変更した。既存のpostpone経路（`handleConfirmedPlanPostpone`が`lastScheduleResult`を更新するロジック）は無変更。
+4. **T-P5UI-7更新**（`ExecutionOneActionTest.kt`）: `DegradedExactAlarmNotificationService`に能力フラグ`exactAlarmAvailable`（コンストラクタ引数、既定`false`）と`scheduleCallCount`計測を追加し、テスト本体は`DegradedExactAlarmNotificationService(exactAlarmAvailable = false)`をコンストラクタへ渡したうえで、construction直後に`isExactAlarmDegraded == true`と`scheduleCallCount == 0`（T-P5UI-4との両立の証拠）の双方を検証する形へ更新した。`SpyNotificationService`（T-P5UI-3/4/8で使用）には`isExactAlarmAvailable(): Boolean = true`を追加し既定で無影響とした。
+
+**検証結果**（いずれも実測、ログは`build/agent-logs/`配下）:
+| 検証範囲 | 結果 | ログ |
+|---|---|---|
+| 対象2クラス個別 | `ExecutionForegroundServiceTest` 6/6・`ExecutionOneActionTest` 8/8（JUnit XML実測、いずれも`failures="0" errors="0" skipped="0"`） | `p5c3fix-target.log` |
+| Phase 5系8クラス一括（AlarmSchedulingTest/AndroidNotificationServiceTest/NotificationLlmIsolationTest/NotificationTriggerReceiverTest/ScheduleRestoreReceiverTest/ExecutionScheduleStoreTest/ExecutionForegroundServiceTest/ExecutionOneActionTest） | 49 tests、failures="0" errors="0" skipped="0"（内訳10/8/1/1/7/8/6/8） | `p5c3fix-phase5-batch.log` |
+| 全JVMスイート（`--rerun`） | 364 tests completed, **2 failed**（`AppContainerTest`のtP6Di1/tP6Di2のみ）, 1 skipped | `p5c3fix-full.log` |
+| `ExecutionViewModelTest`（個別確認） | 3/3 Green（`tests="3" failures="0"`、全JVMスイート実行時のXML実測） | 同上（同一実行のXML） |
+| `NavigationFlowTest`（個別確認） | 5/5 Green（`tests="5" failures="0"`、T-NAV-1/T-NAV-3含む） | 同上（同一実行のXML） |
+
+**制約遵守の確認**: 変更した本番ファイルは`services/notification/NotificationService.kt`・`services/notification/AlarmManagerAlarmScheduler.kt`・`services/notification/AndroidNotificationService.kt`・`features/execution/ExecutionViewModel.kt`の4件のみ。変更したテストファイルは`services/execution/ExecutionForegroundServiceTest.kt`（T-FGS-4のfixtureのみ）・`features/ExecutionOneActionTest.kt`（T-P5UI-7本体＋2 fakeへの`isExactAlarmAvailable`追加のみ）の2件のみで、いずれも裁定1・裁定2が明示的に許可した範囲に収まる。`AppContainer.kt`／`ActionStarterNavHost.kt`／`strings.xml`／`AndroidManifest.xml`・`recovery/`・`mock/MockRecoveryFactory.kt`・`docs/plans/phase6-recovery-basic.md`・`docs/plans/phase3-routing-location.md`・`DECISIONS.md`はいずれも変更していない（読み取りのみ）。`AlarmSchedulingTest.kt`・`AndroidNotificationServiceTest.kt`・`NotificationTriggerReceiverTest.kt`・`ScheduleRestoreReceiverTest.kt`・`ExecutionViewModelTest.kt`・`NavigationFlowTest.kt`・`ExecutionScreenTest.kt`はいずれも変更していない（Green維持は実測確認のみ）。エミュレータ・adbは使用していない。git commitは行っていない。Gradleロック競合は発生しなかった（全3回の実行がいずれも初回試行で成功、60秒リトライの発動は不要だった）。
+
 ---
 
 ## 11. リスク

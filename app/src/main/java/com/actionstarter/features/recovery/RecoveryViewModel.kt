@@ -2,20 +2,24 @@ package com.actionstarter.features.recovery
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.actionstarter.R
 import com.actionstarter.domain.model.ExecutionPlan
 import com.actionstarter.domain.model.RecoveryContext
+import com.actionstarter.domain.valueobject.Coordinate
 import com.actionstarter.navigation.SharedPlanViewModel
 import com.actionstarter.recovery.RecoveryEngine
+import com.actionstarter.recovery.RecoveryPlanApplier
 import com.actionstarter.services.location.LocationFailureReason
 import com.actionstarter.services.location.LocationResult
 import com.actionstarter.services.location.LocationService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.time.Clock
 import java.time.Duration
-import java.time.Instant
+import java.util.UUID
 
 /**
  * 仕様§31-34準拠（RecoveryScreenのViewModel）。
@@ -30,14 +34,28 @@ import java.time.Instant
  * 「仮選択」状態自体はRecoveryScreen側（画面ローカルstate）が保持し、本ViewModelは
  * 候補一覧の供給のみを担当する。
  *
- * **P6-C1 scaffold注記（計画書§6.2・§10）**: [locationService]／[clock]は本サイクルで
- * コンストラクタへ追加した注入物であり、[AppContainer][com.actionstarter.di.AppContainer]の
- * 既存呼び出し（`RecoveryViewModel(recoveryEngine, sharedPlanViewModel)`、2引数のみ）が
- * 無変更でコンパイルを維持できるよう、いずれもデフォルト値を持たせている。**この時点では
- * [buildRecoveryContext]のロジックは変更していない**（`Instant.now()`／
- * `plan.event.coordinates`を直接使う現行実装のまま、既知欠陥1・欠陥5は温存）。
- * [locationService]を`currentLocation`取得へ、[clock]を`currentTime`取得へ実際に結線する
- * ロジック（欠陥1修正・T-RECVM-1/2/3対応）はP6-C4（ui-implementer）で実装する。
+ * **P6-C3実装（計画書§6.2・§7.7・§9エラーマップ#7/#17、Fable 5裁定4）**: 既知バグ3件を修正した。
+ * - 欠陥1: [buildRecoveryContext]の`currentTime`は[clock]（注入済み）由来へ変更した
+ *   （`Instant.now()`直呼びを廃止。T-RECVM-1）。
+ * - 欠陥1（現在地）: `currentLocation`は目的地座標（`plan.event.coordinates`）を誤って
+ *   流用していたバグを修正し、[locationService]経由の実測現在地へ変更した
+ *   （取得不能時（`PermissionDenied`／`Failure`）は`null`のままD案のみを落とす。
+ *   §95.6「Recovery Modeは位置情報なしでも成立するようフォールバック」に整合。T-RECVM-2/3）。
+ * - 欠陥5: `init`の`viewModelScope.launch`に`try/catch`を追加し、[recoveryEngine]の例外を
+ *   握り潰さず[RecoveryUiState.routingFailureReason]へ表面化させる（`CancellationException`は
+ *   構造化並行性の取り消しを妨げないよう再送出する。`CachingRoutingService.kt`の先例に倣う。
+ *   T-RECVM-5）。`routingFailureReason`は本来D案専用の欄だが、strings.xml編集が
+ *   C5統合ウィンドウ専有のため専用の汎用エラー文言を追加できず、既存の
+ *   `R.string.recovery_no_options_message`（「代替案はありません。手動で対応してください。」）を
+ *   暫定転用する（engineが失敗した実際の帰結＝候補が1件も出せない、という意味では正しい文言。
+ *   TODO(P6-C5): 専用の`recovery_engine_error_message`をstrings.xmlへ追加し差し替える。
+ *   完了報告のC5申し送り参照）。
+ *
+ * [useThisPlan]（Fable 5裁定3）は「Use this plan」タップ起点でのみ呼ばれる契約とし
+ * （§34ガード厳守。本クラス自身が自動的に呼び出す経路は作らない）、[recoveryPlanApplier]経由で
+ * 適用した[ExecutionPlan]を[sharedPlanViewModel.confirmPlan]へ渡す。適用後は
+ * [RecoveryUiState.isPlanApplied]を立て、以後の呼び出しをone-shotガードで無視する
+ * （§9エラーマップ#10、無限ループ防止、T-RECVM-6/7/8）。
  */
 class RecoveryViewModel(
     private val recoveryEngine: RecoveryEngine,
@@ -49,27 +67,74 @@ class RecoveryViewModel(
     private val _uiState = MutableStateFlow(RecoveryUiState())
     val uiState: StateFlow<RecoveryUiState> = _uiState.asStateFlow()
 
+    private val recoveryPlanApplier = RecoveryPlanApplier(clock)
+
     init {
         viewModelScope.launch {
             val plan = sharedPlanViewModel.confirmedPlan.value ?: return@launch
-            val recoveryPlan = recoveryEngine.createRecoveryPlan(buildRecoveryContext(plan))
-            _uiState.value = RecoveryUiState(options = recoveryPlan.options, selectedOptionId = null)
+            try {
+                val recoveryPlan = recoveryEngine.createRecoveryPlan(buildRecoveryContext(plan))
+                _uiState.value = RecoveryUiState(options = recoveryPlan.options, selectedOptionId = null)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (engineFailure: Exception) {
+                // 握り潰さない（欠陥5修正）：engine例外をUiStateへ表面化させる。KDoc「暫定転用」
+                // 参照。options空のまま既定の「案なし」導線へ合流させ、固まったまま何も表示されない
+                // 状態を防ぐ。
+                _uiState.value = RecoveryUiState(routingFailureReason = R.string.recovery_no_options_message)
+            }
         }
     }
 
-    private fun buildRecoveryContext(plan: ExecutionPlan): RecoveryContext {
+    /**
+     * 「Use this plan」相当の操作（計画書§7.7・§9エラーマップ#10/#14、Fable 5裁定3）。
+     * §34ガード厳守: 本関数はユーザーの明示タップ起点でのみ呼ばれる契約とし、自動適用経路は
+     * 作らない（呼び出し元は`RecoveryScreen`の「Use this plan」ボタンのみ）。
+     *
+     * - [optionId]が`null`（候補未選択）の場合は何もしない（T-RECVM-7）。
+     * - 既に適用済み（[RecoveryUiState.isPlanApplied]）の場合も何もしない
+     *   （one-shotガード、§9エラーマップ#10、T-RECVM-8）。
+     * - [optionId]が現在の候補一覧に存在しない場合も何もしない（古い／無関係なidの適用防止）。
+     * - [sharedPlanViewModel.confirmedPlan]が`null`の場合も何もしない（T-NAV-4ガードにより
+     *   通常到達しないが、防御的に扱う）。
+     */
+    fun useThisPlan(optionId: UUID?) {
+        if (optionId == null) return
+        if (_uiState.value.isPlanApplied) return
+        val plan = sharedPlanViewModel.confirmedPlan.value ?: return
+        val option = _uiState.value.options.firstOrNull { it.id == optionId } ?: return
+
+        val updatedPlan = recoveryPlanApplier.apply(plan, option)
+        sharedPlanViewModel.confirmPlan(updatedPlan)
+        _uiState.value = _uiState.value.copy(isPlanApplied = true)
+    }
+
+    private suspend fun buildRecoveryContext(plan: ExecutionPlan): RecoveryContext {
         val remainingTravel = Duration.between(plan.departureTime, plan.estimatedArrival).let {
             if (it.isNegative) Duration.ZERO else it
         }
         return RecoveryContext(
-            currentTime = Instant.now(),
-            currentLocation = plan.event.coordinates,
+            currentTime = clock.instant(),
+            currentLocation = resolveCurrentLocation(),
             event = plan.event,
             unfinishedSteps = plan.steps,
             latestTravelEstimate = remainingTravel,
             plannedDepartureTime = plan.departureTime
         )
     }
+
+    /**
+     * 現在地取得（欠陥1修正）。[LocationService]の結果を網羅的に[Coordinate]?へ写像する
+     * （`else`節なしのexhaustive `when`＝サイレント障害防止、`DepartureViewModel`の先例）。
+     * 取得不能（権限拒否／失敗）はいずれも`null`として扱い、D案のみを落として他案は成立させる
+     * （§95.6、T-RECVM-3）。
+     */
+    private suspend fun resolveCurrentLocation(): Coordinate? =
+        when (val result = locationService.currentLocation()) {
+            is LocationResult.Success -> result.coordinate
+            is LocationResult.PermissionDenied -> null
+            is LocationResult.Failure -> null
+        }
 }
 
 /**

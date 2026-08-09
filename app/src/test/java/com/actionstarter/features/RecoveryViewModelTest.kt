@@ -1,0 +1,320 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+
+package com.actionstarter.features
+
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.actionstarter.domain.model.ExecutionEvent
+import com.actionstarter.domain.model.ExecutionPlan
+import com.actionstarter.domain.model.RecoveryContext
+import com.actionstarter.domain.model.RecoveryOption
+import com.actionstarter.domain.model.RecoveryPlan
+import com.actionstarter.domain.valueobject.CalendarSource
+import com.actionstarter.domain.valueobject.Coordinate
+import com.actionstarter.features.recovery.RecoveryUiState
+import com.actionstarter.features.recovery.RecoveryViewModel
+import com.actionstarter.navigation.SharedPlanViewModel
+import com.actionstarter.recovery.RecoveryEngine
+import com.actionstarter.services.location.LocationFailureReason
+import com.actionstarter.services.location.LocationResult
+import com.actionstarter.services.location.LocationService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.time.Clock
+import java.time.Duration
+import java.time.Instant
+import java.time.ZoneOffset
+import java.util.UUID
+
+/**
+ * T-RECVM-1〜5（計画書§8.5、`docs/plans/phase6-recovery-basic.md`）。
+ *
+ * [RecoveryViewModel]は`BasicRecoveryEngine`と異なりP6-C1時点で`TODO()`本体ではなく、
+ * Phase 1由来の実装（`Instant.now()`/`plan.event.coordinates`を直接使う）が現役のまま
+ * 残っている。そのため本ファイルのテストは[com.actionstarter.recovery.RecoveryEngine]の
+ * フェイク実装を注入して`BasicRecoveryEngine`を経由せずに検証し、`NotImplementedError`
+ * ではなく**現行の実装済みロジックに対するassertion failure**としてRedになる
+ * （計画書§0欠陥1・欠陥5の回帰ロック。意図した失敗）。
+ *
+ * ## P6-C3追補: T-RECVM-6/7/8（Fable 5裁定3、C2完了報告の差し戻し事項への回答）
+ * P6-C2完了報告は、`RecoveryViewModel`に「選択候補を適用する」ためのpublicメソッド
+ * （`RecoveryScreen.onUseThisPlan: (UUID?) -> Unit`ラムダの受け皿）が存在しないため
+ * T-RECVM-6/7/8をC2対象外としていた。P6-C3で`fun useThisPlan(optionId: UUID?)`を
+ * `RecoveryViewModel`へscaffold追加した（本体`TODO()`）ため、本追補で3件を追加する。
+ * scaffold時点では`useThisPlan`本体が`TODO()`のため、以下3件は`NotImplementedError`により
+ * Redになるのが正しい（意図した失敗。実装はP6-C3実装フェーズで行う）。
+ *
+ * ## T-RECVM-5に関する限定事項
+ * [RecoveryUiState]には汎用のエラー欄が存在しない（`routingFailureReason: Int?`はD案の
+ * 経路取得失敗専用、`isPlanApplied: Boolean`は適用状態専用）。そのため「engineが例外を
+ * 送出してもUiStateが黙って既定状態のまま留まらない」ことを、既定値`RecoveryUiState()`との
+ * 不一致という最小限のcompilable な形で検証する。C4でエラー欄が追加され次第、具体的な値の
+ * 検証へ強化する必要がある（差し戻し事項）。
+ */
+@RunWith(AndroidJUnit4::class)
+class RecoveryViewModelTest {
+
+    private val testDispatcher = StandardTestDispatcher()
+
+    @Before
+    fun setUp() {
+        Dispatchers.setMain(testDispatcher)
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
+    }
+
+    private fun sampleEvent(coordinates: Coordinate?): ExecutionEvent = ExecutionEvent(
+        id = UUID.randomUUID(),
+        externalCalendarId = null,
+        title = "Product Shoot",
+        notes = null,
+        startDate = Instant.parse("2026-08-10T10:00:00Z"),
+        locationName = "Shibuya",
+        coordinates = coordinates,
+        sourceCalendar = CalendarSource(id = "mock", displayName = "Mock Calendar")
+    )
+
+    private fun samplePlan(
+        eventCoordinates: Coordinate? = Coordinate(lat = 35.0, lon = 139.0)
+    ): ExecutionPlan = ExecutionPlan(
+        event = sampleEvent(eventCoordinates),
+        steps = emptyList(),
+        transitionStart = Instant.parse("2026-08-10T08:30:00Z"),
+        departureTime = Instant.parse("2026-08-10T09:00:00Z"),
+        estimatedArrival = Instant.parse("2026-08-10T09:30:00Z"),
+        arrivalBuffer = Duration.ofMinutes(15)
+    )
+
+    private fun sampleOption(): RecoveryOption = RecoveryOption(
+        id = UUID.randomUUID(),
+        semanticAction = "keep_all_steps",
+        title = "",
+        explanation = "",
+        estimatedArrival = Instant.parse("2026-08-10T09:30:00Z"),
+        skippedStepIds = emptyList()
+    )
+
+    private val alwaysSuccessLocationService = object : LocationService {
+        override suspend fun currentLocation(timeout: Duration): LocationResult =
+            LocationResult.Success(coordinate = Coordinate(lat = 1.0, lon = 2.0), accuracyMeters = 5f, fixedAt = Instant.now())
+    }
+
+    /** [RecoveryContext]を捕捉し、固定の[RecoveryPlan]を返すfake。 */
+    private class CapturingRecoveryEngine(
+        private val result: RecoveryPlan = RecoveryPlan(options = emptyList())
+    ) : RecoveryEngine {
+        var capturedContext: RecoveryContext? = null
+            private set
+        var callCount = 0
+            private set
+
+        override suspend fun createRecoveryPlan(context: RecoveryContext): RecoveryPlan {
+            capturedContext = context
+            callCount++
+            return result
+        }
+    }
+
+    private class ThrowingRecoveryEngine(private val exception: Throwable) : RecoveryEngine {
+        override suspend fun createRecoveryPlan(context: RecoveryContext): RecoveryPlan = throw exception
+    }
+
+    // T-RECVM-1: 正常系 - confirmedPlanからRecoveryContextを構築し、currentTimeが注入Clock由来である
+    @Test
+    fun tRecVm1_currentTime_derivedFromInjectedClock() = runTest(testDispatcher) {
+        val fixedInstant = Instant.parse("2026-08-10T09:15:00Z")
+        val clock = Clock.fixed(fixedInstant, ZoneOffset.UTC)
+        val sharedPlanViewModel = SharedPlanViewModel().apply { confirmPlan(samplePlan()) }
+        val engine = CapturingRecoveryEngine()
+
+        RecoveryViewModel(
+            recoveryEngine = engine,
+            sharedPlanViewModel = sharedPlanViewModel,
+            locationService = alwaysSuccessLocationService,
+            clock = clock
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(fixedInstant, engine.capturedContext?.currentTime)
+    }
+
+    // T-RECVM-2: 異常系 - currentLocationがLocationService由来である
+    // （event.coordinatesを現在地に使わない＝現行バグの回帰ロック）
+    @Test
+    fun tRecVm2_currentLocation_derivedFromLocationServiceNotEventCoordinates() = runTest(testDispatcher) {
+        val locationFromService = Coordinate(lat = 1.0, lon = 2.0)
+        val eventCoordinates = Coordinate(lat = 35.0, lon = 139.0) // 現行バグはこちらを誤って使う
+        val sharedPlanViewModel = SharedPlanViewModel().apply { confirmPlan(samplePlan(eventCoordinates = eventCoordinates)) }
+        val engine = CapturingRecoveryEngine()
+        val locationService = object : LocationService {
+            override suspend fun currentLocation(timeout: Duration): LocationResult =
+                LocationResult.Success(coordinate = locationFromService, accuracyMeters = 5f, fixedAt = Instant.now())
+        }
+
+        RecoveryViewModel(
+            recoveryEngine = engine,
+            sharedPlanViewModel = sharedPlanViewModel,
+            locationService = locationService,
+            clock = Clock.systemUTC()
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(locationFromService, engine.capturedContext?.currentLocation)
+    }
+
+    // T-RECVM-3: エッジケース - 位置取得がPermissionDenied/nullでもoptionsは生成される（D案のみ落ちる）
+    @Test
+    fun tRecVm3_locationPermissionDenied_stillProducesOptionsWithNullCurrentLocation() = runTest(testDispatcher) {
+        val sharedPlanViewModel = SharedPlanViewModel().apply {
+            confirmPlan(samplePlan(eventCoordinates = Coordinate(lat = 35.0, lon = 139.0)))
+        }
+        val engine = CapturingRecoveryEngine(result = RecoveryPlan(options = listOf(sampleOption())))
+        val deniedLocationService = object : LocationService {
+            override suspend fun currentLocation(timeout: Duration): LocationResult = LocationResult.PermissionDenied
+        }
+
+        val viewModel = RecoveryViewModel(
+            recoveryEngine = engine,
+            sharedPlanViewModel = sharedPlanViewModel,
+            locationService = deniedLocationService,
+            clock = Clock.systemUTC()
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertNull(engine.capturedContext?.currentLocation)
+        assertTrue(viewModel.uiState.value.options.isNotEmpty())
+    }
+
+    // T-RECVM-4: エッジケース - confirmedPlan == null → クラッシュせずoptions空＋案内状態になる
+    @Test
+    fun tRecVm4_noConfirmedPlan_doesNotCrashAndKeepsOptionsEmpty() = runTest(testDispatcher) {
+        val sharedPlanViewModel = SharedPlanViewModel() // confirmedPlan未設定のまま
+        val engine = CapturingRecoveryEngine()
+
+        val viewModel = RecoveryViewModel(
+            recoveryEngine = engine,
+            sharedPlanViewModel = sharedPlanViewModel,
+            locationService = alwaysSuccessLocationService,
+            clock = Clock.systemUTC()
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(0, engine.callCount)
+        assertTrue(viewModel.uiState.value.options.isEmpty())
+    }
+
+    // T-RECVM-5: 異常系 - engineが例外を送出 → UiStateにエラー理由が現れ、握り潰されない
+    @Test
+    fun tRecVm5_engineThrows_doesNotSilentlySwallowFailure() = runTest(testDispatcher) {
+        val sharedPlanViewModel = SharedPlanViewModel().apply { confirmPlan(samplePlan()) }
+        val engine = ThrowingRecoveryEngine(RuntimeException("simulated engine failure"))
+
+        val viewModel = RecoveryViewModel(
+            recoveryEngine = engine,
+            sharedPlanViewModel = sharedPlanViewModel,
+            locationService = alwaysSuccessLocationService,
+            clock = Clock.systemUTC()
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // 汎用エラー欄が存在しないため、既定状態のまま留まっていない（=握り潰されていない）ことを
+        // 最小限の形で固定する（ファイル冒頭KDoc「T-RECVM-5に関する限定事項」参照）。
+        assertNotEquals(RecoveryUiState(), viewModel.uiState.value)
+    }
+
+    // T-RECVM-6: 正常系 - 「Use this plan」でRecoveryPlanApplierを経由しSharedPlanViewModel
+    // .confirmPlanが呼ばれ、適用後のPlanが反映される（Fable 5裁定3）。
+    // SharedPlanViewModelはfinalクラスでありspyできないため、呼び出し「回数」ではなく
+    // confirmedPlan.valueが適用結果（option.estimatedArrivalへの転記・時刻再計算）へ実際に
+    // 更新されることを観測可能な形で検証する。useThisPlan自体は早期returnガードのみで
+    // 構成される直線的な処理のため、1回の呼び出しでconfirmPlanは高々1回しか呼ばれ得ない。
+    @Test
+    fun tRecVm6_useThisPlan_appliesSelectedOptionAndConfirmsUpdatedPlan() = runTest(testDispatcher) {
+        val originalPlan = samplePlan()
+        val sharedPlanViewModel = SharedPlanViewModel().apply { confirmPlan(originalPlan) }
+        val option = sampleOption() // skippedStepIds=空、estimatedArrival=2026-08-10T09:30:00Z
+        val engine = CapturingRecoveryEngine(result = RecoveryPlan(options = listOf(option)))
+        val fixedClock = Clock.fixed(Instant.parse("2026-08-10T09:12:00Z"), ZoneOffset.UTC)
+
+        val viewModel = RecoveryViewModel(
+            recoveryEngine = engine,
+            sharedPlanViewModel = sharedPlanViewModel,
+            locationService = alwaysSuccessLocationService,
+            clock = fixedClock
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.useThisPlan(option.id)
+
+        val confirmedAfterApply = sharedPlanViewModel.confirmedPlan.value
+        assertNotEquals(originalPlan, confirmedAfterApply)
+        // estimatedArrivalはoption.estimatedArrivalがそのまま転記される（裁定2の設計と整合）。
+        assertEquals(option.estimatedArrival, confirmedAfterApply?.estimatedArrival)
+        // departureTimeは注入Clock起点で再計算される（steps=空のためremainingPreparation=0）。
+        assertEquals(Instant.parse("2026-08-10T09:12:00Z"), confirmedAfterApply?.departureTime)
+    }
+
+    // T-RECVM-7: 異常系 - 候補未選択（optionId=null）のまま確定操作 → 何も適用されず
+    // confirmPlanが呼ばれない（§34）
+    @Test
+    fun tRecVm7_useThisPlanWithNullOptionId_doesNotApplyAnyPlan() = runTest(testDispatcher) {
+        val originalPlan = samplePlan()
+        val sharedPlanViewModel = SharedPlanViewModel().apply { confirmPlan(originalPlan) }
+        val option = sampleOption()
+        val engine = CapturingRecoveryEngine(result = RecoveryPlan(options = listOf(option)))
+
+        val viewModel = RecoveryViewModel(
+            recoveryEngine = engine,
+            sharedPlanViewModel = sharedPlanViewModel,
+            locationService = alwaysSuccessLocationService,
+            clock = Clock.systemUTC()
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.useThisPlan(null)
+
+        assertEquals(originalPlan, sharedPlanViewModel.confirmedPlan.value)
+        assertFalse(viewModel.uiState.value.isPlanApplied)
+    }
+
+    // T-RECVM-8: 正常系 - 適用後は再突入抑止フラグ(isPlanApplied)が立つ（無限ループ防止、
+    // §9エラーマップ#10）。同一フラグにより2回目のuseThisPlan呼び出しは何も適用しない
+    // （one-shotガード）。
+    @Test
+    fun tRecVm8_afterApplyingPlan_setsIsPlanAppliedFlagAndGuardsAgainstReapplication() = runTest(testDispatcher) {
+        val originalPlan = samplePlan()
+        val sharedPlanViewModel = SharedPlanViewModel().apply { confirmPlan(originalPlan) }
+        val option = sampleOption()
+        val engine = CapturingRecoveryEngine(result = RecoveryPlan(options = listOf(option)))
+
+        val viewModel = RecoveryViewModel(
+            recoveryEngine = engine,
+            sharedPlanViewModel = sharedPlanViewModel,
+            locationService = alwaysSuccessLocationService,
+            clock = Clock.systemUTC()
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.useThisPlan(option.id)
+        assertTrue(viewModel.uiState.value.isPlanApplied)
+        val planAfterFirstApply = sharedPlanViewModel.confirmedPlan.value
+
+        viewModel.useThisPlan(option.id) // 2回目（one-shotガードにより無視されるべき）
+
+        assertEquals(planAfterFirstApply, sharedPlanViewModel.confirmedPlan.value)
+    }
+}

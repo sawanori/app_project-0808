@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  probe専用マニフェスト・正式テストではない。
+
+  Phase 5計画書（docs/plans/phase5-notification-execution.md）§10.2が
+  P5-C1で「エミュレータ待ち」として延期したP5-P1・P5-P2(a)(b)を実機
+  （AVD actionstarter_test, API 35）で実測するための使い捨てAndroidTest用
+  マニフェスト。AGPのテストAPK既定命名規則により、この宣言はテストAPK
+  （applicationId既定 "com.actionstarter.test"）にのみマージされ、
+  本番 app/src/main/AndroidManifest.xml には一切影響しない
+  （本番Manifestはこのタスク中変更禁止・実際に無変更のまま）。
+
+  本ファイルはFOREGROUND_SERVICE系probe（P5-P2）を常設できる状態で維持する。
+  P5-P1のSCHEDULE_EXACT_ALARM/USE_EXACT_ALARM宣言比較は、実測時に本ファイルを
+  一時的に書き換えて2バリアントを追加実行し、結果をbuild/agent-logs/
+  p5-probes-device.md に記録したうえで、このbaseline版（どちらも宣言しない
+  ＝本番app/src/main/AndroidManifest.xmlの現状(M5-15)と同じ状態）へ復元して
+  ある。差分バリアントの正確な宣言内容は上記ログに転記済み。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- P5-P2(a)(b) FGS probe用の基礎権限。両方ともnormal permission
+         （pm grant不要、宣言のみで自動許可）。FOREGROUND_SERVICE_LOCATIONは
+         API34+でforegroundServiceType="location"を使うために必須
+         （declareしないとMissingForegroundServiceTypeException系の構造的
+         エラーになり、位置権限の有無とは無関係な失敗要因が混入するため必須）。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!-- P5-P2(b)（FOREGROUND_SERVICE_TYPE_NONE挙動）実測時に「位置権限あり」状態を
+         作るために宣言（dangerous permissionなのでこの宣言だけでは自動許可されず、
+         実測時に `adb shell pm grant com.actionstarter.test <perm>` で
+         明示的に付与してから使う）。P5-P2(a)（未許可ケース）は、この宣言があっても
+         pm grantしなければ「未許可」のままなので、宣言の有無ではなく
+         pm grant/revokeで(a)(b)の権限状態を切り替える。 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <application>
+        <!-- P5-P2 probe: (a)位置権限なしでFOREGROUND_SERVICE_TYPE_LOCATION起動時の
+             例外実測、(b)FOREGROUND_SERVICE_TYPE_NONE指定時の挙動実測の両方を
+             1サービスで賄う（modeはIntent extraで切替。詳細はFgsTypeProbeServiceの
+             KDoc参照）。exported="true"は `adb shell am start-foreground-service`
+             から直接起動するため（本APKはテスト専用でPlay配布されずexported policyの
+             対象外）。 -->
+        <service
+            android:name="com.actionstarter.probe.FgsTypeProbeService"
+            android:foregroundServiceType="location"
+            android:exported="true" />
+    </application>
+</manifest>

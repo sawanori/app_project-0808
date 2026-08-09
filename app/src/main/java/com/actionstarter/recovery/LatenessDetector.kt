@@ -1,5 +1,6 @@
 package com.actionstarter.recovery
 
+import com.actionstarter.domain.model.ExecutionStepType
 import com.actionstarter.domain.model.RecoveryContext
 import java.time.Duration
 import java.time.Instant
@@ -40,10 +41,35 @@ sealed interface LatenessVerdict {
  * 評価APIの提供のみを行う。Phase 5がstep progression（Done/Snooze）実装後にこれを呼び出す契機を
  * 追加する（§7.6申し送り）。
  *
- * ロジック本体はP6-C3で実装する（TDD厳守。T-LATE-1〜10。本ファイルはP6-C1時点では宣言のみ）。
+ * P6-C3実装（T-LATE-1〜10）。計画書§7.2のR_all定義（TRANSITION/PREPARATIONのみ・
+ * `completedAt == null`のみを合算）をそのまま流用する（`BasicRecoveryEngine`と同一の
+ * 決定的計算式。§13「数値計算は必ず通常コード」）。
  */
 object LatenessDetector {
     fun evaluate(context: RecoveryContext): LatenessVerdict {
-        TODO("P6-C3で実装（§7.6・§7.2、T-LATE-1〜10）")
+        require(!context.latestTravelEstimate.isNegative) {
+            "RecoveryContext.latestTravelEstimate must not be negative, was ${context.latestTravelEstimate}"
+        }
+
+        val remainingPreparation = context.unfinishedSteps
+            .filter {
+                it.completedAt == null &&
+                    (it.type == ExecutionStepType.TRANSITION || it.type == ExecutionStepType.PREPARATION)
+            }
+            .fold(Duration.ZERO) { acc, step -> acc.plus(step.estimatedDuration) }
+
+        val projectedArrival: Instant = context.currentTime
+            .plus(remainingPreparation)
+            .plus(context.latestTravelEstimate)
+
+        return if (!projectedArrival.isAfter(context.event.startDate)) {
+            LatenessVerdict.OnTrack
+        } else {
+            LatenessVerdict.WillMissEvent(
+                delay = Duration.between(context.event.startDate, projectedArrival),
+                projectedArrival = projectedArrival,
+                behindSchedule = context.currentTime.isAfter(context.plannedDepartureTime)
+            )
+        }
     }
 }

@@ -15,11 +15,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.actionstarter.R
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.UUID
 
 /**
@@ -33,11 +38,27 @@ import java.util.UUID
  * testTag規約: 各候補行を "recovery_option_item_<id>" 形式で付与する（T-REC-2/4/5）。
  * 行はテキスト検証のため`mergeDescendants = true`で子Textのセマンティクスをマージする。
  *
- * **P6-C1 scaffold注記（計画書§6.2・§10）**: [onUseThisPlan]は本サイクルで追加したラムダで、
- * 既定値`{}`により`ActionStarterNavHost`・`RecoveryScreenTest`の既存呼び出し（2引数のみ）が
- * 無変更でコンパイルを維持できるようにしている。現時点ではcomposable本体から一切呼び出して
- * いない（挙動変更なし）。P6-C4で「Use this plan」タップ時に選択中の`selectedId`を渡して
- * 呼び出す配線（`RecoveryPlanApplier`経由の適用、T-RECVM-6/7）を実装する。
+ * **P6-C3/C4実装（計画書§6.2・§7.7・F77）**: 各候補にETA行を追加した（§32、
+ * `testTag("recovery_option_eta_<id>")`、T-RECUI-1/4/8）。`estimatedArrival == null`の候補は
+ * ETA行を描画しない（偽値を表示しない、T-RECUI-8）。時刻フォーマットは`DepartureScreen.kt`の
+ * `DepartureEtaSection`と同じ`DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)`
+ * ＋`LocalConfiguration.current.locales[0]`パターンを踏襲する。
+ *
+ * **title/explanationは意図的に[resolveRecoveryOptionTitle]／[resolveRecoveryOptionExplanation]
+ * へ切り替えていない**（既存`RecoveryOption.title`／`explanation`フィールドを直接表示したまま）。
+ * 理由: 既存`RecoveryScreenTest.tRec2_threeOptions_allDisplayed`が
+ * `onNodeWithText(option.title)`で`option.title`の**実テキスト**の表示を検証しており、
+ * そのテスト固定値（"Leave now"等、semanticActionは"leave_now"等の非既知キー）は
+ * `resolveRecoveryOptionTitle`の既知4キーに一致しないため、切り替えると
+ * `RecoveryScreenTest`（本サイクルでの変更が許可されていない既存テスト）を破壊する。
+ * この結果、`MockRecoveryFactory`が現役の間（AppContainer未差替のP6-C3/C4時点）は
+ * 従来どおり`option.title`/`explanation`のハードコード英語がそのまま表示される
+ * （回帰ではない。C5で`BasicRecoveryEngine`に差し替わり`title`/`explanation`が空文字固定に
+ * なった時点で、本Screenを`resolveRecoveryOptionTitle`/`resolveRecoveryOptionExplanation`へ
+ * 結線し直す必要がある。完了報告のC5申し送り参照）。
+ *
+ * [onUseThisPlan]は「Use this plan」タップ時に選択中の`selectedId`を渡して呼び出す
+ * （`RecoveryPlanApplier`経由の適用、`RecoveryViewModel.useThisPlan`、T-RECVM-6/7）。
  */
 @Composable
 fun RecoveryScreen(
@@ -48,6 +69,8 @@ fun RecoveryScreen(
     var selectedId by rememberSaveable(uiState.selectedOptionId) {
         mutableStateOf(uiState.selectedOptionId)
     }
+    val locale = LocalConfiguration.current.locales[0]
+    val etaTimeFormatter = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale)
 
     Column(
         modifier = Modifier
@@ -83,13 +106,25 @@ fun RecoveryScreen(
                         Column {
                             Text(text = option.title, style = MaterialTheme.typography.titleMedium)
                             Text(text = option.explanation, style = MaterialTheme.typography.bodyMedium)
+                            val eta = option.estimatedArrival
+                            if (eta != null) {
+                                Text(
+                                    text = stringResource(R.string.recovery_option_eta_label) + " " +
+                                        etaTimeFormatter.format(ZonedDateTime.ofInstant(eta, ZoneId.systemDefault())),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.testTag("recovery_option_eta_${option.id}")
+                                )
+                            }
                         }
                     }
                 }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = onNavigateToExecution) {
+                Button(onClick = {
+                    onUseThisPlan(selectedId)
+                    onNavigateToExecution()
+                }) {
                     Text(text = stringResource(R.string.recovery_use_this_plan_button))
                 }
                 Button(onClick = { /* Phase 1: 候補切替は表示のみ（画面内で完結） */ }) {

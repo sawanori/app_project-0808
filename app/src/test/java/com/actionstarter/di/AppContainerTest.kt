@@ -3,6 +3,7 @@ package com.actionstarter.di
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.actionstarter.planning.BasicPlanningEngine
+import com.actionstarter.recovery.BasicRecoveryEngine
 import com.actionstarter.services.calendar.CalendarService
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -32,6 +33,17 @@ import java.io.File
  * src/mainソース走査」という本クラスの既存スコープに、Phase 4の構成差し替え検証
  * （`planningEngine`の実装型・`MockPlanFactory.kt`の非存在）を追加する。[resolveMockPackageDir]
  * を再利用する。
+ *
+ * **P6-C2追補（`docs/plans/phase6-recovery-basic.md`§8.7 F78構成差し替え、T-P6DI-1／2、
+ * §4.2 U-6で承認済みの既存テスト変更）**: T-P4DI-1/2と同型の観点をPhase 6の`recoveryEngine`
+ * （`MockRecoveryFactory` → `BasicRecoveryEngine`、P6-C5統合ウィンドウで差し替え予定）へ拡張する。
+ * [tP6Di1_recoveryEngine_isBasicRecoveryEngineType]は本ファイル作成時点（P6-C2）で
+ * `AppContainer.recoveryEngine`が依然`MockRecoveryFactory()`のままのためRedになるのが正しい。
+ * [tP6Di2_mockRecoveryFactoryKtFile_doesNotExistUnderSrcMain]は`mock/MockRecoveryFactory.kt`が
+ * P6-C5統合ウィンドウでの削除待ちのため存在しており、同じくRedになるのが正しい。
+ * 計画書§9エラーマップ#20（`mock/`ディレクトリ自体が消滅した場合の[resolveMockPackageDir]の
+ * hard fail回避）はP6-C5で`resolveMockPackageDir`自体を修正する対象であり、本サイクル（P6-C2）
+ * では現行の`resolveMockPackageDir`をそのまま再利用する（差し戻し事項は完了報告を参照）。
  */
 @RunWith(AndroidJUnit4::class)
 class AppContainerTest {
@@ -105,6 +117,41 @@ class AppContainerTest {
         assertFalse(
             "mock/MockPlanFactory.ktがsrc/mainに存在しています（P4-C5統合ウィンドウ未履行のため " +
                 "現時点ではRedが正しい）: " + target.absolutePath,
+            target.isFile
+        )
+    }
+
+    // T-P6DI-1（計画書§8.7 F78構成差し替え、`docs/plans/phase6-recovery-basic.md`）:
+    // 正常系 - AppContainer.recoveryEngineの型がBasicRecoveryEngineである（MockRecoveryFactoryで
+    // はない）。現状（P6-C2時点）AppContainer.recoveryEngineは依然MockRecoveryFactory()のまま
+    // （P6-C5統合ウィンドウで差し替え予定）のためRedになるのが正しい。
+    @Test
+    fun tP6Di1_recoveryEngine_isBasicRecoveryEngineType() {
+        val container = AppContainer(ApplicationProvider.getApplicationContext())
+
+        val engine = container.recoveryEngine
+
+        assertTrue(
+            "AppContainer.recoveryEngineの型がBasicRecoveryEngineではありません" +
+                "（実際: ${engine::class.qualifiedName}）。P6-C5でMockRecoveryFactory()から" +
+                "BasicRecoveryEngine(...)への差し替えが必要です。",
+            engine is BasicRecoveryEngine
+        )
+    }
+
+    // T-P6DI-2（計画書§8.7 F78構成差し替え）: 異常系 -
+    // com.actionstarter.mock.MockRecoveryFactoryがsrc/mainに存在しないこと（削除の走査確認）。
+    // T-P4DI-2と同じ方式（ディレクトリ非存在ではなくクラス非存在で検証）。現状（P6-C2時点）
+    // mock/MockRecoveryFactory.ktはP6-C5統合ウィンドウでの削除待ちのため存在しており、
+    // 本テストはRedになるのが正しい。
+    @Test
+    fun tP6Di2_mockRecoveryFactoryKtFile_doesNotExistUnderSrcMain() {
+        val mockPackageDir = resolveMockPackageDir()
+        val target = File(mockPackageDir, "MockRecoveryFactory.kt")
+
+        assertFalse(
+            "mock/MockRecoveryFactory.ktがsrc/mainに存在しています（P6-C5統合ウィンドウ未履行の" +
+                "ため現時点ではRedが正しい）: " + target.absolutePath,
             target.isFile
         )
     }

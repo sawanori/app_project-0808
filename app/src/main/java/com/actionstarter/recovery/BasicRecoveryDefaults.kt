@@ -24,20 +24,19 @@ object BasicRecoveryDefaults {
 
     /**
      * D案生成時に現在の移動手段が不明な場合の既定値（S-3・§4.2 U-4）。
-     * P6-C3で実装（`TRANSIT`を返す）。
      */
     val DEFAULT_TRANSPORT_MODE: TransportMode
-        get() = TODO("P6-C3で実装（§7.5：既定値TRANSIT、DepartureUiState.kt:50の実測既定値と一致させる）")
+        get() = TransportMode.TRANSIT
 
     /**
      * 決定的な代替移動手段テーブル（§7.5）。該当なしの場合は`null`を返す契約とする
      * （4モードすべてを網羅する固定テーブルのため実際にはnullは発生しない想定だが、
-     * 将来のモード追加に対して安全側に倒す）。P6-C3で実装。
+     * 将来のモード追加に対して安全側に倒す）。
      */
-    fun alternativeTransportMode(current: TransportMode): TransportMode? {
-        TODO(
-            "P6-C3で実装（§7.5：TRANSIT→DRIVING／WALKING→TRANSIT／CYCLING→TRANSIT／" +
-                "DRIVING→TRANSIT の決定的テーブル）"
-        )
+    fun alternativeTransportMode(current: TransportMode): TransportMode? = when (current) {
+        TransportMode.TRANSIT -> TransportMode.DRIVING
+        TransportMode.WALKING -> TransportMode.TRANSIT
+        TransportMode.CYCLING -> TransportMode.TRANSIT
+        TransportMode.DRIVING -> TransportMode.TRANSIT
     }
 }
