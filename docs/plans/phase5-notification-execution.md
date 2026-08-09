@@ -458,6 +458,40 @@ E2E群は実行するまでpassとして報告することを禁止し、G2／G3
 
 **P5-P7についての注記**: Fable 5はS-2について推奨案どおり「③手動DI継続」を承認した（§4）。したがってP5-P7の実施条件（S-2で①が選ばれた場合）は満たされず、**本Phaseの承認済み計画ではP5-P7を実施しない**。将来①を再検討する場合にのみ再度実施対象となる。
 
+### 10.3 P5-C1実測結果（probe・ベースライン再実測・scaffold、2026-08-09、domain-implementer）
+
+**実施条件**: 本サイクルはP3-C9がエミュレータを専有中のため、エミュレータ・adb使用禁止の制約下で実施した。実機/エミュレータ必須のprobeは実行せず延期し、JVM/Robolectricで代替できるものは代替実行した（下表）。Gradleロック競合は本サイクル中発生しなかった（コンパイル・全probe・回帰実行いずれも初回試行で成功）。
+
+**ベースライン再実測（R-1対応）**: M5-16はディスク上の既存成果物の読み取り（本セッション未実行）だったため、本サイクルで`./gradlew :app:testDebugUnitTest --rerun`を実行し実測した。結果は**tests=245 / failures=0 / errors=0 / skipped=1**（JUnit XML 39ファイルの`tests=`/`failures=`/`errors=`/`skipped=`属性を集計。ログ: `build/agent-logs/p5c1-regression.log`）。M5-16の239件から+6件の増加は、P3-C9が並行してPhase 3側のテストを追加していることによるものと推測される（本タスクの指示どおり、絶対件数ではなく「失敗0」を判定基準とした。skipped=1はM5-16時点と同数で変化なし）。
+
+**probe実測結果**:
+
+| # | 結果 | 実測方法・根拠 |
+|---|---|---|
+| P5-P1 | **延期（エミュレータ必要）**。未実測 | エミュレータ（API 35実機/AVD）でのみ観測可能な`canScheduleExactAlarms()`初期値・`Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM`解決可否のため、本サイクルでは実施しない。フォールバック実装（inexact分岐）は実装必須のまま変わらない（§10.2既定方針どおり） |
+| P5-P2 | **(a)(b)ともに延期（実機/エミュレータ必要）。JVM代替は試みたが決定的でない** | `shadows-framework-4.16.1.jar`の`ShadowService`を`javap`で確認したところ、`startForeground(int, Notification, int) throws Exception`は`exceptionForStartForeground`（`setThrowInStartForeground`で手動設定した例外のみ）を投げる実装であり、位置権限やmanifest宣言typeとの整合性を検証するロジックは一切存在しない。実際に位置権限未許可の状態で`Robolectric.buildService()`＋`ServiceCompat.startForeground(..., FOREGROUND_SERVICE_TYPE_LOCATION)`を呼び出したところ**例外は一切発生しなかった**（threw=NOTHING、sdk=35。使い捨てprobeテストで実行・確認後に削除）。これは「Robolectricは(a)(b)いずれの実機バリデーションもシミュレートしない」ことの実測確認であり、(a)実際の例外種別・(b)`FOREGROUND_SERVICE_TYPE_NONE`時の挙動は引き続き未確定。R-2の方針どおり、結果が出るまでP5-C2のT-FGS群は着手しない |
+| P5-P3 | **実測完了（JVM/Robolectric代替）** | 使い捨てprobeテスト（Robolectric、実行後削除）で実測。①`canScheduleExactAlarms=true`時、実`AlarmManager.setExactAndAllowWhileIdle`は`windowLengthMs=0`（`=ShadowAlarmManager.WINDOW_EXACT`）・`isAllowWhileIdle=true`で記録される。②**`canScheduleExactAlarms=false`時も実`setExactAndAllowWhileIdle`は例外を投げず、`windowLengthMs=0`（exact）のまま黙って記録する**（threw=null）——すなわち**exact可否の判定とAPI選択（exact／inexactいずれを呼ぶか）は呼び出し側が`canScheduleExactAlarms()`を明示チェックして行う必要があり、実行結果からの自動判別・自動フォールバックはOSシャドー層では一切起きない。この実測結果は`AlarmScheduler`/`AlarmManagerAlarmScheduler`のKDocへ反映済み**。③実`setAndAllowWhileIdle`（inexact API）は`windowLengthMs=-1`（`=WINDOW_HEURISTIC`）で記録される。④`setAutoSchedule`の既定値は対応するpublicゲッターが存在せず（`javap`で確認）、直接観測不能——本番コードが`fireAlarm`を呼ばないため実装上の影響はないと判断し、これ以上の追跡は行わない |
+| P5-P4 | **実測完了・肯定（JVM/Robolectric）** | 使い捨てprobeテストで実測。`NotificationManagerCompat.createNotificationChannel`／`.notify(id, notification)`は`ShadowNotificationManager`に捕捉される（`getAllNotifications().size=1`／`getNotificationChannels().size=1`／`getNotification(id)`から投入したタイトルを取得可能）。Compat経由でもshadowが効くことを確認したため、`NotificationManagerCompat`を自前seamでラップする必要はない |
+| P5-P5 | **延期（2つの独立した制約により本サイクルでは実施不能）** | JVM側（manifest登録Receiverへの配送）は`<receiver>`宣言がAndroidManifest.xml側に必要だが、Manifest変更はP5-C6統合ウィンドウに予約されており本サイクルの制約で変更禁止のため、意味のある実測ができない（宣言なしでは「配送できない」という自明な結果にしかならない）。adb側は本タスクの制約（エミュレータ使用禁止）により実施しない。両半分ともP5-C6（Manifest確定後）／エミュレータ利用可能後に再実施が必要 |
+| P5-P6 | **実測完了・肯定（JVM/Robolectric）** | 使い捨てprobeテストで実測。`Robolectric.buildService(ProbeService::class.java).create()`で得たServiceに対し`ServiceCompat.startForeground(service, id, notification, FOREGROUND_SERVICE_TYPE_LOCATION)`を呼び、実`Service.getForegroundServiceType()`を読み出すと`8`（`=FOREGROUND_SERVICE_TYPE_LOCATION`）が返り、渡したtypeと一致した（sdk=35、threw=null、lastForegroundNotificationId=7、isForegroundStopped=false）。T-FGS-1相当の検証はJVMで固定可能と確認 |
+| P5-P7 | **非該当（実施しない）** | §10.2既存注記のとおりS-2は③（手動DI継続）採用のため実施条件を満たさない。変更なし |
+
+**scaffold（契約宣言、全12ファイル、domain-implementer担当分。§6.1どおり）**:
+
+`services/notification/NotificationService.kt`（`NotificationKind`・`NotificationPayload`・`ScheduleResult`・`NotifyResult`・`DegradationReason`・`ScheduleSkipReason`を含む）・`AlarmScheduler.kt`（`AlarmTrigger`・`AlarmScheduleOutcome`を含む）・`AlarmManagerAlarmScheduler.kt`・`NotificationTriggerReceiver.kt`・`ScheduleRestoreReceiver.kt`・`NotificationDefaults.kt`・`NotificationContentBuilder.kt`・`AndroidNotificationService.kt`／`persistence/ExecutionScheduleStore.kt`（`ExecutionScheduleLoadResult`・`ExecutionScheduleRecord`・`Trigger`を含む）・`SharedPreferencesExecutionScheduleStore.kt`／`services/execution/ExecutionForegroundService.kt`・`ExecutionServiceController.kt`（`ExecutionServiceStartResult`・`ExecutionServiceSkipReason`を含む）。
+
+全て本体`TODO()`。**唯一の例外は`ExecutionServiceController.isRunning`**（計画書§10.1 P5-C1行の指示どおり、`var isRunning: Boolean = false private set`として完全実装。`start`/`stop`自体は`TODO()`のまま）。`i18n/StepTitleKeys.kt`（ui-implementer担当）・全テストファイル（test-writer担当・P5-C2）は本サイクルの対象外であり作成していない。
+
+**契約scaffoldでシグネチャ未定義箇所を補完した箇所（ADR-0022と同型の対応。DECISIONS.mdへのADR記録自体は本サイクルの制約対象外のため実施せず、P5-C6統合ウィンドウでの記録要否をFable 5の判断に委ねる）**:
+- `NotificationService`に計画書§7.3が明記しなかった4番目のメソッド`restoreFromStore(): ScheduleResult`を追加（F54のboot再登録がPIIゼロの`ExecutionScheduleRecord`のみから行われ、`schedule(plan: ExecutionPlan)`とは別経路が必要なため）。
+- `DegradationReason`を`services/notification/`と`services/execution/`で共有する横断的な型として設計（エラー&レスキューマップ#5・#6が`FOREGROUND_SERVICE_UNAVAILABLE`をFGS起動失敗の文脈でも使うため）。
+- `ExecutionScheduleStore.loadAll()`の戻り値を`List<ExecutionScheduleRecord>`ではなく`ExecutionScheduleLoadResult`（`records`＋`discardedCount`）とした（エラー&レスキューマップ#12「結果型で『破棄した』ことを返す」の明文要求に対応するため、単純なリストでは表現不能）。
+これらはP5-C2（Red）でのテスト設計時に見直しの余地がある想定であり、確定した契約ではない。
+
+**検証結果**:
+- コンパイル: `./gradlew :app:compileDebugKotlin :app:compileDebugUnitTestKotlin` → **BUILD SUCCESSFUL**（ログ: `build/agent-logs/p5c1-compile.log`）。
+- 回帰: `./gradlew :app:testDebugUnitTest --rerun` → **BUILD SUCCESSFUL、tests=245 / failures=0 / errors=0 / skipped=1**（ログ: `build/agent-logs/p5c1-regression.log`）。既存テストへの回帰なし。
+
 ---
 
 ## 11. リスク

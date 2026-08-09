@@ -20,6 +20,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.actionstarter.R
+import java.util.UUID
 
 /**
  * 仕様§31-34・§35 Screen5準拠（Plan updated画面）。最大の独自価値。
@@ -31,11 +32,18 @@ import com.actionstarter.R
  *
  * testTag規約: 各候補行を "recovery_option_item_<id>" 形式で付与する（T-REC-2/4/5）。
  * 行はテキスト検証のため`mergeDescendants = true`で子Textのセマンティクスをマージする。
+ *
+ * **P6-C1 scaffold注記（計画書§6.2・§10）**: [onUseThisPlan]は本サイクルで追加したラムダで、
+ * 既定値`{}`により`ActionStarterNavHost`・`RecoveryScreenTest`の既存呼び出し（2引数のみ）が
+ * 無変更でコンパイルを維持できるようにしている。現時点ではcomposable本体から一切呼び出して
+ * いない（挙動変更なし）。P6-C4で「Use this plan」タップ時に選択中の`selectedId`を渡して
+ * 呼び出す配線（`RecoveryPlanApplier`経由の適用、T-RECVM-6/7）を実装する。
  */
 @Composable
 fun RecoveryScreen(
     uiState: RecoveryUiState,
-    onNavigateToExecution: () -> Unit
+    onNavigateToExecution: () -> Unit,
+    onUseThisPlan: (UUID?) -> Unit = {}
 ) {
     var selectedId by rememberSaveable(uiState.selectedOptionId) {
         mutableStateOf(uiState.selectedOptionId)
