@@ -41,6 +41,14 @@ import com.actionstarter.features.common.resolveStepTitle
  *
  * testTag規約: 現在ステップComposableに"step_item_<id>"形式のtestTagを付与する
  * （T-EXEC-2実装注記）。
+ *
+ * **P5-C8追加（劣化状態の可視化バナー、仕様§95「精度低下の明示」）**: [ExecutionUiState.
+ * isExactAlarmDegraded]／[ExecutionUiState.isNotificationPermissionDenied]／
+ * [ExecutionUiState.isForegroundServiceDegraded]はExecutionViewModel側（P5-C2b/C3）で
+ * 既に算出済みだったが、本Composableが未描画のままだった（`docs/plans/
+ * phase5-notification-execution.md`§10.6申し送り）ため、[ExecutionDegradationBanners]で
+ * 描画を追加した。currentStepがnullの早期return経路（departure/eventSelectionへの自動遷移）
+ * では描画しない（ONE ACTION原則・既存契約は不変）。
  */
 @Composable
 fun ExecutionScreen(
@@ -99,10 +107,51 @@ fun ExecutionScreen(
             }
         }
 
+        ExecutionDegradationBanners(uiState = uiState)
+
         if (BuildConfig.DEBUG) {
             Button(onClick = onNavigateToRecovery) {
                 Text(text = stringResource(R.string.execution_simulate_delay_debug_button))
             }
         }
+    }
+}
+
+/**
+ * 劣化状態の可視化バナー（P5-C8、仕様§95「精度低下の明示」）。3フラグは独立に立ちうるため
+ * （例: exact alarm未許可とPOST_NOTIFICATIONS拒否が同時に成立）、いずれも排他にせず
+ * 該当するものを全て表示する。§63「color-only情報禁止」に従い、警告色
+ * （[MaterialTheme.colorScheme.error]）に加え必ず文言を伴わせる。
+ *
+ * testTagはT-P5E2E-3（計画書§8.9、androidTest）が予測する
+ * "execution_exact_alarm_degraded_banner" に実装側を合わせた（E2E側は変更しない）。
+ * 他2種（"execution_notification_permission_banner"／"execution_fgs_degraded_banner"）は
+ * 同一の命名規約を踏襲した。
+ */
+@Composable
+private fun ExecutionDegradationBanners(uiState: ExecutionUiState) {
+    if (uiState.isExactAlarmDegraded) {
+        Text(
+            text = stringResource(R.string.execution_exact_alarm_degraded_message),
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.testTag("execution_exact_alarm_degraded_banner")
+        )
+    }
+    if (uiState.isNotificationPermissionDenied) {
+        Text(
+            text = stringResource(R.string.execution_notification_permission_denied_message),
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.testTag("execution_notification_permission_banner")
+        )
+    }
+    if (uiState.isForegroundServiceDegraded) {
+        Text(
+            text = stringResource(R.string.execution_foreground_service_degraded_message),
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.testTag("execution_fgs_degraded_banner")
+        )
     }
 }

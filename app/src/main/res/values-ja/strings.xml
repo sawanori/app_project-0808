@@ -54,6 +54,14 @@
     <string name="execution_restored_snackbar_message">進行状況を復元できませんでした。もう一度予定を選び直してください。</string>
     <!-- C4（ui-implementer）: Plan注入（C5）までの間の暫定ステップタイトルのフォールバック文言。 -->
     <string name="execution_placeholder_step_title">次のステップ</string>
+    <!-- P5-C8（ui-implementer/test-writer）: 劣化状態の可視化バナー（仕様§95「精度低下の明示」）。
+         ExecutionUiState.isExactAlarmDegraded／isNotificationPermissionDenied／
+         isForegroundServiceDegradedはExecutionViewModel側（P5-C2b/C3）で算出済みだったが、
+         ExecutionScreenが一切描画していなかった（docs/plans/phase5-notification-execution.md
+         §10.6申し送り）。文言はエラー＆レスキューマップ（§9）のF51/F52/F56-F57該当行に準拠。 -->
+    <string name="execution_exact_alarm_degraded_message">正確なアラームが許可されていないため、通知が数分遅れることがあります。</string>
+    <string name="execution_notification_permission_denied_message">通知がオフになっています。次のアクションを確認するにはアプリを開いたままにしてください。</string>
+    <string name="execution_foreground_service_degraded_message">バックグラウンドでの継続動作が制限されているため、アプリがバックグラウンドの間は通知が遅れることがあります。</string>
 
     <!-- Departure (Screen 4, 仕様§29/§35)。C3bでT-DEP-1..4向けに追加。 -->
     <string name="departure_title">今すぐ出発</string>

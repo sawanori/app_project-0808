@@ -17,6 +17,11 @@ import com.actionstarter.recovery.RecoveryEngine
 import com.actionstarter.services.location.LocationFailureReason
 import com.actionstarter.services.location.LocationResult
 import com.actionstarter.services.location.LocationService
+import com.actionstarter.services.notification.NotificationKind
+import com.actionstarter.services.notification.NotificationPayload
+import com.actionstarter.services.notification.NotificationService
+import com.actionstarter.services.notification.NotifyResult
+import com.actionstarter.services.notification.ScheduleResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -131,6 +136,42 @@ class RecoveryViewModelTest {
 
     private class ThrowingRecoveryEngine(private val exception: Throwable) : RecoveryEngine {
         override suspend fun createRecoveryPlan(context: RecoveryContext): RecoveryPlan = throw exception
+    }
+
+    /**
+     * [NotificationService]のrecording fake（T-RECVM-9）。`ExecutionOneActionTest.kt`の
+     * `SpyNotificationService`と同型のcallCount方式に加え、引数（`cancelAll`のplanId／
+     * `schedule`のplan）と呼び出し順序（[callOrder]）まで記録し、
+     * 「cancelAll→scheduleが更新後Planに対しそれぞれ1回ずつ、この順で呼ばれる」ことを
+     * 観測可能にする。
+     */
+    private class RecordingNotificationService : NotificationService {
+        var cancelAllCallCount = 0
+            private set
+        var scheduleCallCount = 0
+            private set
+        var cancelledPlanId: String? = null
+            private set
+        var scheduledPlan: ExecutionPlan? = null
+            private set
+        val callOrder = mutableListOf<String>()
+
+        override fun schedule(plan: ExecutionPlan): ScheduleResult {
+            scheduleCallCount++
+            scheduledPlan = plan
+            callOrder += "schedule"
+            return ScheduleResult.Exact(plan.steps.size)
+        }
+
+        override fun cancelAll(planId: String) {
+            cancelAllCallCount++
+            cancelledPlanId = planId
+            callOrder += "cancelAll"
+        }
+
+        override fun notifyNow(kind: NotificationKind, payload: NotificationPayload): NotifyResult = NotifyResult.Shown
+        override fun restoreFromStore(): ScheduleResult = ScheduleResult.Exact(0)
+        override fun isExactAlarmAvailable(): Boolean = true
     }
 
     // T-RECVM-1: 正常系 - confirmedPlanからRecoveryContextを構築し、currentTimeが注入Clock由来である
@@ -316,5 +357,39 @@ class RecoveryViewModelTest {
         viewModel.useThisPlan(option.id) // 2回目（one-shotガードにより無視されるべき）
 
         assertEquals(planAfterFirstApply, sharedPlanViewModel.confirmedPlan.value)
+    }
+
+    // T-RECVM-9（P5-C8補完・仕様§95接地・Fable 5承認2026-08-09）: 「Use this plan」適用で
+    // notificationServiceが非nullなら、旧アラームのcancelAll(旧planのevent.id文字列)→
+    // schedule(適用後の更新済みPlan)がこの順でそれぞれちょうど1回だけ呼ばれる。
+    // `RecoveryViewModel.useThisPlan`本体（クラスKDoc「P6-C5統合ウィンドウ追加」参照）は
+    // `docs/plans/phase6-recovery-basic.md`§10 P6-C5行の完了記録項目⑤（Fable 5裁定・
+    // P5-C6申し送り③への回答）で既に実装済みのため、本テストは作成時点からGreenになる
+    // 可能性が高い（「現状が誤っていることを示す」ことを目的としない回帰ガード。
+    // T-P5UI-8・T-NOTIF-4/8/9・T-STORE-7と同型の許容ケース）。
+    @Test
+    fun tRecVm9_useThisPlan_cancelsOldAlarmsThenReschedulesUpdatedPlan_eachExactlyOnce() = runTest(testDispatcher) {
+        val originalPlan = samplePlan()
+        val sharedPlanViewModel = SharedPlanViewModel().apply { confirmPlan(originalPlan) }
+        val option = sampleOption()
+        val engine = CapturingRecoveryEngine(result = RecoveryPlan(options = listOf(option)))
+        val notificationService = RecordingNotificationService()
+
+        val viewModel = RecoveryViewModel(
+            recoveryEngine = engine,
+            sharedPlanViewModel = sharedPlanViewModel,
+            locationService = alwaysSuccessLocationService,
+            clock = Clock.systemUTC(),
+            notificationService = notificationService
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.useThisPlan(option.id)
+
+        assertEquals(1, notificationService.cancelAllCallCount)
+        assertEquals(1, notificationService.scheduleCallCount)
+        assertEquals(originalPlan.event.id.toString(), notificationService.cancelledPlanId)
+        assertEquals(sharedPlanViewModel.confirmedPlan.value, notificationService.scheduledPlan)
+        assertEquals(listOf("cancelAll", "schedule"), notificationService.callOrder)
     }
 }

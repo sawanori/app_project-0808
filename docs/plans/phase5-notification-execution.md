@@ -696,6 +696,27 @@ T-FGS-1〜3は`ExecutionForegroundService`自身を`Robolectric.buildService`で
 
 ---
 
+### 10.10 P5-C8完了記録（劣化状態の可視化バナー実装＋補完テスト、2026-08-09、ui-implementer/test-writer）
+
+**結論**: `ExecutionUiState.isExactAlarmDegraded`／`isNotificationPermissionDenied`／`isForegroundServiceDegraded`はP5-C2b/C3でExecutionViewModel側の算出ロジックまで実装済みだったが、`ExecutionScreen`が一切描画していなかった（grep実測、§10.6申し送り記載のギャップ）。仕様§95「精度低下の明示」に基づき、劣化状態を可視化するバナー3種を`ExecutionScreen.kt`へ実装した。全JVMスイート（`--rerun`）368件・失敗0・エラー0・skipped 1件（既存の`AppContainerRoutingConfigTest.tCfg2_apiKeyEmpty_...`のみ、不変）で完全Green維持を実測確認し、`:app:lintDebug`はerror 0・MissingTranslation 0（新規追加stringsを含む）を実測確認した。
+
+**Red（`build/agent-logs/p5c8-red.log`）**: `ExecutionScreenTest`へ4件・`RecoveryViewModelTest`へ1件、計5件のテストを追加した（いずれも計画書§8にケースIDの記載がないため、KDocに「仕様§95接地の補完テスト・Fable 5承認2026-08-09」と明記した補完テストとして追加）。`:app:testDebugUnitTest --tests "com.actionstarter.features.ExecutionScreenTest" --tests "com.actionstarter.features.RecoveryViewModelTest"`実測: **19 tests completed, 3 failed**。失敗3件は想定どおり`p5c8ExactAlarmDegraded_showsBannerWithExplanation`／`p5c8NotificationPermissionDenied_showsBanner`／`p5c8ForegroundServiceDegraded_showsBanner`（いずれも`java.lang.AssertionError`＝testTagのノードが見つからない、実装未着手によるRed）。残り2件（`p5c8AllDegradationFlagsFalse_noBannersPresent`と`RecoveryViewModelTest`の新規`tRecVm9_useThisPlan_cancelsOldAlarmsThenReschedulesUpdatedPlan_eachExactlyOnce`）は作成時点からGreenだった。前者は「何も描画されていない状態で3種のバナーがいずれも存在しないこと」を検証する回帰ガードのため、実装前は検証対象が構造的に存在せず（バナー自体が未実装＝空の否定は自明に真）Red化できない性質の負例テストであり、Green実装後に初めて意味を持つ回帰ガードとして機能する。後者（T-RECVM-9）はP6-C5完了記録項目⑤（`RecoveryViewModel.useThisPlan`内の`notificationService.cancelAll`→`schedule`連動、Fable 5裁定・P5-C6申し送り③への回答として実装済み）に対する回帰ガード補完であり、実装が既に正しかったためborn-greenだった（T-P5UI-8・T-NOTIF-4/8/9・T-STORE-7と同型の許容ケース。テストを通すための特殊分岐やハードコードは行っていない）。
+
+**strings.xml追加**: `execution_exact_alarm_degraded_message`／`execution_notification_permission_denied_message`／`execution_foreground_service_degraded_message`の3キー×ja/en＝6行を`values/strings.xml`・`values-ja/strings.xml`へ同時追加した。文言は§9エラー＆レスキューマップのF51/F52/F56-F57該当行（「通知が数分ずれうる旨を事前に警告表示」「アプリを開いていないと次アクション通知が届かない」「Doze下での通知遅延リスクが上がることを明示」）に準拠した簡潔な1文とした。3キーとも実際に`ExecutionScreen.kt`から参照されるため、Red化のために実装（Green）に先行してキーを追加する必要があった（T-PERM3-5の先例＝test-writerがRed時点で対応stringを追加するパターンを踏襲。「strings.xml追加はGreen手順」という当初の手順分けは、コンパイル可能なRedを書くための技術的な前提として、実質的にはRed追加と同時に行った）。
+
+**Green（`ExecutionScreen.kt`）**: 既存の視覚様式（`PlanReviewScreen`の`plan_review_behind_schedule_warning`・`DepartureScreen`の各種エラー文言と同型）に合わせ、`MaterialTheme.colorScheme.error`の警告色＋`bodySmall`の`Text`として3バナーを実装した（§63「color-only情報禁止」のため必ず文言を伴う）。private Composable `ExecutionDegradationBanners(uiState)`へ分離し、Doneボタン行の直後・debugボタンの直前に配置した。3フラグは独立に成立しうるため排他にせず、該当するものを全て表示する。testTagはT-P5E2E-3（計画書§8.9、androidTest、予測testTag）が予測する`execution_exact_alarm_degraded_banner`に実装側を合わせ、他2種（`execution_notification_permission_banner`／`execution_fgs_degraded_banner`）も同一命名規約を踏襲した。`currentStep == null`の早期return経路（departure/eventSelectionへの自動遷移、T-EXEC-4/5/9）では従来どおり何も描画しない（バナーもこの経路には含めていない。既存契約は不変）。`ExecutionUiState.kt`は変更していない（既存3フィールドをそのまま利用、想定どおり変更不要だった）。
+
+**Green実測**:
+- 対象テストクラス（`ExecutionScreenTest`／`RecoveryViewModelTest`／`ExecutionOneActionTest`／`ExecutionViewModelTest`／`StringResourceParityTest`、`build/agent-logs/p5c8-green-targeted.log`）: 全件BUILD SUCCESSFUL。JUnit XML実測でクラス別に`ExecutionScreenTest`10/10・`RecoveryViewModelTest`9/9・`ExecutionOneActionTest`8/8（T-P5UI-1〜8、ViewModelレベルの劣化フラグ算出ロジックに回帰なし）・`ExecutionViewModelTest`3/3・`StringResourceParityTest`3/3（新規6行追加後もen/jaパリティ維持）を個別確認した。
+- 全JVMスイート（`./gradlew :app:testDebugUnitTest --rerun`、`build/agent-logs/p5c8-full.log`）: **368 tests, 0 failures, 0 errors, 1 skipped**（JUnit XML集計。363件のP6-C5ベースラインから本サイクルの新規5件を加えて368件、失敗0を実測）。skipped 1件は既存の`AppContainerRoutingConfigTest.tCfg2_apiKeyEmpty_...`のみで不変。
+- `:app:lintDebug`（`build/agent-logs/p5c8-lint.log`）: BUILD SUCCESSFUL、**error 0**・warning 22件（P6-C5時点から不変）。**MissingTranslation 0件**。UnusedResources 3件は既存3件（`execution_placeholder_step_title`／`location_permission_denied_message`／`travel_time_manual_apply_button`）のみで不変——新規追加した3キーはいずれも`ExecutionScreen.kt`から実際に参照されているため未使用扱いにならないことを確認した。
+
+**本サイクルの検証範囲について（正直な記載）**: 本記録が実測したのは本タスクの委譲プロンプトが指定した範囲（対象テストクラスのGreen・全JVMスイート`--rerun`のGreen・`lintDebug`のerror 0/MissingTranslation 0）であり、これは§3 G4-JVMの実測項目（全JVM/RobolectricテストPass・lintDebugエラー0）と重なるが、`./gradlew build`によるフルアセンブル（`assembleDebug`/`assembleRelease`等）や、G4-JVMゲート自体の正式な合否宣言は本記録の範囲外とする（担当割当は§10.1でquality-runner）。
+
+**制約遵守の確認**: 変更した本番ファイルは`features/execution/ExecutionScreen.kt`・`res/values/strings.xml`・`res/values-ja/strings.xml`の3件のみ。変更したテストファイルは`test/java/com/actionstarter/features/ExecutionScreenTest.kt`・`test/java/com/actionstarter/features/RecoveryViewModelTest.kt`の2件のみ（いずれもテスト追加のみ、既存テストの改変なし）。`ExecutionUiState.kt`・`AndroidManifest.xml`・`di/AppContainer.kt`・`navigation/ActionStarterNavHost.kt`・`recovery/`配下のsrc/main・`features/recovery/RecoveryViewModel.kt`本体・`androidTest/`配下はいずれも変更していない（読み取りのみ）。エミュレータ・adbは使用していない。git commitは行っていない。Gradleロック競合は発生しなかった（全実行が初回試行で成功、60秒リトライの発動は不要だった）。APIキー（`AIza`等）は出力・記録していない。
+
+---
+
 ## 11. リスク
 
 | # | リスク | 対応 |

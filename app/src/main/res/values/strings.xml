@@ -54,6 +54,14 @@
     <string name="execution_restored_snackbar_message">We couldn\'t restore your progress. Pick your next event again.</string>
     <!-- C4 (ui-implementer): placeholder step title fallback while Plan injection (C5) is pending. -->
     <string name="execution_placeholder_step_title">Next step</string>
+    <!-- P5-C8 (ui-implementer/test-writer): degradation banners (spec §95 "precision degradation
+         must be surfaced"). ExecutionUiState.isExactAlarmDegraded / isNotificationPermissionDenied /
+         isForegroundServiceDegraded were already computed by ExecutionViewModel (P5-C2b/C3) but
+         never rendered by ExecutionScreen (docs/plans/phase5-notification-execution.md §10.6
+         handoff). Wording follows the error/rescue map (§9) rows for F51/F52/F56-F57. -->
+    <string name="execution_exact_alarm_degraded_message">Precise alarms aren\'t allowed, so reminders may arrive a few minutes late.</string>
+    <string name="execution_notification_permission_denied_message">Notifications are off. Keep the app open to see your next action.</string>
+    <string name="execution_foreground_service_degraded_message">Background tracking is limited, so reminders may be delayed while the app is in the background.</string>
 
     <!-- Departure (Screen 4, spec §29/§35). Added in C3b for T-DEP-1..4. -->
     <string name="departure_title">Leave now</string>

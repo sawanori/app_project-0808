@@ -3,6 +3,7 @@ package com.actionstarter.features
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -196,6 +197,92 @@ class ExecutionScreenTest {
 
         // ステップは省略されない（indexは進まない。§27の5 min later導線）
         assertEquals(0, viewModel.uiState.value.currentStepIndex)
+    }
+
+    // ---- P5-C8: 劣化状態の可視化バナー（仕様§95「精度低下の明示」） ----------------------
+    //
+    // [ExecutionUiState.isExactAlarmDegraded]／[isNotificationPermissionDenied]／
+    // [isForegroundServiceDegraded]はP5-C2b/C3でExecutionViewModel側の算出ロジックまで
+    // 実装済みだったが、grep実測（`grep -rn "isExactAlarmDegraded\|isNotificationPermissionDenied
+    // \|isForegroundServiceDegraded" ExecutionScreen.kt`が0件）のとおりExecutionScreenは
+    // これらを一切描画していなかった（`docs/plans/phase5-notification-execution.md`§10.6
+    // 申し送り記載のギャップ）。計画書§8のP5-C8行にはケースIDの記載がなく、既存
+    // T-P5UI-6/7（`ExecutionOneActionTest.kt`）はExecutionViewModelのフラグ算出のみを検証し
+    // Screen側の描画は対象外だったため、以下4件は**仕様§95接地の補完テスト・Fable 5承認
+    // 2026-08-09**としてここに追加する。testTagはT-P5E2E-3（計画書§8.9、androidTest、
+    // 予測testTag）に実装側を合わせる（E2E側は変更しない）。
+
+    // 正常系 - isExactAlarmDegraded=trueのとき、testTag "execution_exact_alarm_degraded_banner"
+    // のバナーが表示され、精度低下の説明文言（execution_exact_alarm_degraded_message）が出る
+    @Test
+    fun p5c8ExactAlarmDegraded_showsBannerWithExplanation() {
+        val step = sampleStep(title = "Get dressed")
+        composeTestRule.setContent {
+            ExecutionScreen(
+                uiState = ExecutionUiState(currentStep = step, currentStepIndex = 0, isExactAlarmDegraded = true),
+                onNavigateToDeparture = {},
+                onNavigateToRecovery = {},
+                onNavigateToEventSelection = {}
+            )
+        }
+        val context = RuntimeEnvironment.getApplication()
+
+        composeTestRule.onNodeWithTag("execution_exact_alarm_degraded_banner").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("execution_exact_alarm_degraded_banner")
+            .assertTextEquals(context.getString(R.string.execution_exact_alarm_degraded_message))
+    }
+
+    // 正常系 - isNotificationPermissionDenied=trueのとき、testTag
+    // "execution_notification_permission_banner" のバナーが表示される（エラー&レスキューマップ#3）
+    @Test
+    fun p5c8NotificationPermissionDenied_showsBanner() {
+        val step = sampleStep(title = "Get dressed")
+        composeTestRule.setContent {
+            ExecutionScreen(
+                uiState = ExecutionUiState(currentStep = step, currentStepIndex = 0, isNotificationPermissionDenied = true),
+                onNavigateToDeparture = {},
+                onNavigateToRecovery = {},
+                onNavigateToEventSelection = {}
+            )
+        }
+
+        composeTestRule.onNodeWithTag("execution_notification_permission_banner").assertIsDisplayed()
+    }
+
+    // 正常系 - isForegroundServiceDegraded=trueのとき、testTag "execution_fgs_degraded_banner"
+    // のバナーが表示される（S-3、エラー&レスキューマップ#5/#6）
+    @Test
+    fun p5c8ForegroundServiceDegraded_showsBanner() {
+        val step = sampleStep(title = "Get dressed")
+        composeTestRule.setContent {
+            ExecutionScreen(
+                uiState = ExecutionUiState(currentStep = step, currentStepIndex = 0, isForegroundServiceDegraded = true),
+                onNavigateToDeparture = {},
+                onNavigateToRecovery = {},
+                onNavigateToEventSelection = {}
+            )
+        }
+
+        composeTestRule.onNodeWithTag("execution_fgs_degraded_banner").assertIsDisplayed()
+    }
+
+    // エッジケース - 劣化フラグが全てfalse（既定値）のとき、3種のバナーはいずれも存在しない
+    // （誤警告を出さないことの回帰ガード）
+    @Test
+    fun p5c8AllDegradationFlagsFalse_noBannersPresent() {
+        val step = sampleStep(title = "Get dressed")
+        composeTestRule.setContent {
+            ExecutionScreen(
+                uiState = ExecutionUiState(currentStep = step, currentStepIndex = 0),
+                onNavigateToDeparture = {},
+                onNavigateToRecovery = {},
+                onNavigateToEventSelection = {}
+            )
+        }
+
+        composeTestRule.onNodeWithTag("execution_exact_alarm_degraded_banner").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("execution_notification_permission_banner").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("execution_fgs_degraded_banner").assertDoesNotExist()
     }
 
     private companion object {
