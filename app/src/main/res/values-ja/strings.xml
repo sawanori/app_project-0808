@@ -75,6 +75,24 @@
     <string name="recovery_no_options_message">代替案はありません。手動で対応してください。</string>
     <string name="recovery_option_eta_label">到着予定</string>
 
+    <!-- Recovery Basic（Phase 6、仕様§31-33/§70）。P6-C5（統合ウィンドウ、計画書§6.4行3）で
+         追加：BasicRecoveryEngineの4つの決定的semanticActionキーに対応するtitle/explanation。
+         RecoveryOptionText.kt（resolveRecoveryOptionTitle/Explanation）が解決する。
+         keep_all_steps/skip_optional_steps/skip_optional_and_important_stepsの文言は
+         Phase 1-5でユーザーに表示していたMock（MockRecoveryFactory、削除済み）の文言を踏襲し、
+         change_transport_mode（D案）はPhase 6での新規追加。 -->
+    <string name="recovery_option_title_keep_all_steps">予定どおり進める</string>
+    <string name="recovery_option_explanation_keep_all_steps">ステップを省略せず、現在のプランのまま進めます。</string>
+    <string name="recovery_option_title_skip_optional_steps">任意のステップを省略する</string>
+    <string name="recovery_option_explanation_skip_optional_steps">任意のステップを省略して時間を短縮します。</string>
+    <string name="recovery_option_title_skip_optional_and_important_steps">任意と重要なステップを省略する</string>
+    <string name="recovery_option_explanation_skip_optional_and_important_steps">任意および重要（ただし省略可能）なステップを省略して、さらに時間を短縮します。</string>
+    <string name="recovery_option_title_change_transport_mode">移動手段を変更する</string>
+    <string name="recovery_option_explanation_change_transport_mode">別の移動手段に切り替えて時間を短縮します。</string>
+    <!-- engine失敗時の汎用エラー文言（§9エラーマップ#17、RecoveryViewModel.kt）。P6-C4での
+         recovery_no_options_messageの暫定転用を置き換える。 -->
+    <string name="recovery_engine_error_message">プランの更新中に問題が発生しました。手動で対応してください。</string>
+
     <!-- Navigationガード（F9、仕様T-NAV-4）。C5（integration owner）で追加：
          Planが未確定のままExecution画面へ到達した際に表示し、Event Selectionへ戻す。 -->
     <string name="nav_plan_not_confirmed_snackbar_message">プランがまだ確定していません。もう一度予定を選び直してください。</string>
@@ -128,4 +146,28 @@
     <string name="step_title_departure">出発</string>
     <string name="step_title_travel">移動</string>
     <string name="step_title_fallback">ステップ</string>
+
+    <!-- 通知文言（F49/F52/F60、仕様§62/§29/§43、ADR-0025/0026/0027）。P5-C6（domain-implementer・
+         統合ウィンドウ）で追加。P5-C3時点でstrings.xmlが凍結されていたため
+         NotificationContentBuilder.kt／AndroidNotificationService.ktのチャネル名・説明が
+         Departure/StepTitleの文言を暫定的に借用していた（同ファイルKDoc「P5-C3実装時点の
+         暫定解決」・§10.6申し送り②）。本notification_*キー群へ差し替え、通知文言と画面文言が
+         互いに独立して変更できるようにする。RECOVERYのエントリは3種閉じた集合（§62）を
+         完成させるために今追加するが、Phase 5では未到達（S-5: Recovery通知の発火経路・
+         チャネル生成はPhase 6が実装）。 -->
+    <string name="notification_channel_transition_start_name">切り替えリマインダー</string>
+    <string name="notification_channel_transition_start_description">次の予定に向けて準備を始める時間になったことをお知らせします。</string>
+    <string name="notification_channel_departure_name">出発リマインダー</string>
+    <string name="notification_channel_departure_description">時間どおりに到着できるよう、出発する時間になったことをお知らせします。</string>
+    <string name="notification_channel_recovery_name">プラン更新</string>
+    <string name="notification_channel_recovery_description">遅れが生じてプランが変更されたときにお知らせします。</string>
+    <string name="notification_transition_start_title">準備を始める時間です</string>
+    <string name="notification_transition_start_text">次のステップを今すぐ始めましょう。</string>
+    <string name="notification_departure_title">今すぐ出発</string>
+    <string name="notification_departure_arrival_label">到着予定時刻</string>
+    <string name="notification_departure_event_label">予定</string>
+    <string name="notification_departure_buffer_label">余裕時間</string>
+    <string name="notification_departure_buffer_minutes_format">%1$d分</string>
+    <string name="notification_recovery_title">プランを更新しました</string>
+    <string name="notification_recovery_text">予定より遅れています。アプリを開いて更新されたプランを確認してください。</string>
 </resources>

@@ -24,6 +24,39 @@
          実測確認した（P3-C1実装漏れ）。P3-C8fixで追加。 -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Phase 5（F52、仕様§95.4）・ADR-0026。Android 13+（API 33+）の実行時権限。
+         POST_NOTIFICATIONSはExecution Plan確定時（PlanReview「Start」）に要求する
+         （起動時の一括要求はしない、既存permissionと同じ方針）。拒否時は
+         AndroidNotificationService.notifyNowがNotifyResult.Skipped(NOTIFICATIONS_DISABLED)へ
+         縮退する（§9エラーマップ#3、握り潰さない）。P5-C6統合ウィンドウで追加。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Phase 5（F50/F51、仕様§95.1）・ADR-0026（S-4）。SCHEDULE_EXACT_ALARMのみ宣言し
+         USE_EXACT_ALARM（カレンダー/アラームアプリ限定の特別権限、本アプリは非該当）は
+         宣言しない。targetSdk 35のため新規インストール時は既定で不許可
+         （実機実測、build/agent-logs/p5-probes-device.md）——inexactフォールバックが
+         既定パスになることを製品として受け入れる（ADR-0026 S-4）。P5-C6統合ウィンドウで追加。 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!-- Phase 5（F54、仕様§95.6）。端末再起動後のExecutionScheduleStore再登録
+         （ScheduleRestoreReceiver）に必須。P5-C6統合ウィンドウで追加。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Phase 5（F56、仕様§95.4）・ADR-0026（S-3）。ExecutionForegroundServiceの起動に必須
+         （FOREGROUND_SERVICEはtype別権限の前提として全FGSに共通で必要）。
+         P5-C6統合ウィンドウで追加。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- Phase 5（F56、仕様§95.1(b)/§95.4）・ADR-0026（S-3）。
+         android:foregroundServiceType="location"単独宣言を採用（specialUse/dataSync/
+         shortServiceはPlay審査リスク・用途不一致・時間制限によりいずれも却下、ADR-0026）。
+         位置権限（ACCESS_FINE_LOCATION/ACCESS_COARSE_LOCATION、上記宣言済み）が
+         許可されているときのみFGSを起動し、未許可時はDegraded運用とする
+         （ExecutionServiceController.start、T-FGS-6）。ACCESS_BACKGROUND_LOCATIONは
+         引き続き追加しない（§58「常時監視を前提にしない」・§95.1 While-in-use制約）。
+         P5-C6統合ウィンドウで追加。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
     <application
         android:name=".ActionStarterApplication"
         android:allowBackup="true"
@@ -32,12 +65,47 @@
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Phase 5（F56、仕様§95.1(b)/§95.4）・ADR-0026（S-3）。Execution画面がフォアグラウンドの
+             間だけ起動される（ExecutionServiceController.start、§7.4の前提保護）。他アプリからは
+             起動されないため非公開（exported="false"）。 -->
+        <service
+            android:name=".services.execution.ExecutionForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!-- Phase 5（F53、仕様§95.1 While-in-use）。AlarmManagerが発火するPendingIntentの宛先
+             （計画書§7.3「アラームの宛先はBroadcastReceiver」）。本アプリ自身のAlarmManager
+             からのみ起動されるため非公開（exported="false"）。 -->
+        <receiver
+            android:name=".services.notification.NotificationTriggerReceiver"
+            android:exported="false" />
+
+        <!-- Phase 5（F54、仕様§95.6）。BOOT_COMPLETED／TIME_SET（Intent.ACTION_TIME_CHANGEDの
+             実体文字列）／TIMEZONE_CHANGED／SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGEDの
+             いずれかでExecutionScheduleStoreから再登録する。
+             exported値の根拠（計画書に個別指定なしのため既定方針を採用・記録）:
+             BOOT_COMPLETEDおよびTIMEZONE_CHANGED等はいずれもprotected system broadcast
+             （システム以外が送信元を偽装できない）であり、protected broadcastは
+             exported="false"のreceiverにも配送される。したがって他アプリからの偽装Intent
+             送信を防げるexported="false"を採用する（信頼境界の防御を最大化する側を選ぶ）。 -->
+        <receiver
+            android:name=".services.notification.ScheduleRestoreReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

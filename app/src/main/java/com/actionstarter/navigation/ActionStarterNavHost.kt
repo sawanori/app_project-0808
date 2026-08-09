@@ -15,8 +15,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -31,18 +34,31 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.actionstarter.ActionStarterApplication
 import com.actionstarter.R
+import com.actionstarter.domain.model.RecoveryContext
 import com.actionstarter.features.departure.DepartureScreen
 import com.actionstarter.features.departure.DepartureViewModel
 import com.actionstarter.features.eventselection.EventSelectionScreen
 import com.actionstarter.features.eventselection.EventSelectionUiState
 import com.actionstarter.features.eventselection.EventSelectionViewModel
 import com.actionstarter.features.execution.ExecutionScreen
-import com.actionstarter.features.execution.ExecutionUiState
+import com.actionstarter.features.execution.ExecutionViewModel
 import com.actionstarter.features.planreview.PlanReviewScreen
 import com.actionstarter.features.planreview.PlanReviewViewModel
 import com.actionstarter.features.recovery.RecoveryScreen
 import com.actionstarter.features.recovery.RecoveryViewModel
+import com.actionstarter.recovery.LatenessDetector
+import com.actionstarter.recovery.LatenessVerdict
 import kotlinx.coroutines.launch
+import java.time.Duration
+import java.time.Instant
+
+/**
+ * 通知タップのroute extraとして受理する既知route（F60・エラー&レスキューマップ#18）。
+ * [com.actionstarter.services.notification.AndroidNotificationService]が実際に発行するのは
+ * この2値のみ（同クラスの`routeFor`参照）。それ以外（未知・欠落）はexecutionへフォールバック
+ * する（[ActionStarterNavHost]参照）。
+ */
+private val NOTIFICATION_TAP_ROUTES: Set<String> = setOf(Destinations.Execution.route, Destinations.Departure.route)
 
 /**
  * 仕様§35の5画面＋Recovery割込を結ぶNavHost（計画書§10.2グラフ構成）。
@@ -94,27 +110,56 @@ import kotlinx.coroutines.launch
  * （Planが未確定のままexecutionへ到達しようとした場合）、`popUpTo`でeventSelectionへ戻し
  * Snackbarで通知する（エラー＆レスキューマップ#9）。
  *
- * **ExecutionViewModelの扱い（C5の判断・完了報告「タスク7の判断結果」参照）**:
- * execution routeは[com.actionstarter.features.execution.ExecutionViewModel]を経由せず、
- * [SharedPlanViewModel.confirmedPlan]の最初のステップから直接[ExecutionUiState]を構築する。
- * 理由：[com.actionstarter.features.execution.ExecutionViewModel]のコンストラクタ契約
- * （`SavedStateHandle`のみ）はC4の`ExecutionViewModelTest`／`ExecutionScreenTest`に直接
- * 束縛されており自己判断で変更しない。一方、`AppContainer.planningEngine`
- * （Phase 4以降[com.actionstarter.planning.BasicPlanningEngine]。`MockPlanFactory`から
- * P4-C5統合ウィンドウで切替済み・`docs/plans/phase4-basic-engine.md`§6.4）は、本NavHostが
- * 結線する[PlanReviewViewModel]が`profile = null`固定で呼び出す現行配線では
- * （[com.actionstarter.planning.BasicPlanningDefaults]の既定値がいずれも正の値のため）
- * 引き続き3ステップ以上（Transition／Preparation／[Travel]／Departure）を生成する。
- * `NavigationFlowTest`（変更不可）のT-NAV-1／T-NAV-3は「Doneタップ1回でExecutionから
- * 離脱する」ことを前提としている。両立不能なため、[ExecutionUiState.onDone]を`null`のまま
- * 渡し、既存の[ExecutionScreen]のフォールバック（`onDone`が`null`のときDoneタップで
- * 即座に`onNavigateToDeparture`を呼ぶ、T-EXEC-4で既にGreenの契約）を利用する。
- * 結果として、複数ステップを1つずつ「Done」で進める本来のOne Action多段階遷移は、
- * 現状NavHost経由では未結線（ExecutionViewModel／ExecutionScreenの単体テスト
- * T-EXEC-3/6/7/8/9では引き続き検証・Green）。既知の制限として完了報告に明記する。
+ * **ExecutionViewModelの本番結線（P5-C6統合ウィンドウ、ADR-0028、計画書§6.3・§10.6申し送り）**:
+ * execution routeは[com.actionstarter.features.execution.ExecutionViewModel]を[vmFactory]
+ * （[com.actionstarter.di.AppContainer.createViewModelFactory]がADR-0028の3新引数——
+ * [sharedPlanViewModel]／`notificationService`／`permissionGate`、いずれも実引数——で
+ * 構築する）経由で取得する。C5時点の設計（[SharedPlanViewModel.confirmedPlan]から直接
+ * `ExecutionUiState`を構築し`onDone`を`null`固定で渡す、旧M5-14）はここで置き換わった。
+ * F58（Execution One Actionの多段階前進）が本番結線され、`onDone`は非null
+ * （`ExecutionViewModel.handleConfirmedPlanDone`）になり、確定Planの実ステップ列を
+ * 1つずつ「Done」で進める（Doneタップ1回でExecutionから離脱する、という旧前提と正面から
+ * 衝突するため、TEAMS§5の契約変更経路に基づき`NavigationFlowTest`のT-NAV-1／T-NAV-3の
+ * 期待値をADR-0028どおり本サイクルで同時更新した）。
+ *
+ * **通知・Foreground Serviceの結線（F51/F56/F57/F60、計画書§10.6申し送り）**:
+ * PlanReview「Start」タップで[appContainer]`.notificationService.schedule(plan)`を1回だけ
+ * 呼ぶ（Execution表示開始のたびではなくPlan確定時点。§7.3のexact/inexact判定は
+ * `AndroidNotificationService`側の責務）。execution route入場時（フォアグラウンド）に
+ * `appContainer.executionServiceController.start(plan)`を呼ぶ（§95.1(b)の前提保護は
+ * `ExecutionServiceController`側が担う）。Execution完了（最終ステップのDone→departureへの
+ * 直行、`onNavigateToDeparture`）で`notificationService.cancelAll(planId)`・
+ * `executionServiceController.stop()`を呼ぶ（T-STORE-6文脈）。**Recovery割込
+ * （`onNavigateToRecovery`、「Simulate delay (debug)」ボタン起点）はexecution composableを
+ * 一時的に離れるだけの迂回でありExecution中断ではないため、ここではキャンセルしない**
+ * （画面破棄一般に紐づけると、Recovery表示のたびに正当なアラームを消してしまう）。
+ * 通知タップ→アプリ起動→該当画面復帰（F60）は[pendingNotificationRoute]（[MainActivity]の
+ * `onNewIntent`が観測するstate）を本Composableが受け取り、[LaunchedEffect]で解決する
+ * （信頼境界: 未知routeはexecutionへフォールバックし、既存のT-NAV-4ガードへ合流させる。
+ * エラー&レスキューマップ#18）。
+ *
+ * **Lateness detection実配線（P6-C5統合ウィンドウ、計画書§7.6・§9エラーマップ#9/#10・
+ * §11.2.2）**: execution route入場時・plan更新時（`LaunchedEffect(plan)`、
+ * `executionServiceController.start(plan)`の直後）に
+ * [com.actionstarter.recovery.LatenessDetector.evaluate]を呼び、`WillMissEvent`ならRecoveryへ
+ * 自動遷移する（§70完成条件）。Recovery「Use this plan」からの復帰で同一`LaunchedEffect`が
+ * 再発火しても無限ループしないよう、`rememberSaveable`によるone-shotガード
+ * （`hasAutoNavigatedToRecovery`、`plan.event.id`スコープ）を設けている。「Simulate delay
+ * (debug)」ボタン起点の`onNavigateToRecovery`はこのガードと無関係の別経路のまま
+ * （下記composable本体参照）。
+ *
+ * @param pendingNotificationRoute [MainActivity]の`onNewIntent`が観測した通知タップの
+ *   route extra（キー`"route"`）。既定`null`（通常起動）。
+ * @param onPendingNotificationRouteConsumed [pendingNotificationRoute]を消費した後に
+ *   呼ばれるコールバック（[MainActivity]側の状態をnullへ戻す）。既定は何もしない
+ *   （`NavigationFlowTest`等、通知タップを検証しない既存呼び出し元は無変更のまま
+ *   `ActionStarterNavHost()`をゼロ引数で呼び続けられる）。
  */
 @Composable
-fun ActionStarterNavHost() {
+fun ActionStarterNavHost(
+    pendingNotificationRoute: String? = null,
+    onPendingNotificationRouteConsumed: () -> Unit = {}
+) {
     val context = LocalContext.current
     val appContainer = remember(context) {
         (context.applicationContext as ActionStarterApplication).appContainer
@@ -126,6 +171,18 @@ fun ActionStarterNavHost() {
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
+
+    // F60実配線（エラー&レスキューマップ#17/#18）: 通知タップで観測されたrouteへ誘導する。
+    // 信頼境界: 未知routeはexecutionへフォールバックする（既存のT-NAV-4ガードが、Planが
+    // 未確定ならさらにeventSelectionへ縮退させる）。1回消費したら
+    // onPendingNotificationRouteConsumedでMainActivity側の状態をnullへ戻し、再コンポーズの
+    // たびに同じnavigateが再発火しないようにする。
+    LaunchedEffect(pendingNotificationRoute) {
+        val route = pendingNotificationRoute ?: return@LaunchedEffect
+        val targetRoute = if (route in NOTIFICATION_TAP_ROUTES) route else Destinations.Execution.route
+        navController.navigate(targetRoute) { launchSingleTop = true }
+        onPendingNotificationRouteConsumed()
+    }
 
     Scaffold(
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
@@ -151,6 +208,13 @@ fun ActionStarterNavHost() {
                     uiState = uiState,
                     onNavigateToExecution = {
                         viewModel.confirmAndStart()
+                        // F51実配線（計画書§10.6申し送り）: Plan確定（Startタップ）時点で
+                        // 1回だけアラームを予約する（Execution表示開始のたびではない）。
+                        // uiState.plan は confirmAndStart() が SharedPlanViewModel.confirmPlan
+                        // へ渡すのと同一のPlanインスタンス（PlanReviewViewModel.confirmAndStart
+                        // 参照）。PlanReviewScreenのStartボタンはplanがnullの間は描画されない
+                        // ため通常nullにはならないが、信頼境界として?.letで防御する。
+                        uiState.plan?.let { plan -> appContainer.notificationService.schedule(plan) }
                         navController.navigate(Destinations.Execution.route)
                     }
                 )
@@ -176,17 +240,74 @@ fun ActionStarterNavHost() {
                         }
                     }
                 } else {
-                    val executionUiState = ExecutionUiState(
-                        currentStep = plan.steps.firstOrNull(),
-                        currentStepIndex = 0,
-                        snackbarMessageResId = null,
-                        onDone = null,
-                        onPostpone = null
-                    )
+                    // F58本番結線（P5-C6統合ウィンドウ、ADR-0028）: ExecutionViewModel経由で
+                    // ExecutionUiStateを取得する（旧M5-14の直接構築は廃止）。onDoneは非nullと
+                    // なり、確定Planのステップ列に沿った多段階前進（Done→次ステップ）が
+                    // 本番結線される。
+                    val viewModel: ExecutionViewModel = viewModel(factory = vmFactory)
+                    val executionUiState by viewModel.uiState.collectAsState()
+
+                    // F56/F57実配線: Execution画面表示開始時（フォアグラウンド）にForeground
+                    // Serviceを起動する。Recovery割込からの復帰でも本composableは再入場する
+                    // ため再度呼ばれるが、ExecutionServiceController.startは再入場時に呼ばれ
+                    // ても安全（フォアグラウンド・位置権限の各ガードを都度再評価するのみ）。
+                    LaunchedEffect(plan) {
+                        appContainer.executionServiceController.start(plan)
+                    }
+
+                    // Phase 6実配線（P6-C5、計画書§7.6・§9エラーマップ#9/#10・§11.2.2）:
+                    // execution route入場時・plan更新時にLatenessDetector.evaluate()を評価し、
+                    // WillMissEventならRecoveryへ自動割り込みする（§70完成条件）。
+                    // currentLocationはLatenessDetector.evaluate()が参照しないフィールドのため
+                    // （recovery/LatenessDetector.ktのevaluate実装参照。unfinishedSteps／
+                    // currentTime／latestTravelEstimate／event.startDate／plannedDepartureTime
+                    // のみを使う）nullで構わない——本Composableに位置情報取得の非同期処理を
+                    // 追加で持ち込まずに済む。
+                    //
+                    // one-shotガード（hasAutoNavigatedToRecovery、§9エラーマップ#10）:
+                    // Recoveryの「Use this plan」はpopBackStackで本routeへ戻り、
+                    // SharedPlanViewModel.confirmPlanで更新されたplanにより本LaunchedEffectが
+                    // （planをキーとしているため）再発火する。適用後のplanが依然
+                    // WillMissEventのままだと自動遷移を繰り返す無限ループになるため、この
+                    // Execution滞在中（plan.event.idでスコープ——RecoveryPlanApplier.applyは
+                    // eventを変更しないため、Recovery往復中も同一event.idのまま保たれる）は
+                    // 自動遷移を高々1回に制限する。rememberSaveableを使うのは、Recoveryを
+                    // 一時的に表示している間もExecutionのcomposable自体はバックスタックに
+                    // 残り続け（popされない）、状態が保持される前提のため。「Simulate delay
+                    // (debug)」ボタン起点の下記onNavigateToRecoveryは本ガードと独立した別経路
+                    // であり対象外（§11.2.2、手動操作は常に効く）。
+                    var hasAutoNavigatedToRecovery by rememberSaveable(plan.event.id) { mutableStateOf(false) }
+                    LaunchedEffect(plan) {
+                        if (hasAutoNavigatedToRecovery) return@LaunchedEffect
+
+                        val remainingTravelEstimate = Duration.between(plan.departureTime, plan.estimatedArrival).let {
+                            if (it.isNegative) Duration.ZERO else it
+                        }
+                        val recoveryContext = RecoveryContext(
+                            currentTime = Instant.now(),
+                            currentLocation = null,
+                            event = plan.event,
+                            unfinishedSteps = plan.steps,
+                            latestTravelEstimate = remainingTravelEstimate,
+                            plannedDepartureTime = plan.departureTime
+                        )
+                        if (LatenessDetector.evaluate(recoveryContext) is LatenessVerdict.WillMissEvent) {
+                            hasAutoNavigatedToRecovery = true
+                            navController.navigate(Destinations.Recovery.route)
+                        }
+                    }
 
                     ExecutionScreen(
                         uiState = executionUiState,
                         onNavigateToDeparture = {
+                            // F56/F57・T-STORE-6文脈（計画書§10.6申し送り）: Execution完了
+                            // （最終ステップのDone→departureへの直行）でアラーム・FGSを終了
+                            // する。Recovery割込（onNavigateToRecovery）は本composableを
+                            // 離れるだけの一時的な迂回でありExecution中断ではないため、
+                            // そちらには紐付けない（画面破棄一般に紐付けるとRecovery表示の
+                            // たびに正当なアラームを消してしまう）。
+                            appContainer.notificationService.cancelAll(plan.event.id.toString())
+                            appContainer.executionServiceController.stop()
                             navController.navigate(Destinations.Departure.route)
                         },
                         onNavigateToRecovery = {

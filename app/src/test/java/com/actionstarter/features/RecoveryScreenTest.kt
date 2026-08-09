@@ -45,10 +45,11 @@ class RecoveryScreenTest {
 
     private fun sampleOption(
         title: String,
-        skippedStepIds: List<UUID> = emptyList()
+        skippedStepIds: List<UUID> = emptyList(),
+        semanticAction: String = title.lowercase().replace(" ", "_")
     ): RecoveryOption = RecoveryOption(
         id = UUID.randomUUID(),
-        semanticAction = title.lowercase().replace(" ", "_"),
+        semanticAction = semanticAction,
         title = title,
         explanation = "$title explanation",
         estimatedArrival = fixedNow.plus(58, ChronoUnit.MINUTES),
@@ -89,12 +90,21 @@ class RecoveryScreenTest {
     }
 
     // T-REC-2: 正常系 - Recovery候補が3件のとき全件表示される
+    //
+    // 【P6-C5 fixture更新（§4.2 U-6で承認済み、assertion強度は維持）】RecoveryScreenがP6-C5で
+    // option.title直接表示からresolveRecoveryOptionTitle(option.semanticAction)経由へ
+    // 切り替わった（RecoveryScreen.ktのKDoc参照）。BasicRecoveryEngine（本番のRecoveryEngine）は
+    // title/explanationを常に空文字で生成するため、option.titleを直接アサートする旧来の
+    // 検証はもはや画面の実際の表示内容を検証しない（title自体は表示に使われなくなった）。
+    // 3件の候補がそれぞれ異なる既知semanticActionキーを持つ構成にしたうえで、各候補行に
+    // 「そのキーに対応する解決済みstringResourceの実テキスト」が表示されることを検証する形へ
+    // 更新した（「3件が個別に識別可能な文言で全件表示される」という検証意図自体は不変）。
     @Test
     fun tRec2_threeOptions_allDisplayed() {
         val options = listOf(
-            sampleOption("Leave now"),
-            sampleOption("Change transport"),
-            sampleOption("Prepare a delay message")
+            sampleOption("Leave now", semanticAction = "keep_all_steps"),
+            sampleOption("Change transport", semanticAction = "change_transport_mode"),
+            sampleOption("Prepare a delay message", semanticAction = "skip_optional_steps")
         )
         composeTestRule.setContent {
             RecoveryScreen(
@@ -102,10 +112,17 @@ class RecoveryScreenTest {
                 onNavigateToExecution = {}
             )
         }
+        val context = RuntimeEnvironment.getApplication()
+        val expectedTitleBySemanticAction = mapOf(
+            "keep_all_steps" to context.getString(R.string.recovery_option_title_keep_all_steps),
+            "change_transport_mode" to context.getString(R.string.recovery_option_title_change_transport_mode),
+            "skip_optional_steps" to context.getString(R.string.recovery_option_title_skip_optional_steps)
+        )
 
         options.forEach { option ->
             composeTestRule.onNodeWithTag("recovery_option_item_${option.id}").assertIsDisplayed()
-            composeTestRule.onNodeWithText(option.title).assertIsDisplayed()
+            composeTestRule.onNodeWithText(expectedTitleBySemanticAction.getValue(option.semanticAction))
+                .assertIsDisplayed()
         }
     }
 

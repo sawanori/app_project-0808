@@ -23,6 +23,13 @@ import com.actionstarter.services.location.ActivityLifecycleForegroundGate
  * `foregroundGate`自体はカウンタ加減算のみのトリビアルな実装のため本サイクルで
  * 完成済み（[ActivityLifecycleForegroundGate]のKDoc参照。全画面へ無条件登録される
  * ため、コールバックが未実装のままでは既存の全Compose/Robolectricテストを壊す）。
+ *
+ * **Phase 5 P5-C6統合ウィンドウ（計画書§6.3・§7.4、M5-13、ADR-0023の注入フック実配線）**:
+ * [foregroundGate]は`isExecutionServiceRunning: () -> Boolean = { false }`という注入フックを
+ * 持つ（ADR-0023、Phase 5まで常にfalse）。[AppContainer]構築後に
+ * `appContainer.executionServiceController::isRunning`を1行で接続し、
+ * `ForegroundGate.isLocationAccessAllowed() = isAppInForeground() ||
+ * isExecutionServiceRunning()`（§95.1(b)）を実配線する。
  */
 class ActionStarterApplication : Application() {
 
@@ -35,5 +42,6 @@ class ActionStarterApplication : Application() {
         super.onCreate()
         appContainer = AppContainer(applicationContext)
         registerActivityLifecycleCallbacks(foregroundGate)
+        foregroundGate.isExecutionServiceRunning = appContainer.executionServiceController::isRunning
     }
 }

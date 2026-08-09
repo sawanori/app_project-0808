@@ -10,16 +10,19 @@ import com.actionstarter.ActionStarterApplication
 import com.actionstarter.BuildConfig
 import com.actionstarter.features.departure.DepartureViewModel
 import com.actionstarter.features.eventselection.EventSelectionViewModel
+import com.actionstarter.features.execution.ExecutionViewModel
 import com.actionstarter.features.planreview.PlanReviewViewModel
 import com.actionstarter.features.recovery.RecoveryViewModel
-import com.actionstarter.mock.MockRecoveryFactory
 import com.actionstarter.navigation.SharedPlanViewModel
+import com.actionstarter.persistence.SharedPreferencesExecutionScheduleStore
 import com.actionstarter.planning.BasicPlanningEngine
 import com.actionstarter.planning.PlanningEngine
+import com.actionstarter.recovery.BasicRecoveryEngine
 import com.actionstarter.recovery.RecoveryEngine
 import com.actionstarter.services.calendar.CalendarProviderCalendarService
 import com.actionstarter.services.calendar.CalendarService
 import com.actionstarter.services.calendar.ContentResolverCursorSource
+import com.actionstarter.services.execution.ExecutionServiceController
 import com.actionstarter.services.location.AndroidGeocodingService
 import com.actionstarter.services.location.ForegroundGate
 import com.actionstarter.services.location.FusedLocationService
@@ -27,6 +30,10 @@ import com.actionstarter.services.location.FusedRawLocationSource
 import com.actionstarter.services.location.GeocodingService
 import com.actionstarter.services.location.LocationService
 import com.actionstarter.services.location.PlatformGeocoderSource
+import com.actionstarter.services.notification.AlarmManagerAlarmScheduler
+import com.actionstarter.services.notification.AndroidNotificationService
+import com.actionstarter.services.notification.NotificationContentBuilder
+import com.actionstarter.services.notification.NotificationService
 import com.actionstarter.services.permission.AndroidPermissionGate
 import com.actionstarter.services.permission.PermissionGate
 import com.actionstarter.services.routing.CachingRoutingService
@@ -35,6 +42,7 @@ import com.actionstarter.services.routing.RoutingService
 import com.actionstarter.services.routing.UnconfiguredRoutingService
 import com.actionstarter.services.routing.UrlConnectionHttpPostClient
 import com.google.android.gms.location.LocationServices
+import java.time.Clock
 
 /**
  * 手動DIコンテナ（計画書§7.3、ADR-0003）。`ActionStarterApplication`から1個生成する。
@@ -43,8 +51,10 @@ import com.google.android.gms.location.LocationServices
  * （裁定B2の保護条件。ADR-0014によりHilt導入はPhase 5へ延期されたため、本クラスは
  * 手動DIコンテナとして存続する。計画書§14 P2-C6／旧P2-C5行）。
  *
- * 厳守事項に従い、[recoveryEngine]は引き続き`mock/`パッケージのMock実装である
- * （U6、Phase 6まで現役）。LocalLanguageModelはUI Skeletonフローでは未使用のためDI結線
+ * [recoveryEngine]はP6-C5統合ウィンドウ（`docs/plans/phase6-recovery-basic.md`§6.4行1）で
+ * `mock/MockRecoveryFactory`（削除済み）から仕様§70 Phase 6「Recovery Basic」の本番実装
+ * [com.actionstarter.recovery.BasicRecoveryEngine]へ切り替え済みであり、Mock実装ではない
+ * （プロパティ本体のKDoc参照）。LocalLanguageModelはUI Skeletonフローでは未使用のためDI結線
  * しない。[planningEngine]はP4-C5統合ウィンドウ（`docs/plans/phase4-basic-engine.md`§6.4・
  * §7.2手順3）で`MockPlanFactory`（削除済み）から仕様§68 Phase 4「Basic Engine」の本番実装
  * [com.actionstarter.planning.BasicPlanningEngine]へ切り替え済みであり、Mock実装ではない。
@@ -93,7 +103,6 @@ class AppContainer(
 ) {
 
     val planningEngine: PlanningEngine = BasicPlanningEngine()
-    val recoveryEngine: RecoveryEngine = MockRecoveryFactory()
 
     /**
      * F24／F25／F29実装（計画書§6.4#4・§7.3・§8、S-4裁定、T-CFG-1〜3）。キーが空文字なら
@@ -111,6 +120,22 @@ class AppContainer(
         } else {
             UnconfiguredRoutingService()
         }
+
+    /**
+     * F70実配線（計画書§6.4行1・§7.1・§7.5、P6-C5統合ウィンドウ、ADR-0032〜0037）。
+     * `BasicRecoveryEngine(routingService)`として構築する。第2引数`defaults`（既定
+     * [com.actionstarter.recovery.BasicRecoveryDefaults]）・第3引数`currentTransportMode`
+     * （既定`{ BasicRecoveryDefaults.DEFAULT_TRANSPORT_MODE }`、S-3・§4.2 U-4で承認済みの
+     * 仕様未定義プレースホルダ）はいずれも計画書§6.4行1が明示する`BasicRecoveryEngine(
+     * routingService)`のとおりデフォルト値のまま省略する（計画書に個別の供給源指定がない
+     * ため。§7.5参照）。[routingService]は本プロパティより前に宣言済みの同一インスタンス
+     * （`CachingRoutingService`または`UnconfiguredRoutingService`）を再利用し、
+     * `RoutesApiRoutingService`を新規生成しない（§95.2、T-BRE-18/19の構造ガード対象）。
+     * 本プロパティを[routingService]プロパティの直後に配置しているのは、Kotlinのプロパティ
+     * 初期化がクラス本文の宣言順に実行されるため（[recoveryEngine]の初期化式が
+     * [routingService]を参照する以上、[routingService]より前に置くと初期化順序違反になる）。
+     */
+    val recoveryEngine: RecoveryEngine = BasicRecoveryEngine(routingService)
 
     /**
      * F12〜F15実装（計画書§7.2）。[ContentResolverCursorSource]経由で実カレンダー
@@ -163,16 +188,58 @@ class AppContainer(
     private val geocodingService: GeocodingService = AndroidGeocodingService(PlatformGeocoderSource(Geocoder(context)))
 
     /**
+     * F49/F52実配線（計画書§6.1・§6.3・§7.3、P5-C6統合ウィンドウ、ADR-0025〜0027）。
+     * [AndroidNotificationService]を構築する。永続化は[SharedPreferencesExecutionScheduleStore]
+     * （[SharedPreferencesExecutionScheduleStore.PREFS_NAME]経由で`context.
+     * getSharedPreferences(...)`を取得）。`NotificationTriggerReceiver`・
+     * `ScheduleRestoreReceiver`はいずれも引数なしコンストラクタ制約（`BroadcastReceiver`）の
+     * ためDI注入を受けられず、各`onReceive`内で同一の`PREFS_NAME`を使って独立に
+     * [AndroidNotificationService]を構築する（両レシーバのKDoc参照）。本プロパティは
+     * `ActionStarterNavHost`（PlanReview「Start」でのschedule・Execution画面でのcancelAll）と
+     * [createViewModelFactory]（`ExecutionViewModel`のSnooze経由の再schedule）から参照される。
+     */
+    val notificationService: NotificationService = AndroidNotificationService(
+        context = context,
+        store = SharedPreferencesExecutionScheduleStore(
+            context.getSharedPreferences(SharedPreferencesExecutionScheduleStore.PREFS_NAME, Context.MODE_PRIVATE)
+        ),
+        alarmScheduler = AlarmManagerAlarmScheduler(context),
+        contentBuilder = NotificationContentBuilder(context),
+        permissionGate = permissionGate
+    )
+
+    /**
+     * F56/F57実配線（計画書§6.1・§6.3・§7.4、P5-C6統合ウィンドウ）。[ExecutionServiceController]は
+     * 具象[com.actionstarter.services.location.ActivityLifecycleForegroundGate]
+     * （`isAppInForeground()`の公開が必須、§7.4「`ForegroundGate`ではなく具象クラスを直接
+     * 要求する」理由はそのKDoc参照）を要求するため、[foregroundGate]（`ForegroundGate`型）とは
+     * 別に`ActionStarterApplication`から同一インスタンスを再取得する（新規インスタンス化
+     * しない。[foregroundGate]プロパティKDocと同じ理由——別インスタンスを生成すると
+     * 起動中Activityカウンタが二重化する）。本プロパティは`ActionStarterNavHost`
+     * （Execution画面表示開始時のstart／離脱時のstop）と`ActionStarterApplication.onCreate()`
+     * （`foregroundGate.isExecutionServiceRunning`フックの接続元、M5-13）から参照される。
+     */
+    val executionServiceController: ExecutionServiceController = ExecutionServiceController(
+        context = context,
+        foregroundGate = (context as ActionStarterApplication).foregroundGate
+    )
+
+    /**
      * `ActionStarterNavHost`（統合サイクル・integration owner所有）から呼び出される単一
      * `ViewModelProvider.Factory`。[sharedPlanViewModel]はactivity-scopedの共有ViewModel
-     * （計画書§10.1）であり、[PlanReviewViewModel]／[RecoveryViewModel]がイベント選択・
-     * 確定済みPlanを参照するためにクロージャで受け渡す。
+     * （計画書§10.1）であり、[PlanReviewViewModel]／[RecoveryViewModel]／[ExecutionViewModel]が
+     * イベント選択・確定済みPlanを参照するためにクロージャで受け渡す。
      *
-     * `ExecutionViewModel`は意図的に本Factoryへ含めない（Phase 1完了報告「タスク7の判断結果」
-     * 参照）：そのコンストラクタ契約（`SavedStateHandle`のみ）は`ExecutionViewModelTest`／
-     * `ExecutionScreenTest`に直接束縛されており自己判断で変更しない。`ActionStarterNavHost`の
-     * execution routeは`SharedPlanViewModel.confirmedPlan`から直接`ExecutionUiState`を構築する
-     * （`ActionStarterNavHost`のKDoc参照）。
+     * **P5-C6統合ウィンドウでの結線（ADR-0028・§10.6申し送り）**: `ExecutionViewModel`を
+     * 本Factoryへ追加した。Phase 1完了報告「タスク7の判断結果」時点では、
+     * `ExecutionViewModel`のコンストラクタ契約（当時`SavedStateHandle`のみ）が
+     * `ExecutionViewModelTest`／`ExecutionScreenTest`に直接束縛されていたため意図的に
+     * 除外していたが、ADR-0028（P5-C2b）により新規3引数（[sharedPlanViewModel]／
+     * `notificationService`／`permissionGate`、いずれも既定値`null`）が追加され、
+     * 既存テスト（`SavedStateHandle`のみで構築）を壊さずに実引数を注入できるようになった。
+     * `ActionStarterNavHost`のexecution routeは本Factory経由で`ExecutionViewModel`を取得し、
+     * `SharedPlanViewModel.confirmedPlan`から直接`ExecutionUiState`を構築していた旧設計
+     * （M5-14）を置き換える（`ActionStarterNavHost`のKDoc参照）。
      */
     fun createViewModelFactory(sharedPlanViewModel: SharedPlanViewModel): ViewModelProvider.Factory =
         viewModelFactory {
@@ -193,6 +260,27 @@ class AppContainer(
                     permissionGate = permissionGate
                 )
             }
-            initializer { RecoveryViewModel(recoveryEngine, sharedPlanViewModel) }
+            initializer {
+                // F70/F78実配線（計画書§6.4行1、P6-C5統合ウィンドウ）: locationService／clockを
+                // 実引数で渡す（P6-C1 scaffold既定値のUnavailableLocationService／
+                // Clock.systemUTC()から実装へ差替え）。notificationServiceは
+                // useThisPlan→通知再スケジュール結線（Fable 5裁定・P5-C6申し送り③への回答）に
+                // 用いる。
+                RecoveryViewModel(
+                    recoveryEngine = recoveryEngine,
+                    sharedPlanViewModel = sharedPlanViewModel,
+                    locationService = locationService,
+                    clock = Clock.systemUTC(),
+                    notificationService = notificationService
+                )
+            }
+            initializer {
+                ExecutionViewModel(
+                    savedStateHandle = createSavedStateHandle(),
+                    sharedPlanViewModel = sharedPlanViewModel,
+                    notificationService = notificationService,
+                    permissionGate = permissionGate
+                )
+            }
         }
 }

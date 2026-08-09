@@ -27,17 +27,24 @@ import java.util.UUID
  * コンストラクタ注入の形で保持する。SavedStateHandleキー規約は`"currentStepIndex"`
  * （[KEY_CURRENT_STEP_INDEX]）に固定する（C3テストと共有する規約）。
  *
- * 既知の設計（C5裁定・存置確定。完了報告「タスク7の判断結果」参照）: 本ViewModelは
- * 実行中のPlan（[com.actionstarter.domain.model.ExecutionPlan]）を注入されず、
- * [currentStepIndex]が有効範囲（[0, PLACEHOLDER_STEP_COUNT)）にある間は常にプレースホルダの
- * [ExecutionStep]を用いて[ExecutionUiState.currentStep]を構成する（`title`は空文字とし、
- * Screen側で[R.string.execution_placeholder_step_title]にフォールバック表示する。ハード
- * コードUI文字列を持ち込まないため）。NavHost（[com.actionstarter.navigation.
- * ActionStarterNavHost]）は実行時、本ViewModelのコンストラクタ契約（`SavedStateHandle`
- * のみ。C4の`ExecutionViewModelTest`／`ExecutionScreenTest`に束縛されているため変更不可）
- * を維持したまま、本ViewModelを経由せず[com.actionstarter.navigation.SharedPlanViewModel.
- * confirmedPlan]から直接[ExecutionUiState]を構築する設計をC5で確定している。本ViewModel
- * のプレースホルダ挙動は単体テスト（T-EXEC-3/6/7/8/9）で引き続き検証されるため存置する。
+ * **プレースホルダ経路（P5-C7でKDoc是正。旧文面はP5-C6で置き換わった設計を指していた）**:
+ * 本ViewModelは[sharedPlanViewModel]が`null`、またはその[SharedPlanViewModel.confirmedPlan]
+ * が`null`のときのみ、実行中のPlanを使わずプレースホルダの[ExecutionStep]で
+ * [ExecutionUiState.currentStep]を構成する（`title`は空文字とし、Screen側で
+ * [R.string.execution_placeholder_step_title]にフォールバック表示する。ハードコードUI文字列を
+ * 持ち込まないため）。本番の[com.actionstarter.navigation.ActionStarterNavHost]は
+ * **P5-C6統合ウィンドウ以降、execution routeで本ViewModelを`vmFactory`
+ * （[com.actionstarter.di.AppContainer.createViewModelFactory]）経由で取得し、実引数の
+ * [sharedPlanViewModel]を渡す**（`ActionStarterNavHost`のKDoc「ExecutionViewModelの本番結線」
+ * 参照。旧文面が記していた「本ViewModelを経由せず直接ExecutionUiStateを構築する」設計（旧
+ * M5-14）はP5-C6で置き換え済み）。加えてexecution routeは[SharedPlanViewModel.confirmedPlan]
+ * が`null`の間はT-NAV-4ガードでeventSelectionへ戻すため、本番でこのcomposableへ到達する
+ * 時点では確定Planが常に存在する。したがってプレースホルダ経路は**本番では到達しない**
+ * （`sharedPlanViewModel`が非nullかつ`confirmedPlan`も非nullの状態でのみ本番構築される
+ * ため）が、[sharedPlanViewModel]の既定値が`null`であること自体はP5-C2b（ADR-0028）が
+ * 既存テスト（[ExecutionViewModelTest]／[com.actionstarter.features.ExecutionScreenTest]、
+ * いずれも`SavedStateHandle`のみで構築）を壊さないために維持している契約であり、
+ * プレースホルダ挙動はこれら単体テスト（T-EXEC-3/6/7/8/9）で引き続き検証されるため存置する。
  *
  * **P5-C2b契約scaffold（Fable 5裁定・ADR-0028・R-3）**: F58（Execution One Actionの
  * 多段階前進）の本番結線に向け、[sharedPlanViewModel]・[notificationService]・

@@ -44,18 +44,15 @@ import java.util.UUID
  * `DepartureEtaSection`と同じ`DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)`
  * ＋`LocalConfiguration.current.locales[0]`パターンを踏襲する。
  *
- * **title/explanationは意図的に[resolveRecoveryOptionTitle]／[resolveRecoveryOptionExplanation]
- * へ切り替えていない**（既存`RecoveryOption.title`／`explanation`フィールドを直接表示したまま）。
- * 理由: 既存`RecoveryScreenTest.tRec2_threeOptions_allDisplayed`が
- * `onNodeWithText(option.title)`で`option.title`の**実テキスト**の表示を検証しており、
- * そのテスト固定値（"Leave now"等、semanticActionは"leave_now"等の非既知キー）は
- * `resolveRecoveryOptionTitle`の既知4キーに一致しないため、切り替えると
- * `RecoveryScreenTest`（本サイクルでの変更が許可されていない既存テスト）を破壊する。
- * この結果、`MockRecoveryFactory`が現役の間（AppContainer未差替のP6-C3/C4時点）は
- * 従来どおり`option.title`/`explanation`のハードコード英語がそのまま表示される
- * （回帰ではない。C5で`BasicRecoveryEngine`に差し替わり`title`/`explanation`が空文字固定に
- * なった時点で、本Screenを`resolveRecoveryOptionTitle`/`resolveRecoveryOptionExplanation`へ
- * 結線し直す必要がある。完了報告のC5申し送り参照）。
+ * **P6-C5実装（統合ウィンドウ）**: title/explanationは[resolveRecoveryOptionTitle]／
+ * [resolveRecoveryOptionExplanation]（`option.semanticAction`経由）へ結線した
+ * （旧: `RecoveryOption.title`／`explanation`フィールドを直接表示。`BasicRecoveryEngine`が
+ * これらを常に空文字で生成する（ADR-0033）ようになったため、フィールド直接表示のままでは
+ * 画面が空白になる。P6-C3/C4時点の`MockRecoveryFactory`はtitle/explanationへ英語文言を
+ * 直接埋め込んでいたが、これは§7 Global-firstに反するハードコードでもあった）。
+ * `RecoveryScreenTest.tRec2_threeOptions_allDisplayed`は本切り替えに伴いfixtureを更新済み
+ * （既知semanticActionキーを使い解決後の`stringResource`と突き合わせる形へ。assertion強度は
+ * 維持。§4.2 U-6で承認済み、`RecoveryScreenTest.kt`のKDoc参照）。
  *
  * [onUseThisPlan]は「Use this plan」タップ時に選択中の`selectedId`を渡して呼び出す
  * （`RecoveryPlanApplier`経由の適用、`RecoveryViewModel.useThisPlan`、T-RECVM-6/7）。
@@ -104,8 +101,14 @@ fun RecoveryScreen(
                             .padding(vertical = 8.dp)
                     ) {
                         Column {
-                            Text(text = option.title, style = MaterialTheme.typography.titleMedium)
-                            Text(text = option.explanation, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                text = resolveRecoveryOptionTitle(option.semanticAction),
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Text(
+                                text = resolveRecoveryOptionExplanation(option.semanticAction, option.estimatedArrival),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
                             val eta = option.estimatedArrival
                             if (eta != null) {
                                 Text(

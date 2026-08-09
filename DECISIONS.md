@@ -710,3 +710,172 @@ androidComponents {
 **検証方法**: Red実測（`build/agent-logs/p3c10-red.log`）: `RoutesApiRequestBuilderTest.kt`へT-ROUTEREQ-6・T-ROUTEREQ-7（固定Clock注入）を追加した時点で、本番未実装の`clock`名前付き引数を参照するため`:app:compileDebugUnitTestKotlin`がコンパイルエラー（`No parameter with name 'clock' found`、2箇所）で失敗することを実測した（コンパイル不能という形のRed。Kotlinの単一コンパイル単位の性質上、同ファイル内の全テストが実行不能になる）。Green実装後、対象クラス単体を実行したところ当初7件中2件が失敗した（T-ROUTEREQ-1・T-ROUTEREQ-3。いずれも既定Clock＝実時刻を使う設計のため、固定Clockを注入していなかった既存テストの前提とクランプの新契約が衝突したもので、実装のバグではないと判断）。上記「影響範囲」記載のとおり該当2テストを新契約に整合するよう修正後、対象クラス7件全Green（`build/agent-logs/p3c10-green-target.log`、JUnit XML実測`tests="7" failures="0" errors="0" skipped="0"`）を確認した。`:app:testDebugUnitTest --rerun`で全JVMスイートを強制再実行し（`build/agent-logs/p3c10-green.log`）、JUnit XML集計で**247件・failures 0・errors 0・skipped 1**（`tCfg2_apiKeyEmpty_...`のみ、既知の想定skip）を実測。P3-C9の245件から**+2＝新規追加2件（T-ROUTEREQ-6・7）のみの純増**（T-ROUTEREQ-1・3は既存2件の書き換えのため件数の増減なし）で回帰なしを確認した。実機（emulator-5554、`actionstarter_test` AVD、事前`adb devices`で`device`状態を確認済み・起動不要）で`:app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.actionstarter.e2e.RoutesApiLiveTest`を実行し（`build/agent-logs/p3c10-optin.log`）、生JUnit XML（`TEST-actionstarter_test(AVD) - 15-_app-.xml`）で**T-OPTIN-1・T-OPTIN-2・T-OPTIN-3の3件とも`tests="3" failures="0" errors="0" skipped="0"`**を確認した。T-OPTIN-3（WALK・バッファ0・本番と完全同一条件）のPASSにより、ADR-0029付記2が申し送った「本番`DepartureViewModel`経路でこの競合が顕在化するかは未検証」という懸念が実機で解消されたことを端到端で実証した。
 
 **再検討トリガー**: 実機診断で120秒のクランプ閾値でもなお`"Timestamp must be set to a future time."`（HTTP 400）が発生した場合（RTTが想定を超えて悪化する環境）。`TWO_WHEELER`モードを本プロジェクトへ追加する場合（同種の時刻検証挙動を持つか未検証のため再確認要）。Routes APIの`departureTime`検証仕様が将来変更された場合（例: 猶予期間の撤廃・拡大）。
+
+---
+
+### ADR-0031: P5-C6統合ウィンドウ — 通知文言の暫定差し替え経路、Execution終了時のみのアラーム取消、通知タップ結線の設計
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（domain-implementer起票・統合ウィンドウの実装判断） ／ 決定者: domain-implementer（P5-C6） ／ 起案agent: domain-implementer（P5-C6） ／ 関連仕様§: §62・§29・§27-28・§9エラーマップ#17/#18（記録トリガー②仕様未定義箇所の補完）
+- **ADR番号の付番根拠**: `grep -n "ADR-00" DECISIONS.md`実測により実測最新確定ADRはADR-0030（本ウィンドウ着手時点）であることを確認した。`docs/plans/phase5-notification-execution.md`／`docs/plans/phase6-recovery-basic.md`のいずれも本番号を新規に予約していないことを確認済みのため、次の空き番号としてADR-0031を採番した。
+
+**背景**: P5-C6（統合ウィンドウ）では、計画書§10.6申し送り・タスク指示に基づき3点の設計判断を行った。いずれも計画書・既存ADRが具体的な実装方式まで指定していなかった（仕様未定義箇所の補完）ため、ここに記録する。
+
+1. **通知文言の暫定差し替え経路**: ADR-0027（S-8）は`semanticId → @StringRes Int`の解決を非Composeの中立パッケージ`i18n.StepTitleKeys`（ui-implementer・P5-C4成果物）経由に一本化する設計を定めたが、本ウィンドウ着手時点で`grep -rn "StepTitleKeys" app/src/main`を実測したところ該当ファイルは存在しなかった（P5-C4がこの成果物を作成しないまま完了していた）。一方でタスク指示は`NotificationContentBuilder`／`AndroidNotificationService`が借用していたDeparture/StepTitle文言（`departure_title`等・`step_title_transition`・`execution_now_label`）を専用文言へ差し替えることを求めていた。
+2. **Execution終了時のアラーム取消・FGS停止の呼び出し位置**: §10.6申し送りは「Execution画面の`onNavigateToDeparture`／画面破棄相当の箇所で`notificationService.cancelAll(planId)`・`executionServiceController.stop()`を呼ぶ」とのみ記載し、具体的な呼び出し位置（`onNavigateToDeparture`のみか、Composable disposal全般か）を確定していなかった。
+3. **通知タップ→アプリ内route解決の状態受け渡し方式**: 計画書は「`MainActivity`の`onNewIntent`でextra `"route"`を解決しNavHostへ誘導」とのみ記載し、`onNewIntent`（Composeの外）から`ActionStarterNavHost`（Composable）へどう値を橋渡しするかの具体的な機構を指定していなかった。
+
+**決定**:
+1. `i18n.StepTitleKeys`経由への一本化は据え置き、`values/strings.xml`・`values-ja/strings.xml`へ通知専用の`notification_*`接頭辞キー（チャネル名/説明×3種＝6キー、TRANSITION_START/DEPARTUREのタイトル・本文用ラベル＝7キー、RECOVERYのタイトル/本文＝2キー、計15キー、ja/en対）を新設し、`NotificationContentBuilder`（title/text）・`AndroidNotificationService`（`channelNameFor`・新設`channelDescriptionFor`）を専用文言参照へ差し替えた。`i18n.StepTitleKeys`が将来作成された時点でTRANSITION_START分岐のみ差し替える形の申し送り事項とする（両ファイルのKDocに明記済み）。ExecutionScreen側の`isExactAlarmDegraded`等の劣化バナー文言は、`ExecutionScreen.kt`がP5-C6の変更許可ファイル外（ui-implementer領域）であり実際の描画コンシューマが存在しないため、本ウィンドウでは追加しなかった（§88「空プレースホルダ禁止」に照らし、参照先のないstring resourceを追加しない判断。P6-C5または次のui-implementerサイクルへの申し送り）。
+2. `notificationService.cancelAll(planId)`・`executionServiceController.stop()`は`ExecutionScreen`の`onNavigateToDeparture`コールバック内でのみ呼ぶ。`ActionStarterNavHost`の`composable(Destinations.Execution.route)`ブロック全体に対する汎用`DisposableEffect(onDispose)`には紐付けない。理由: Recovery割込（「Simulate delay (debug)」ボタン起点の`onNavigateToRecovery`）はComposeのNavigation機構上、execution routeのcomposableを一時的に離れる（disposeされる）が、これはExecution中断ではなくExecution継続中の一時的な迂回である。disposal全般に紐付けると、Recovery画面を表示するたびに正当な（まだ有効な）アラーム・FGSを誤って取り消してしまう（サイレントな機能後退）。
+3. `MainActivity`に`private var pendingNotificationRoute by mutableStateOf<String?>(null)`を保持し、`onCreate`（初回Intent）・`onNewIntent`（`singleTop`経由の再配送）の両方でIntent extra（キー`"route"`）から更新する。`ActionStarterNavHost`は`pendingNotificationRoute: String? = null`・`onPendingNotificationRouteConsumed: () -> Unit = {}`を新規パラメータ（既定値付き）として受け取り、`LaunchedEffect(pendingNotificationRoute)`で消費する（消費後は`onPendingNotificationRouteConsumed()`で`MainActivity`側をnullへ戻し、再コンポーズ時の再発火を防ぐ）。両パラメータを既定値付きにしたことで、`NavigationFlowTest`等の既存呼び出し元（`ActionStarterNavHost()`をゼロ引数で呼ぶ）は無変更のまま成立する。未知route・欠落は`Destinations.Execution.route`へフォールバックする（エラー&レスキューマップ#18、既存のT-NAV-4ガードへ合流）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `i18n.StepTitleKeys`を本ウィンドウで新規作成し正式経路を完成させる | `i18n/`・`features/common/StepTitle.kt`はP5-C6のタスク指示（AndroidManifest.xml／AppContainer.kt／ActionStarterNavHost.kt／strings.xml排他所有）に含まれずui-implementer領域であり、他agentの担当領域へ無許可で越境することになる（`docs/TEAMS.md`§5の所有権原則） |
+| `cancelAll`／`stop`を`composable`全体の`DisposableEffect(onDispose)`に紐付ける | Recovery割込のたびに正当なアラーム・FGSを取り消してしまう回帰を生む（上記「決定」2参照）。実機テストでは検知しづらい種類のサイレント障害になるため却下 |
+| 通知タップの状態を`SharedPlanViewModel`等の既存ViewModelへ持たせる | 通知タップはActivityレベルのIntentイベントであり、Activityより広いスコープを持つ`ViewModelStoreOwner`側の責務ではない。`MainActivity`が直接保持しComposableへパラメータとして渡す方が責務が明確（`NavHost`自体が`NavController`を保持し外部へ公開しない既存の疎結合規約とも整合する） |
+
+**影響範囲**: `app/src/main/res/values/strings.xml`・`values-ja/strings.xml`（`notification_*`15キー追加）・`services/notification/NotificationContentBuilder.kt`・`services/notification/AndroidNotificationService.kt`（`channelNameFor`差し替え・`channelDescriptionFor`新設）・`navigation/ActionStarterNavHost.kt`（execution route内の`cancelAll`/`stop`呼び出し位置、`pendingNotificationRoute`パラメータ）・`MainActivity.kt`（`onNewIntent`・`pendingNotificationRoute`状態）。
+**検証方法**: `StringResourceParityTest`（T-I18N-1〜3）3/3 Green実測（キー集合一致・フォーマット引数一致・空文字列なしを新規15キー込みで確認）。`AndroidNotificationServiceTest`（T-NOTIF-1〜8）8/8 Green維持（文言の借用元変更後も非空・可変性の検証は影響を受けないことを実測）。`NavigationFlowTest`（T-NAV-1〜5）5/5 Green実測（`pendingNotificationRoute`が既定`null`のため通知タップ関連コードパスは非発火のまま既存5シナリオが成立することを確認）。全JVMスイート`:app:testDebugUnitTest --rerun`364 tests・failures 2（`AppContainerTest`のtP6Di1/tP6Di2のみ、P6-C5待ちの既知Red）・skipped 1（`build/agent-logs/p5c6-full.log`）。
+**再検討トリガー**: `i18n.StepTitleKeys`がui-implementerにより作成された場合、`NotificationContentBuilder`のTRANSITION_START分岐をそれ経由へ差し替える。`ExecutionScreen.kt`が劣化バナー（`isExactAlarmDegraded`等）を描画するようになった時点で、専用string resourceの要否を再判定する。Phase 6のRecovery発火経路実装（P6-C5）でExecution→Recovery→Execution以外の新しい遷移経路が追加された場合、`cancelAll`/`stop`の呼び出し位置設計を再確認する。
+
+---
+
+### ADR-0032: Recovery候補の生成規則と優先順位を§31〜§33由来の全順序規則として確定する（S-6）
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定・`docs/plans/phase6-recovery-basic.md`§7.9起票候補1） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P6-C1 scaffold KDocへ内容記録、P6-C5統合ウィンドウで正式起票） ／ 関連仕様§: §31・§32・§33（記録トリガー②仕様未定義箇所の補完、S-6）
+- **ADR番号の付番根拠**: `grep -n "^### ADR-" DECISIONS.md`実測により実測最新確定ADRはADR-0031であることを確認した。`grep -n "ADR-00[3-9][0-9]" docs/plans/phase5-notification-execution.md docs/plans/phase6-recovery-basic.md`実測により、phase5計画書はADR-0031までしか言及せず新規番号を予約していないこと、phase6計画書はADR-0017/0018/0019等の既存番号への言及のみで新規番号を予約していないこと（実際の起票をP6-C5統合ウィンドウへ延期する方針、§7.8・§13）を確認した。したがって次の空き番号としてADR-0032から本ADR群（ADR-0032〜0037、P6-C1が計画書§7.9でscaffold KDocへ記録した6候補に1:1対応）を連番で採番した。
+
+**背景**: §32「最大3つ」への切り詰め時にどの候補を残すかが仕様未定義（S-6）。`BasicRecoveryEngine`実装（P6-C3）はこの空白を埋めるため、§33（予定成立優先・過剰省略の禁止）＋§34（ユーザー最終決定・A案は必ず残す権利）から導出した全順序規則を実装した。P6-C1はこの起票候補をscaffold KDoc（`recovery/BasicRecoveryEngine.kt`・`recovery/BasicRecoveryDefaults.kt`）へ記録し、DECISIONS.mdへの正式記録をP6-C5統合ウィンドウへ延期していた（同時並行agentによるDECISIONS.md編集競合を避けるため。計画書§6.4「共有ファイル」がDECISIONS.mdをP6-C5専有としているため。P6-C1完了記録、計画書§10参照）。
+
+**決定**:
+1. `sortKey(c) = (feasible(c) ? 0 : 1, |skippedStepIds(c)|, ETA(c), ruleOrdinal(c))`の昇順で並べ、上位3件を採用する（`ruleOrdinal`: A=0, B=1, C=2, D=3）。
+2. 上位3件にA案（`keep_all_steps`）が含まれない場合、末尾を落としてA案を追加する（§34「変更しない」選択肢を常に残す）。
+3. B案（OPTIONAL省略）はA案が成立しない場合のみ、C案（OPTIONAL+IMPORTANT省略）はB案でも成立しない場合のみ生成する（§33「過剰省略の禁止」）。
+4. D案（移動手段変更）は現在地・目的地座標が揃い`RoutingService`が短い代替所要を返した場合のみ生成する（§7.5）。
+
+実装は`recovery/BasicRecoveryEngine.kt`の`buildSkipCandidates`/`attemptChangeTransportModeCandidate`/`sortAndTruncate`（P6-C3・P6-C4のRefactorで私有関数へ抽出済み）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| 生成順（A→B→C→D）をそのまま表示順とする | §33「省略件数の少ない案が先」の要求を満たさない。D案（省略0件）が成立する場合、生成順のままだとB案（省略あり）より後に表示され、過剰省略回避の原則に反する |
+| ETAのみで単純ソートする | ETAが完全同値になるケースで順序が不定になり決定性が壊れる。`ruleOrdinal`を第4キーとして追加することで完全な全順序を保証する（T-BRE-24） |
+
+**影響範囲**: `recovery/BasicRecoveryEngine.kt`（`sortAndTruncate`）。
+**検証方法**: `BasicRecoveryEngineTest`のT-BRE-1〜10・T-BRE-20〜24・T-BRE-26（優先順位・上限3件・A案保証・`ruleOrdinal`決定性）。P6-C5統合ウィンドウ時点で31/31 Green実測（`build/agent-logs/p6c5-full.log`）。
+**再検討トリガー**: §32の上限が3件以外に変更された場合。新たな候補種別（E案等）が追加された場合、`sortKey`の`ruleOrdinal`割当を再設計する必要がある。
+
+---
+
+### ADR-0033: RecoveryOption.title/explanationは空文字固定としUI層でsemanticActionをlocalizationキーとして解決する（S-4、ADR-0018のRecoveryへの拡張）
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定・§4.2 U-5） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P6-C1 scaffold KDocへ内容記録、P6-C5統合ウィンドウで正式起票） ／ 関連仕様§: §7・§21・§51（記録トリガー③仕様推奨からの逸脱、S-4）
+- **ADR番号の付番根拠**: ADR-0032と同一バッチ起票（grep実測根拠はADR-0032参照）。ADR-0032の次番としてADR-0033を採番した。
+
+**背景**: 仕様§51は`RecoveryOption(id, semanticAction, title, explanation, estimatedArrival, skippedStepIds)`とtitle/explanationを表示文言として定義しているが、§7 Global-firstはUI文字列のDomain層ハードコードを禁止する。実測（本Phase §0欠陥2）でも旧`mock/MockRecoveryFactory.kt`（削除済み）が"Continue as planned"等の英語文字列をtitle/explanationへ直接埋め込んでいたことを確認済み。Phase 4は同型の問題（`ExecutionStep.title`）をADR-0018（空文字固定＋`semanticId`解決）で解決しており、Recoveryにも同じ設計を拡張する。
+
+**決定**: `BasicRecoveryEngine`は`RecoveryOption.title`/`explanation`を常に空文字で生成する。表示文言は`features/recovery/RecoveryOptionText.kt`の`resolveRecoveryOptionTitle`/`resolveRecoveryOptionExplanation`が`semanticAction`（`keep_all_steps`/`skip_optional_steps`/`skip_optional_and_important_steps`/`change_transport_mode`の4値）を`stringResource`へ解決する。未知の`semanticAction`はクラッシュせずフォールバック文言（`step_title_fallback`）を返す（`resolveStepTitle`先例）。`RecoveryScreen`はP6-C5で`option.title`/`explanation`の直接表示からこれらの解決関数経由へ結線し直した（P6-C3/C4時点は`RecoveryScreenTest.tRec2`の既存アサーション保護のため意図的に未結線のままだった。§4.2 U-6でその後の結線変更・fixture更新を承認済み）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| Engine内で表示文言を直接組み立てる（ロケール判定含む） | Domain層（`recovery/`）がロケール判定・`stringResource`解決を持つことになり、ADR-0018が確立したレイヤー分離規約（§7.1）に反する |
+| `RecoveryOption`へ`titleResId: Int`等の新フィールドを追加する | §51契約（`RecoveryOption`のフィールド構成）の変更にあたり、TEAMS§5のversion付き変更経路（両側テスト更新等）を要する。既存の`semanticAction`フィールドで同じ目的を達成でき契約変更が不要 |
+
+**影響範囲**: `recovery/BasicRecoveryEngine.kt`（title/explanation常に空文字）・`features/recovery/RecoveryOptionText.kt`（新規、P6-C5で本結線）・`features/recovery/RecoveryScreen.kt`（結線）・`res/values/strings.xml`・`res/values-ja/strings.xml`（`recovery_option_title_*`/`recovery_option_explanation_*`各4キー）。
+**検証方法**: T-RECUI-2（既知4キー→非空文字列）・T-RECUI-3（未知キー→フォールバック）。`RecoveryScreenTest.tRec2`（fixture更新後、`resolveRecoveryOptionTitle`の解決結果と突き合わせ）。P6-C5統合ウィンドウ時点で`RecoveryOptionDisplayTest`9/9・`RecoveryScreenTest`7/7 Green実測（`build/agent-logs/p6c5-full.log`）。
+**再検討トリガー**: `i18n.StepTitleKeys`（S-8、ui-implementer成果物）がRecoveryにも拡張される場合、`RecoveryOptionText.kt`をそちら経由へ差し替える再検討が必要（`NotificationContentBuilder`のADR-0031と同じ再検討トリガー）。
+
+---
+
+### ADR-0034: RecoveryOption.idはUUID.nameUUIDFromBytesによる決定的生成へ置き換える（ADR-0017のRecoveryへの拡張）
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定・`docs/plans/phase6-recovery-basic.md`§7.9起票候補3） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P6-C1 scaffold KDocへ内容記録、P6-C5統合ウィンドウで正式起票） ／ 関連仕様§: §51
+- **ADR番号の付番根拠**: ADR-0032と同一バッチ起票。ADR-0033の次番としてADR-0034を採番した。
+
+**背景**: 旧`mock/MockRecoveryFactory.kt`（削除済み）は`id = UUID.randomUUID()`で非決定的に生成しており、同一入力から再生成しても`id`が変化するため、回帰テストで期待値を固定できない（ADR-0017が`ExecutionStep.id`で解決したのと同型の問題）。
+
+**決定**: `BasicRecoveryEngine`は`RecoveryOption.id`を`UUID.nameUUIDFromBytes(seed.toByteArray())`で決定的に生成する。`seed = "${event.id}:${semanticAction}:${skippedStepIds.sorted().joinToString(",")}"`とする（`semanticAction`単独ではB/C案の構成差やコンテキスト差で衝突しうるため、`skippedStepIds`のソート済み結合を含める）。`estimatedArrival`はseedに含めない（RoutingService結果で揺れると決定性が壊れるため、構成のみで一意化する）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `event.id`＋`semanticAction`のみを鍵にする | 将来同一`semanticAction`で異なる`skippedStepIds`構成が生じる設計変更があった場合にid衝突するリスクを残す。`skippedStepIds`を含めることで構成差を確実に区別する |
+| `estimatedArrival`もseedに含める | RoutingServiceの応答（D案の代替移動時間）はネットワーク条件で揺れうるため、含めると同一構成でも実行のたびに`id`が変わりうる。回帰テストの決定性が損なわれる |
+
+**影響範囲**: `recovery/BasicRecoveryEngine.kt`（`Candidate.toRecoveryOption`）。
+**検証方法**: T-BRE-25（同一入力での再生成でも同一`id`）。P6-C5統合ウィンドウ時点で31/31 Green実測（`build/agent-logs/p6c5-full.log`）。
+**再検討トリガー**: なし。
+
+---
+
+### ADR-0035: transportModeはRecoveryContextへ追加せずBasicRecoveryEngineのコンストラクタで供給する（S-3）
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定・§4.2 U-4） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P6-C1 scaffold KDocへ内容記録、P6-C5統合ウィンドウで正式起票） ／ 関連仕様§: §50（記録トリガー②仕様未定義箇所の補完、S-3）
+- **ADR番号の付番根拠**: ADR-0032と同一バッチ起票。ADR-0034の次番としてADR-0035を採番した。
+
+**背景**: 仕様§50 `RecoveryContext(currentTime, currentLocation, event, unfinishedSteps, latestTravelEstimate, plannedDepartureTime)`には現在の移動手段を保持するフィールドが存在しないため、D案（移動手段変更）を生成するのに現在の移動手段をEngineが知る手段が仕様上存在しない。
+
+**決定**: `RecoveryContext`（§50契約）は変更しない。`BasicRecoveryEngine`のコンストラクタに`currentTransportMode: () -> TransportMode = { BasicRecoveryDefaults.DEFAULT_TRANSPORT_MODE }`を追加し、既定値`TRANSIT`（`DepartureUiState.kt`の実測既定値と一致）を`BasicRecoveryDefaults.kt`（仕様未定義プレースホルダ、`BasicPlanningDefaults`のG-1先例踏襲）へ隔離する。`AppContainer`は`BasicRecoveryEngine(routingService)`と第3引数を省略して構築し、この既定値をそのまま用いる（計画書§6.4行1が明示する構築形そのもの。現在選択中の移動手段を実際に追跡・供給する仕組みは本Phaseのスコープ外）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `RecoveryContext`へ`transportMode`フィールドを追加する | §50契約の変更にあたり、TEAMS§5のversion付き変更経路（両側テスト更新等）を要する。既存の`RecoveryViewModel.buildRecoveryContext`呼び出し元・テストへの影響範囲が本ADR単体の解決範囲を超える |
+| `DepartureUiState`の選択済み移動手段を`AppContainer`経由で`BasicRecoveryEngine`へ供給する | Departure画面の状態（`DepartureViewModel`が保持）をRecovery生成時に横断的に参照する導線が現状存在せず、新たな共有状態導線の新設を要する。仕様上の根拠もないため、既定値プレースホルダで十分と判断した |
+
+**影響範囲**: `recovery/BasicRecoveryEngine.kt`（コンストラクタ第3引数）・`recovery/BasicRecoveryDefaults.kt`（新規、`DEFAULT_TRANSPORT_MODE`・`alternativeTransportMode`）・`di/AppContainer.kt`（`BasicRecoveryEngine(routingService)`、第3引数は既定値のまま省略）。
+**検証方法**: T-BRE-13〜19（D案生成条件・代替移動手段テーブル）。P6-C5統合ウィンドウ時点で31/31 Green実測（`build/agent-logs/p6c5-full.log`）。
+**再検討トリガー**: 仕様がRecoveryContextへtransportModeフィールドの追加を明示的に要求するよう改訂された場合。ユーザーが実際に選択中の移動手段をアプリ全体で一貫して追跡する仕組み（例: `SharedPlanViewModel`への保持）が別Phaseで導入された場合、既定値プレースホルダをその実測値へ差し替える再検討が必要。
+
+---
+
+### ADR-0036: mock/MockRecoveryFactory.ktはP6-C5統合ウィンドウで削除しBasicRecoveryEngineへ完全昇格する（ADR-0019のRecoveryへの拡張）
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定・`docs/plans/phase6-recovery-basic.md`§7.9起票候補5） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P6-C1 scaffold KDocへ内容記録、P6-C5統合ウィンドウで実施・正式起票） ／ 関連仕様§: §89・計画書§2.1・§6.3
+- **ADR番号の付番根拠**: ADR-0032と同一バッチ起票。ADR-0035の次番としてADR-0036を採番した。
+
+**背景**: `BasicRecoveryEngine`は完全決定的（LLM等の非決定的要素を含まない）処理であり、テスト用fakeを別途用意する必要がない。`MockRecoveryFactory`と`BasicRecoveryEngine`を並存させたまま`RecoveryEngine`実装を2系統保持することは、仕様§89「No duplicated domain logic」に違反する（Phase 4の`MockPlanFactory`→`BasicPlanningEngine`昇格〔ADR-0019〕と同型）。
+
+**決定**: P6-C5統合ウィンドウで`AppContainer.recoveryEngine`実装を`MockRecoveryFactory()`から`BasicRecoveryEngine(routingService)`へ切替え、`mock/MockRecoveryFactory.kt`と`test/.../mock/MockRecoveryFactoryTest.kt`を削除した。検証意図（T-DM-9＝REQUIRED省略禁止、Mock暗黙契約＝`skippable && priority != REQUIRED`限定・`options.take(3)`）はT-BRE-11／T-BRE-12／T-BRE-20へ移設し弱体化しない（計画書§7.8対応表、P6-C3で実装済み）。`mock/`ディレクトリはmain/test双方で消滅した（副作用、§9エラーマップ#20は`AppContainerTest.resolveMockPackageDir()`の修正〔本ADRと同一ウィンドウで実施〕で対処済み）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `MockRecoveryFactory`をテスト専用fakeとして残す | `BasicRecoveryEngine`が完全決定的で挙動を代替できるためfakeとして独立に存在させる理由がなく、仕様§89違反が生じる（ADR-0019と同じ理由） |
+| `MockRecoveryFactory`を段階的に空実装へ縮退させてから別サイクルで削除する | Phase 4（`MockPlanFactory`）・Phase 2（`MockEventSource`）いずれも即時削除の先例があり、段階的縮退は追加の中間状態（誰も呼ばない空クラス）を一時的に生むだけで§89の解消を遅らせる合理的理由がない |
+
+**影響範囲**: `mock/MockRecoveryFactory.kt`（削除）・`test/.../mock/MockRecoveryFactoryTest.kt`（削除）・`di/AppContainer.kt`（`recoveryEngine`差替）・`di/AppContainerTest.kt`（`resolveMockPackageDir()`修正、§9エラーマップ#20）。
+**検証方法**: T-P6DI-1（`recoveryEngine`が`BasicRecoveryEngine`型）・T-P6DI-2（`MockRecoveryFactory.kt`非存在、`mock/`ディレクトリ消滅時もhard failしない）。P6-C5統合ウィンドウ時点で`AppContainerTest`6/6 Green実測（tP6Di1/tP6Di2ともRed→Green反転を確認、`build/agent-logs/p6c5-full.log`）。全JVMスイート363 tests・failures 0・errors 0・skipped 1（`build/agent-logs/p6c5-full.log`。364から363への純減1件は`MockRecoveryFactoryTest.kt`削除〔同ファイルはT-DM-9の1件のみで構成〕による対象テスト減少であり、検証意図はT-BRE-11/12/20へ移設済みのため正味の検証カバレッジは減っていない）。
+**再検討トリガー**: なし。
+
+---
+
+### ADR-0037: lateness detectionはフォアグラウンド限定とし、通知/FGS/AlarmManager契機の評価はPhase 5の所有とする（§7.6の境界確定）
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定・`docs/plans/phase6-recovery-basic.md`§7.9起票候補6、§11.2.3でPhase 5計画書へも申し送り済み） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P6-C1 scaffold KDocへ内容記録、P6-C5統合ウィンドウで実配線・正式起票） ／ 関連仕様§: §13・§30（記録トリガー②仕様未定義箇所の補完）
+- **ADR番号の付番根拠**: ADR-0032と同一バッチ起票。ADR-0036の次番としてADR-0037を採番した（本ADR群ADR-0032〜0037で6件。次ADR番号はADR-0038）。
+
+**背景**: §30の`completedSteps`比較（Reality Check）や「遅延検知」がどの契機（画面表示時／通知発火時／定期監視時）で走るべきかは仕様上明確に切り分けられていない。一方、通知・Exact Alarm・Foreground Service（Phase 5所有）とRecovery候補生成（Phase 6所有）は独立して開発・テストできる必要があり（§11.2並列実行可否判定）、境界を明示しないと両Phaseの責務が曖昧になる。
+
+**決定**: `recovery/LatenessDetector.evaluate(context: RecoveryContext): LatenessVerdict`を**純関数**として実装する（`context`以外のシステム時刻・状態を一切参照しない）。P6-C5統合ウィンドウで実際に呼び出すのは`ActionStarterNavHost`のexecution route入場・plan更新時（`LaunchedEffect(plan)`、one-shotガード付き）のみ。「Done」／「5 min later（Snooze）」タップ時の再評価、定期タイマー／バックグラウンド監視での再評価は**Phase 6では実装しない**——前者はPhase 5のstep progression実装（§69）が本実装した際に呼び出し側として結線する責務であり、後者はAlarmManager/FGS（Phase 5所有）・§95.1 While-in-use制約（バックグラウンド位置取得不可）に抵触するため。トリガー条件は`ETA(∅) > event.startDate`の1点のみとし、`currentTime > plannedDepartureTime`は`WillMissEvent.behindSchedule`として情報のみ返しトリガーにしない（誤発火防止、既存T-NAV-1/T-E2E-1の保護）。**「Recovery画面の表示時（自己再評価）」（計画書§7.6表）は`LatenessDetector.evaluate`を別途明示的に呼ぶ形では実装していない**——`RecoveryViewModel.init`が画面表示のたびに`recoveryEngine.createRecoveryPlan(...)`を呼び直す既存設計（P6-C3から不変）自体が、`BasicRecoveryEngine`内部の`feasibleA`判定（`LatenessDetector.evaluate`と同一のETA比較式）を通じて実質的に同じ再評価を行っているため、重複した呼び出しを追加しないと判断した（正直な報告：計画書の表現は「する」だが、実装は別関数呼び出しではなく既存ロジックへの機能的な包含として満たしている）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| Phase 6が「Done」／「5 min later」タップ時の再評価も実装する | 現行`ExecutionUiState.onDone`/`onPostpone`はPhase 5のstep progression（§69）が所有する経路であり、Phase 6が先取りして結線すると所有権が交錯し、Phase 5が後日この経路を改稿した際に競合・重複評価が生じるリスクがある（§11.2.2所有権整理） |
+| 定期タイマーでバックグラウンドでも遅延を検知する | §95.1のWhile-in-use制約により、アプリがバックグラウンドにある間の位置取得・定期実行はそもそも許可されない設計方針（§58「常時監視を前提にしない」）に反する。AlarmManager/FGS基盤（Phase 5所有）を新たに使う設計変更になり、Phase 6のスコープ（§2.2「Phase 5領域に一切触れない」）を超える |
+| `RecoveryViewModel.init`内でも`LatenessDetector.evaluate`を明示的に呼び、結果をログ等へ記録する | `BasicRecoveryEngine`が同一のETA比較式を内包しており（`feasibleA`判定）、同じ入力に対し同じ結果を2つの独立した関数呼び出しで二重計算するだけの冗長な変更になる。将来2つの判定式が乖離しないための一貫性維持コストの方が、記録用の追加呼び出しの価値を上回ると判断した |
+
+**影響範囲**: `recovery/LatenessDetector.kt`（純関数として新規、P6-C3実装）・`navigation/ActionStarterNavHost.kt`（execution route内`LaunchedEffect`1箇所、one-shotガード、P6-C5実配線）。
+**検証方法**: T-LATE-1〜10（`LatenessDetectorTest`、P6-C3で10/10 Green）。NavHost結線はP6-C5統合ウィンドウ時点で`NavigationFlowTest`5/5 Green維持（既存の`OnTrack`判定になるplanでは自動遷移が発火せず、既存5シナリオが無改造のまま成立することを実測確認）を根拠とする。全JVMスイート363 tests・failures 0・errors 0・skipped 1（`build/agent-logs/p6c5-full.log`）。
+**再検討トリガー**: Phase 5がstep progression（Done/Snooze/next action）を本実装する際、各遷移後に`LatenessDetector.evaluate()`を呼び出す結線を追加する必要がある（§7.6申し送り、§11.2.3でPhase 5計画書への申し送り事項として明記済み）。`RecoveryViewModel`のcandidate生成ロジックが将来`BasicRecoveryEngine`から分離され`feasibleA`相当の判定を含まなくなった場合、「自己再評価」を明示的な`LatenessDetector.evaluate`呼び出しとして再実装する必要がある。

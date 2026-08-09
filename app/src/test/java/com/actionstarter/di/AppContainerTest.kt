@@ -44,6 +44,13 @@ import java.io.File
  * 計画書§9エラーマップ#20（`mock/`ディレクトリ自体が消滅した場合の[resolveMockPackageDir]の
  * hard fail回避）はP6-C5で`resolveMockPackageDir`自体を修正する対象であり、本サイクル（P6-C2）
  * では現行の`resolveMockPackageDir`をそのまま再利用する（差し戻し事項は完了報告を参照）。
+ *
+ * **P6-C5追補（統合ウィンドウ、`docs/plans/phase6-recovery-basic.md`§10 P6-C5行）**:
+ * `AppContainer.recoveryEngine`を`BasicRecoveryEngine(...)`へ差替え、`mock/MockRecoveryFactory.kt`
+ * を削除したことにより、[tP6Di1_recoveryEngine_isBasicRecoveryEngineType]・
+ * [tP6Di2_mockRecoveryFactoryKtFile_doesNotExistUnderSrcMain]とも本サイクルからGreenへ反転する
+ * （プロジェクト初の全JVMスイート完全Greenの一部）。[resolveMockPackageDir]も
+ * §9エラーマップ#20どおり修正済み（本メソッドのKDoc参照）。
  */
 @RunWith(AndroidJUnit4::class)
 class AppContainerTest {
@@ -157,13 +164,25 @@ class AppContainerTest {
     }
 
     /**
-     * `mock`パッケージディレクトリ自体（`MockPlanFactory.kt`等、削除対象外のファイルも
-     * 置かれている）を解決する。working directoryがGradle実行コンテキストにより
-     * `app/`直下・リポジトリルート・その祖先のいずれにもなり得るため、
+     * `mock`パッケージディレクトリ自体を解決する。working directoryがGradle実行コンテキストに
+     * より`app/`直下・リポジトリルート・その祖先のいずれにもなり得るため、
      * [com.actionstarter.i18n.StringResourceParityTest.resolveStringsXml]と同じ多段fallback
-     * 方式を踏襲する。ディレクトリ自体が見つからない場合は「MockEventSource.ktが存在しない」
-     * という誤ったGreen判定（パス解決失敗によるサイレントな偽陽性）を防ぐため、
-     * 例外で即座に失敗させる。
+     * 方式を踏襲する。
+     *
+     * **P6-C5修正（計画書§9エラーマップ#20、Fable 5裁定・§4.2 U-6で承認済み）**:
+     * `mock/MockRecoveryFactory.kt`（`mock/`配下の最後の1ファイル）の削除に伴い`mock/`
+     * ディレクトリ自体が消滅する（副作用、計画書§6.3）。旧実装は3候補いずれも`isDirectory`が
+     * 偽なら`error()`でhard failしていたが、これは`mock/`が正しく消滅した場合（T-P6DI-2が
+     * 検証する状態そのもの）まで誤ってテスト失敗にしてしまう。ディレクトリ非存在それ自体を
+     * 「パス解決の失敗（誤ったGreen化のリスク）」と区別できないためだった。
+     * そこで、`mock/`ではなく**必ず存在し続ける親パッケージ`com/actionstarter`**を同じ
+     * 3段fallbackで解決し、その子として`mock`という**実在しないFileハンドル**を返す方式へ
+     * 変更した（`java.io.File`の`isFile`/`isDirectory`は対象が存在しなくても例外を投げず
+     * `false`を返すため、呼び出し側（[mockEventSourceKtFile_doesNotExistUnderSrcMain]等）は
+     * 引き続き正しく`false`＝非存在を観測できる）。親パッケージには他の多数のファイルが
+     * 存在するため、3候補すべてで解決できない場合は真にworking directory解決自体が
+     * 破綻している状況であり、当初の設計意図どおり`error()`で即座に失敗させる
+     * （パス解決失敗によるサイレントな偽陽性の防止、という元の目的は維持する）。
      */
     private fun resolveMockPackageDir(): File {
         val relative = "src/main/java/com/actionstarter/mock"
@@ -181,9 +200,27 @@ class AppContainerTest {
             dir = dir.parentFile
         }
 
+        // mock/自体が(正しく)消滅している可能性があるため、必ず存在するはずの親パッケージ
+        // ディレクトリを同じ3段fallbackで解決し、その子として非存在のFileハンドルを返す。
+        val parentRelative = "src/main/java/com/actionstarter"
+
+        val directParent = File(parentRelative)
+        if (directParent.isDirectory) return File(directParent, "mock")
+
+        val parentFromRepoRoot = File("app", parentRelative)
+        if (parentFromRepoRoot.isDirectory) return File(parentFromRepoRoot, "mock")
+
+        var parentDir: File? = File(System.getProperty("user.dir") ?: ".").absoluteFile
+        while (parentDir != null) {
+            val candidate = File(parentDir, "app/$parentRelative")
+            if (candidate.isDirectory) return File(candidate, "mock")
+            parentDir = parentDir.parentFile
+        }
+
         error(
-            "mockパッケージディレクトリが見つかりません。相対パス '$relative' を作業ディレクトリ " +
-                "'${System.getProperty("user.dir")}' およびその祖先から探索しましたが解決できませんでした。"
+            "com.actionstarterパッケージディレクトリ（mockの親）が見つかりません。相対パス " +
+                "'$parentRelative' を作業ディレクトリ '${System.getProperty("user.dir")}' " +
+                "およびその祖先から探索しましたが解決できませんでした。"
         )
     }
 }

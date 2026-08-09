@@ -1,5 +1,6 @@
 package com.actionstarter.services.notification
 
+import android.annotation.SuppressLint
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
@@ -137,6 +138,13 @@ class AndroidNotificationService(
      * `requestCode`をそのまま流用し、同一kind・同一stepの再通知が同一IDで置換され
      * 増殖しないことを保証する（T-NOTIF-7）。
      */
+    // P5-C6統合ウィンドウ（lintDebug MissingPermission対応）: manager.notify(...)は
+    // POST_NOTIFICATIONS（API 33+）が拒否されるとLintが機械的に警告するが、本メソッド冒頭の
+    // permissionGate.isGranted(POST_NOTIFICATIONS_PERMISSION)（直前の早期return）が既にその
+    // ガードを行っている。Lintの静的解析はPermissionGateという自前の抽象を経由した権限
+    // チェックを追跡できない（ContextCompat.checkSelfPermission等の直接呼び出しのみ認識する）
+    // ための誤検知であり、実装を変更せずSuppressLintで対応する。
+    @SuppressLint("MissingPermission")
     override fun notifyNow(kind: NotificationKind, payload: NotificationPayload): NotifyResult {
         if (!permissionGate.isGranted(POST_NOTIFICATIONS_PERMISSION)) {
             return NotifyResult.Skipped(DegradationReason.NOTIFICATIONS_DISABLED)
@@ -252,10 +260,18 @@ class AndroidNotificationService(
         return canScheduleExactAlarms(alarmManager)
     }
 
+    /**
+     * P5-C6統合ウィンドウ: チャネル名に加え説明（`setDescription`）も設定する
+     * （§10.6申し送り②「通知チャネル名/説明」）。RECOVERYチャネルは実際には作られない
+     * （T-NOTIF-3が2チャネルで固定、S-5）ため、本メソッド自体は[NotificationKind.RECOVERY]で
+     * 呼ばれることはないが、[channelNameFor]/[channelDescriptionFor]の`when`網羅性のために
+     * RECOVERY分岐にも実在の文言を用意してある。
+     */
     private fun ensureChannel(manager: NotificationManagerCompat, kind: NotificationKind) {
         manager.createNotificationChannel(
             NotificationChannelCompat.Builder(channelIdFor(kind), NotificationManagerCompat.IMPORTANCE_HIGH)
                 .setName(channelNameFor(kind))
+                .setDescription(channelDescriptionFor(kind))
                 .build()
         )
     }
@@ -268,10 +284,23 @@ class AndroidNotificationService(
         NotificationKind.RECOVERY -> "channel_recovery"
     }
 
+    /**
+     * P5-C6統合ウィンドウ（§10.6申し送り②の是正）: 従来`step_title_transition`／
+     * `departure_title`／`recovery_title`を借用していたが、通知チャネル名専用の
+     * `notification_channel_*_name`（ja/en対）へ差し替えた（NotificationContentBuilder.ktの
+     * KDoc「P5-C6統合ウィンドウでの差し替え」と同じ理由）。
+     */
     private fun channelNameFor(kind: NotificationKind): CharSequence = when (kind) {
-        NotificationKind.TRANSITION_START -> context.getString(com.actionstarter.R.string.step_title_transition)
-        NotificationKind.DEPARTURE -> context.getString(com.actionstarter.R.string.departure_title)
-        NotificationKind.RECOVERY -> context.getString(com.actionstarter.R.string.recovery_title)
+        NotificationKind.TRANSITION_START -> context.getString(com.actionstarter.R.string.notification_channel_transition_start_name)
+        NotificationKind.DEPARTURE -> context.getString(com.actionstarter.R.string.notification_channel_departure_name)
+        NotificationKind.RECOVERY -> context.getString(com.actionstarter.R.string.notification_channel_recovery_name)
+    }
+
+    /** P5-C6統合ウィンドウで追加（§10.6申し送り②「通知チャネル名/説明」）。 */
+    private fun channelDescriptionFor(kind: NotificationKind): String = when (kind) {
+        NotificationKind.TRANSITION_START -> context.getString(com.actionstarter.R.string.notification_channel_transition_start_description)
+        NotificationKind.DEPARTURE -> context.getString(com.actionstarter.R.string.notification_channel_departure_description)
+        NotificationKind.RECOVERY -> context.getString(com.actionstarter.R.string.notification_channel_recovery_description)
     }
 
     /**

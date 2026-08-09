@@ -75,6 +75,24 @@
     <string name="recovery_no_options_message">No alternatives available. Please proceed manually.</string>
     <string name="recovery_option_eta_label">ETA</string>
 
+    <!-- Recovery Basic (Phase 6, spec §31-33/§70). Added in P6-C5 (integration window, plan
+         §6.4 row 3): title/explanation for BasicRecoveryEngine's 4 deterministic semanticAction
+         keys, resolved by RecoveryOptionText.kt (resolveRecoveryOptionTitle/Explanation).
+         Wording for keep_all_steps/skip_optional_steps/skip_optional_and_important_steps
+         reuses the phrasing already shown to users via the Phase 1-5 mock (MockRecoveryFactory,
+         now removed); change_transport_mode (option D) is new in Phase 6. -->
+    <string name="recovery_option_title_keep_all_steps">Continue as planned</string>
+    <string name="recovery_option_explanation_keep_all_steps">Keep the current plan without skipping any step.</string>
+    <string name="recovery_option_title_skip_optional_steps">Skip optional steps</string>
+    <string name="recovery_option_explanation_skip_optional_steps">Skip optional steps to save time.</string>
+    <string name="recovery_option_title_skip_optional_and_important_steps">Skip optional and important steps</string>
+    <string name="recovery_option_explanation_skip_optional_and_important_steps">Skip optional and important (but skippable) steps to save more time.</string>
+    <string name="recovery_option_title_change_transport_mode">Change transport mode</string>
+    <string name="recovery_option_explanation_change_transport_mode">Switch to a different way to travel and save time.</string>
+    <!-- Generic engine-failure message (§9 error map #17, RecoveryViewModel.kt). Replaces the
+         P6-C4 temporary reuse of recovery_no_options_message for this case. -->
+    <string name="recovery_engine_error_message">Something went wrong while updating your plan. Please proceed manually.</string>
+
     <!-- Navigation guard (F9, spec T-NAV-4). Added in C5 (integration owner): shown when the
          Execution screen is reached without a confirmed Plan; the user is redirected to
          Event Selection. -->
@@ -127,4 +145,28 @@
     <string name="step_title_departure">Departure</string>
     <string name="step_title_travel">Travel</string>
     <string name="step_title_fallback">Step</string>
+
+    <!-- Notification content (F49/F52/F60, spec §62/§29/§43, ADR-0025/0026/0027). Added in P5-C6
+         (domain-implementer, integration window). NotificationContentBuilder.kt / the channel
+         name+description in AndroidNotificationService.kt had borrowed Departure/StepTitle
+         wording while strings.xml was frozen during P5-C3 (see that file's KDoc "P5-C3実装時点の
+         暫定解決" and the §10.6 handoff's item 2); these dedicated notification_* keys replace
+         that borrowing so notification copy and screen copy can change independently.
+         RECOVERY entries complete the closed 3-kind set (§62) but are not reachable in Phase 5
+         (S-5: Recovery's fire path/channel creation is Phase 6 scope). -->
+    <string name="notification_channel_transition_start_name">Transition reminders</string>
+    <string name="notification_channel_transition_start_description">Reminds you when it\'s time to start getting ready for your next event.</string>
+    <string name="notification_channel_departure_name">Leave now reminders</string>
+    <string name="notification_channel_departure_description">Reminds you when it\'s time to leave so you arrive on time.</string>
+    <string name="notification_channel_recovery_name">Plan updates</string>
+    <string name="notification_channel_recovery_description">Notifies you when your plan changes because you\'re running behind.</string>
+    <string name="notification_transition_start_title">Time to get ready</string>
+    <string name="notification_transition_start_text">Start your next step now.</string>
+    <string name="notification_departure_title">Leave now</string>
+    <string name="notification_departure_arrival_label">Estimated arrival</string>
+    <string name="notification_departure_event_label">Event</string>
+    <string name="notification_departure_buffer_label">Buffer</string>
+    <string name="notification_departure_buffer_minutes_format">%1$d min</string>
+    <string name="notification_recovery_title">Plan updated</string>
+    <string name="notification_recovery_text">You\'re running behind. Open the app to see your updated plan.</string>
 </resources>

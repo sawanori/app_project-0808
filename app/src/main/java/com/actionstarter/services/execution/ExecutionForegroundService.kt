@@ -1,5 +1,6 @@
 package com.actionstarter.services.execution
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.Service
 import android.content.Intent
@@ -42,7 +43,18 @@ class ExecutionForegroundService : Service() {
      * マップ#6。[ExecutionServiceController]側の[com.actionstarter.services.notification.
      * DegradationReason.FOREGROUND_SERVICE_UNAVAILABLE]写像はController側の権限事前チェック
      * （T-FGS-6）が主経路であり、本catchはOS側の予期しない拒否に対する最終防御である）。
+     *
+     * **P5-C6統合ウィンドウ（lintDebug MissingPermission対応）**: catch節の
+     * `manager.notify(...)`はPOST_NOTIFICATIONS（API 33+）拒否時にLintが機械的に警告するが、
+     * ここは`startForeground`失敗という異常系の最終防御であり、`PermissionGate`は
+     * `Service`のno-argコンストラクタ制約のため注入できない。事前に許可チェックを追加すると
+     * T-FGS-3（`onStartCommand_whenStartForegroundThrows_showsBestEffortNotificationWithoutCrashing`、
+     * `manager.notify`が実際に呼ばれbest-effort通知が投稿されることを検証）がRobolectric既定の
+     * permission-denied状態下で意図せず壊れるため、実装は変更せずSuppressLintで対応する
+     * （通知が届かない場合の最終フォールバックはT-FGS-1〜6が固定する`ExecutionServiceController`
+     * 側の事前権限チェックが担う）。
      */
+    @SuppressLint("MissingPermission")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val manager = NotificationManagerCompat.from(this)
         manager.createNotificationChannel(

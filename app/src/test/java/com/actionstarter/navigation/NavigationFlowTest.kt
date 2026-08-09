@@ -105,6 +105,16 @@ class NavigationFlowTest {
     }
 
     // T-NAV-1: 正常系 - Selection→Review→Execution→Departureの一連の遷移が通しで成立する
+    //
+    // **P5-C6更新（ADR-0028・計画書§10.6申し送り）**: execution routeがExecutionViewModel
+    // 経由の本番結線に切り替わったことで、「Doneタップ1回でExecutionから離脱する」という旧前提
+    // （M5-14の既知の制限。旧NavHostが`onDone=null`固定で渡していたことによる
+    // ExecutionScreenのフォールバック挙動、T-EXEC-4）が解消された。PlanReviewViewModel
+    // （本サイクルの変更対象外）が組み立てるPlanningContextは`travelEstimate=null`固定のため、
+    // BasicPlanningEngineはTRANSITION／PREPARATION／DEPARTUREの3ステップを生成する
+    // （BasicPlanningDefaults.TRANSITION=5分・PREPARATION=15分がいずれも0分超のため生成され、
+    // TRAVELはtravelEstimate=nullのため生成されない。ADR-0016のstep構築順）。したがって
+    // departureへ到達するにはステップ数と同数の3回「Done」をタップする必要がある。
     @Test
     fun tNav1_selectionToReviewToExecutionToDeparture_fullFlowSucceeds() {
         val context = RuntimeEnvironment.getApplication()
@@ -113,7 +123,11 @@ class NavigationFlowTest {
 
         composeTestRule.onNodeWithText(context.getString(R.string.event_selection_prepare_button)).performClick()
         composeTestRule.onNodeWithText(context.getString(R.string.plan_review_start_button)).performClick()
-        composeTestRule.onNodeWithText(context.getString(R.string.execution_done_button)).performClick()
+        // TRANSITION → PREPARATION → DEPARTURE の3ステップぶん「Done」をタップし、
+        // One Actionの多段階前進（F58）を通しで検証する。
+        repeat(3) {
+            composeTestRule.onNodeWithText(context.getString(R.string.execution_done_button)).performClick()
+        }
         composeTestRule.onNodeWithText(context.getString(R.string.departure_title)).assertIsDisplayed()
     }
 

@@ -12,6 +12,7 @@ import com.actionstarter.recovery.RecoveryPlanApplier
 import com.actionstarter.services.location.LocationFailureReason
 import com.actionstarter.services.location.LocationResult
 import com.actionstarter.services.location.LocationService
+import com.actionstarter.services.notification.NotificationService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,24 +45,32 @@ import java.util.UUID
  * - 欠陥5: `init`の`viewModelScope.launch`に`try/catch`を追加し、[recoveryEngine]の例外を
  *   握り潰さず[RecoveryUiState.routingFailureReason]へ表面化させる（`CancellationException`は
  *   構造化並行性の取り消しを妨げないよう再送出する。`CachingRoutingService.kt`の先例に倣う。
- *   T-RECVM-5）。`routingFailureReason`は本来D案専用の欄だが、strings.xml編集が
- *   C5統合ウィンドウ専有のため専用の汎用エラー文言を追加できず、既存の
- *   `R.string.recovery_no_options_message`（「代替案はありません。手動で対応してください。」）を
- *   暫定転用する（engineが失敗した実際の帰結＝候補が1件も出せない、という意味では正しい文言。
- *   TODO(P6-C5): 専用の`recovery_engine_error_message`をstrings.xmlへ追加し差し替える。
- *   完了報告のC5申し送り参照）。
+ *   T-RECVM-5）。`routingFailureReason`は本来D案専用の欄だが、engineが例外自体を送出した
+ *   （＝候補が1件も出せない）場合の汎用エラー欄としてもこのフィールドを転用し、
+ *   専用の[R.string.recovery_engine_error_message]（P6-C5統合ウィンドウでstrings.xmlへ
+ *   ja/en追加）を表示する（P6-C4時点までは`R.string.recovery_no_options_message`を暫定転用
+ *   していたが、P6-C5で専用キーへ差替済み）。
  *
  * [useThisPlan]（Fable 5裁定3）は「Use this plan」タップ起点でのみ呼ばれる契約とし
  * （§34ガード厳守。本クラス自身が自動的に呼び出す経路は作らない）、[recoveryPlanApplier]経由で
  * 適用した[ExecutionPlan]を[sharedPlanViewModel.confirmPlan]へ渡す。適用後は
  * [RecoveryUiState.isPlanApplied]を立て、以後の呼び出しをone-shotガードで無視する
  * （§9エラーマップ#10、無限ループ防止、T-RECVM-6/7/8）。
+ *
+ * **P6-C5統合ウィンドウ追加（Fable 5裁定・P5-C6申し送り③への回答、
+ * `docs/plans/phase5-notification-execution.md`§10.8）**: [useThisPlan]適用時、
+ * [notificationService]が非nullなら旧アラーム（`cancelAll`）を取り消し、適用後のPlanで
+ * `schedule`を再実行する。P5-C6時点では「Recoveryが確定Planを更新しても通知は再スケジュール
+ * されない」既知の未配線だったが、Recoveryが実際にPlanを更新できるようになったP6-C5で解消する。
+ * [notificationService]の既定値は`null`（`RecoveryViewModelTest`等、通知結線を検証しない
+ * 既存呼び出し元は無変更のまま成立する）。
  */
 class RecoveryViewModel(
     private val recoveryEngine: RecoveryEngine,
     private val sharedPlanViewModel: SharedPlanViewModel,
     private val locationService: LocationService = UnavailableLocationService,
-    private val clock: Clock = Clock.systemUTC()
+    private val clock: Clock = Clock.systemUTC(),
+    private val notificationService: NotificationService? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(RecoveryUiState())
@@ -78,10 +87,11 @@ class RecoveryViewModel(
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (engineFailure: Exception) {
-                // 握り潰さない（欠陥5修正）：engine例外をUiStateへ表面化させる。KDoc「暫定転用」
-                // 参照。options空のまま既定の「案なし」導線へ合流させ、固まったまま何も表示されない
+                // 握り潰さない（欠陥5修正）：engine例外をUiStateへ表面化させる。P6-C5で
+                // 専用のR.string.recovery_engine_error_messageへ差替済み（クラスKDoc参照）。
+                // options空のまま既定の「案なし」導線へ合流させ、固まったまま何も表示されない
                 // 状態を防ぐ。
-                _uiState.value = RecoveryUiState(routingFailureReason = R.string.recovery_no_options_message)
+                _uiState.value = RecoveryUiState(routingFailureReason = R.string.recovery_engine_error_message)
             }
         }
     }
@@ -105,6 +115,17 @@ class RecoveryViewModel(
         val option = _uiState.value.options.firstOrNull { it.id == optionId } ?: return
 
         val updatedPlan = recoveryPlanApplier.apply(plan, option)
+
+        // P6-C5統合ウィンドウ（クラスKDoc「useThisPlan→通知再スケジュール」参照）: 適用で
+        // ExecutionPlanが更新されたら、旧アラーム（transitionStart/departureTime基準の
+        // 予約）を取り消し、更新後Planで再スケジュールする。event.idは適用前後で不変
+        // （RecoveryPlanApplier.apply、「eventは変更しない」）なので、cancelAll/scheduleとも
+        // 同一planIdを対象とする。notificationServiceが未注入（既定null）のテスト等では何もしない。
+        notificationService?.let { service ->
+            service.cancelAll(plan.event.id.toString())
+            service.schedule(updatedPlan)
+        }
+
         sharedPlanViewModel.confirmPlan(updatedPlan)
         _uiState.value = _uiState.value.copy(isPlanApplied = true)
     }
