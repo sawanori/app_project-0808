@@ -78,4 +78,54 @@
     <!-- Navigationガード（F9、仕様T-NAV-4）。C5（integration owner）で追加：
          Planが未確定のままExecution画面へ到達した際に表示し、Event Selectionへ戻す。 -->
     <string name="nav_plan_not_confirmed_snackbar_message">プランがまだ確定していません。もう一度予定を選び直してください。</string>
+
+    <!-- 位置権限（F21、仕様§67/§95.4、S-1裁定）。P3-C1（domain-implementer）でキー定義のみ
+         追加。文言確定はP3-C6（§6.4行7）。 -->
+    <string name="location_permission_rationale_title">位置情報へのアクセス</string>
+    <string name="location_permission_rationale_message">現在地を使って次の予定までの移動時間を見積もります。</string>
+    <string name="location_permission_grant_button">位置情報へのアクセスを許可</string>
+    <string name="location_permission_denied_message">移動時間の自動取得はできませんが、移動時間を手動で入力して続けられます。</string>
+    <string name="location_open_settings_button">アプリ設定を開く</string>
+    <!-- おおよその位置情報（COARSE）のみ許可時の精度低下注記（F21、仕様§95.4行/§10#4、
+         S-1裁定・T-PERM3-5）。P3-C2（test-writer）で追加。ACCESS_COARSE_LOCATIONのみ許可された
+         場合に表示する。 -->
+    <string name="location_permission_coarse_only_notice">おおよその位置情報のみが利用可能なため、この見積もりの精度は低下する場合があります。</string>
+
+    <!-- 手動Travel Time入力フォールバック（F28、仕様§95.4/§95.6、S-2裁定）。P3-C1で追加。 -->
+    <string name="travel_time_manual_label">移動時間（分）</string>
+    <string name="travel_time_manual_apply_button">適用</string>
+
+    <!-- Transport modeセレクタ（F26、仕様§9/§67、S-3裁定：4値）。P3-C1で追加。 -->
+    <string name="transport_mode_walking">徒歩</string>
+    <string name="transport_mode_driving">車</string>
+    <string name="transport_mode_transit">公共交通機関</string>
+    <string name="transport_mode_cycling">自転車</string>
+
+    <!-- Departure画面のETA精度低下注記／geocode不能案内（F25/F23、仕様§95.6/§4.5）。P3-C1で追加。 -->
+    <string name="departure_eta_stale_notice">この移動時間は古い可能性があります。精度が低下している場合があります。</string>
+    <string name="departure_geocode_no_match_message">この予定の移動先を特定できませんでした。移動時間を手動で入力してください。</string>
+
+    <!-- EtaFailureReason別のETA失敗メッセージ（F27、RoutingException→EtaFailureReason、仕様
+         §95.6、S-4裁定、T-DEPVM-9）。P3-C5（ui-implementer）で追加。DepartureScreenが
+         単一の汎用フォールバックではなくEtaFailureReasonごとに異なるメッセージを表示できる
+         ようにする。EtaFailureReason.MALFORMED_RESPONSEはdeparture_eta_unavailable_messageを
+         意図的に再利用する（ユーザーが取れる行動が「取得不可」と変わらないため）。 -->
+    <string name="departure_eta_not_configured_message">移動時間の自動取得はまだ設定されていません。移動時間を手動で入力してください。</string>
+    <string name="departure_eta_offline_message">ネットワークに接続できず、移動時間を見積もれませんでした。</string>
+    <string name="departure_eta_timeout_message">移動時間の見積もりがタイムアウトしました。</string>
+    <string name="departure_eta_unauthorized_message">現在、移動時間の見積もりを利用できません。</string>
+    <string name="departure_eta_quota_exceeded_message">本日の移動時間取得の上限に達しました。</string>
+    <string name="departure_eta_server_error_message">移動時間サービスが一時的に利用できません。</string>
+    <string name="departure_eta_no_route_message">この予定への経路が見つかりませんでした。</string>
+
+    <!-- ステップタイトル解決（F47、semanticId → stringResource、仕様§48/§7「UI文字列の
+         直接ハードコード禁止」、G-4）。P4-C4（ui-implementer）でT-P4UI-1..5向けに追加。
+         features/common/StepTitle.ktのresolveStepTitleが解決し、PlanReviewScreen・
+         ExecutionScreen双方で共通利用する。step_title_fallbackは未知のsemanticId向け
+         （T-P4UI-3）。 -->
+    <string name="step_title_transition">切り替え</string>
+    <string name="step_title_preparation">準備</string>
+    <string name="step_title_departure">出発</string>
+    <string name="step_title_travel">移動</string>
+    <string name="step_title_fallback">ステップ</string>
 </resources>

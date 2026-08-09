@@ -437,7 +437,9 @@ local.properties (gitignore済み・実測確認)   →   app/build.gradle.kts �
 | T-GEO-6 | 異常 | タイムアウト → `Failure(TIMEOUT)` | AndroidGeocodingService |
 | T-GEO-7 | エッジ | 同一文字列2回目 → キャッシュ命中で `GeocoderSource` を呼ばない | AndroidGeocodingService |
 | T-GEO-8 | エッジ | `NoMatch` もキャッシュされ、2回目に再照会しない（無駄な I/O 抑止） | AndroidGeocodingService |
-| T-GEO-9 | エッジ | `@Config(sdk = [26, 33])` で API 26 系（同期）と API 33 系（非同期）の両パスが同じ `Success` へ収束する | PlatformGeocoderSource |
+| T-GEO-9 | エッジ | `@Config(sdk = [33])` で API 33 系（非同期）が `Success` へ収束する。**P3-C6追補**: 当初は `@Config(sdk = [26, 33])` で API 26 系（同期）との収束も検証する設計だったが、Robolectric 4.16.1実測で `sdk=26` 側が `expected:<1> but was:<0>` により失敗することを確認し、`sdk = [33]` のみへ縮小した（詳細は`PlatformGeocoderSourceTest`のクラスKDoc、および本書§15 #12・§16参照） | PlatformGeocoderSource |
+| T-GEO-10 | 異常 | 空文字入力 → `Failure(INVALID_INPUT)`。`GeocoderSource` 不呼出（**P3-C6追補・計画書§9.4追補、Fable 5承認2026-08-09**） | AndroidGeocodingService |
+| T-GEO-11 | エッジ | `https://` 入力 → `NoMatch`。`GeocoderSource` 不呼出（**P3-C6追補・計画書§9.4追補、Fable 5承認2026-08-09**） | AndroidGeocodingService |
 
 ### 9.5 F24/F29 — `RoutesApiRoutingService`（fake `HttpPostClient`／`src/test`／端末不要）
 
@@ -492,7 +494,7 @@ local.properties (gitignore済み・実測確認)   →   app/build.gradle.kts �
 | T-PERM3-1 | 正常 | 未許可の初回表示で **system dialog を自動起動しない**（launcher 呼び出し0回・§95.4） | DepartureScreen |
 | T-PERM3-2 | 正常 | 事前説明カードのボタンタップで権限要求ラムダが1回だけ呼ばれる | DepartureScreen |
 | T-PERM3-3 | 異常 | 拒否 → 手動 Travel Time 入力 ＋ Settings 導線の両方が表示される | DepartureScreen |
-| T-PERM3-4 | エッジ | 拒否後 ON_RESUME で許可へ変化 → 自動で再計算し ETA 表示へ復帰する | DepartureScreen/ViewModel |
+| T-PERM3-4 | エッジ | 拒否後 ON_RESUME で許可へ変化 → 自動で再計算し ETA 表示へ復帰する。**P3-C6追補**: アサーションを絶対値（`1`）から差分形式（`callCountAfterInitialLoad + 1`）へ修正（Fable 5承認2026-08-09: T-DEPVM-8の差分規約に統一・`DepartureViewModel.init`のconfirmedPlan購読開始時automatic recalculateを未考慮だった漏れの修正。詳細は本書§16参照） | DepartureScreen/ViewModel |
 | T-PERM3-5 | エッジ | COARSE のみ許可（precise 拒否）時の挙動が定義どおり（**S-1 裁定に依存**） | DepartureScreen/ViewModel |
 | T-CFG-1 | 正常 | キーあり → `AppContainer` が `CachingRoutingService(RoutesApiRoutingService)` を供給する | AppContainer |
 | T-CFG-2 | エッジ | キーが空文字 → `UnconfiguredRoutingService` を供給し、ビルド・テストが成立する | AppContainer |
@@ -589,6 +591,19 @@ Manifest 検証はマージ後に常に Green でありRed化不能のため、P
 
 **C5の直列制約（Fable 5裁定2026-08-09・修正1）**: C5（`features/departure/`）はC3・C4とはファイルフットプリントが素で技術的には並列可能だが、**Phase 4のP4-C5（`SharedPlanViewModel`注入・計画時点値のマッピング）が完了するまで着手しない**という追加の直列制約を持つ。`di/AppContainer.kt`の編集も統合オーナーがP4統合→P3統合の順で直列実施する。**C3・C4はこの制約を受けず、Phase 4の全ドメインサイクルと引き続き完全並列可**（フットプリント素であるため）。
 
+### 12.1 完了実績（P3-C2〜C7、実測記録。P3-C6はintegration owner、P3-C7はquality-runnerがそれぞれの実施サイクルで追記）
+
+各サイクルの完了状態を、保存済みログ（`build/agent-logs/`）に接地して記録する。P3-C8（instrumented・G4-E）は本書時点で未実施のため未記載（今後の申し送り）。
+
+| サイクル | 完了実績（実測接地） |
+|---|---|
+| P3-C2 | Red化・既存`DepartureScreenTest`（T-DEP-1〜4）更新を実施。`p3c2a-compile.log`／`p3c2b-compile-*.log`でscaffold＋Redテストのコンパイル成功を実測確認済み。個別のRed実行時点の失敗件数を記録した専用ログは本統合サイクル開始時点で確認できなかったため、具体的な失敗件数は「不明」として扱う（捏造しない）。P3-C3実測（次行）で`services/location/`実装後の残存失敗が4件まで縮小していることから、間接的にC2時点でより多くのJVM系テストがfailingだったことが推測できるが、これは推測であり実測ではない旨を明記する |
+| P3-C3 | `services/location/`実装完了。`p3c3-full.log`実測: `:app:testDebugUnitTest`は**238件中4件失敗**（`AppContainerRoutingConfigTest.tCfg1_apiKeyConfigured...`・`DepartureRoutingScreenTest.tPerm3_4_deniedThenGrantedOnResume...`・`DepartureScreenTest.tDep4_startNavigationButton_disabledWithReason`・`PlatformGeocoderSourceTest.lookup...[26]`）＋skip 1件。4件はいずれもC3のスコープ外（`AppContainer`結線＝C6所管／`DepartureScreen`のtDep4＝C5所管／Robolectric制約＝後述P3-C6行）であり、C3自身の対象（`services/location/`）に起因する失敗は残っていない |
+| P3-C4 | `services/routing/`実装完了。`p3c4-full.log`実測: **238件中4件失敗（内訳はP3-C3と完全一致）**。C4は`services/routing/`のみを変更したため、この4件に対する増減がないことが実測で確認できる（回帰なし） |
+| P3-C5 | `features/departure/`実装完了。`p3c5-full.log`実測: **238件中3件失敗**（`DepartureScreenTest.tDep4`がC5の`DepartureScreen`実装により解消）。残り3件（`AppContainerRoutingConfigTest.tCfg1`・`DepartureRoutingScreenTest.tPerm3_4`・`PlatformGeocoderSourceTest[26]`）はC6へ申し送りされた |
+| P3-C6 | `AppContainer`実結線（§6.4#4）・NavHost結線（§6.4#5）・`mock/MockRoutingService.kt`削除・承認済みテスト修正3件（`DepartureRoutingScreenTest.tPerm3_4`差分規約化／`PlatformGeocoderSourceTest`のsdk絞込＋KDoc追記／`AndroidGeocodingServiceTest`へT-GEO-10・T-GEO-11追加）を実施。**`p3c6-full.log`と`p3c6-full-rerun.log`（`--rerun`による強制再実行。2回実測とも同一結果で再現性を確認）: 総239件（P3-C5の238件からの純増+1＝T-GEO-10/T-GEO-11追加2件－`PlatformGeocoderSourceTest`のsdk=26系除去1件）、failures 0、errors 0、skipped 1（`tCfg2_apiKeyEmpty_appContainerSuppliesUnconfiguredRoutingService`。本開発環境の`local.properties`に`MAPS_ROUTES_API_KEY`が設定済みのため`Assume`によりskip＝T-CFG-1/T-CFG-2の対称設計どおり）、passed 238。** C5引き継ぎの3件はいずれも解消を実測確認した：`tCfg1`は`AppContainer`実結線後にGreen（`container.routingService is CachingRoutingService`が成立）、`tPerm3_4`はアサーション差分化後にGreen、`PlatformGeocoderSourceTest`は`sdk = [33]`のみへ絞り込み後にGreen。`:app:assembleDebug`は`p3c6-assembleDebug.log`でexit 0（BUILD SUCCESSFUL）を実測確認した |
+| **P3-C7（本サイクル）** | **P3-C6の実装コードに対し初回のlintDebug実測を実施したところ4件のerror**（`FusedRawLocationSource.kt:44`のMissingPermission1件、`PlatformGeocoderSource.kt:46/49`のNewApi3件。いずれもP3-C3で追加された`services/location/`のGMS/Geocoder呼び出しが原因で、C2〜C6のいずれの完了記録もlint実測を含んでいなかったため未検出だった）を検出。ソースを確認したところ両クラスとも設計上安全（`FusedRawLocationSource`はKDoc・`FusedLocationService.currentLocation`実装（`permissionGate.isGranted`を先行判定し偽なら`rawLocationSource`を呼ばない設計＋`SecurityException`をcatchする設計）で権限判定が呼び出し元L2に一元化されており、`PlatformGeocoderSource.lookupAsync`は呼び出し元`lookup()`の`Build.VERSION.SDK_INT >= TIRAMISU`分岐でのみ到達する設計）ため、制約どおり**ロジック変更なしの機械的修正**（`@SuppressLint("MissingPermission")`を`FusedRawLocationSource.currentFix`に、`@RequiresApi(Build.VERSION_CODES.TIRAMISU)`を`PlatformGeocoderSource.lookupAsync`に追加。いずれもマーカーアノテーションのみで理由コメント併記）のみで解消し、再実行で**`:app:lintDebug`エラー0**を実測確認した（`build/agent-logs/p3c7-lint.log`）。warningは13件で、Phase 4完了時点の既知基準24件（`docs/plans/phase4-basic-engine.md` P4-C6行）から**-11件**。カテゴリ別内訳: `OldTargetApi`1・`AndroidGradlePluginVersion`1・`GradleDependency`6・`MissingApplicationIcon`1はいずれも24件基準から増減なし、`UnusedResources`のみ15→4（-11）。24件基準でPhase 3所有と特定されていた未配線文字列13件（`location_permission_*`／`travel_time_manual_*`／`transport_mode_*`／`departure_eta_stale_notice`／`departure_geocode_no_match_message`）のうち11件はC5の`features/departure/`実装により配線され警告解消（予測どおり）、残り2件（`location_permission_denied_message`・`travel_time_manual_apply_button`）は本サイクル時点でも未配線のまま残存（`grep`でソース参照0件を実測確認。エラーではなくwarningのためG4-JVM達成条件外だが後続へ申し送る）。`execution_placeholder_step_title`（Phase 4所有）・`recovery_option_eta_label`（既存許容分）は不変。`:app:build`（テスト込みフルビルド）は**BUILD SUCCESSFUL・exit 0**を実測（`build/agent-logs/p3c7-build.log`）。JUnit XML集計で`testDebugUnitTest`は**239件中238 pass・0 fail・1 skip**（P3-C6から変化なし＝lint修正2件がテスト回帰を生んでいないことを実測確認）、`assembleDebug`・`assembleRelease`双方成功。**計画書§9.10のマージ済みマニフェスト4項目検証**（`:app:assembleRelease`実行後、`build/agent-logs/p3c7-manifest.log`）: (1)debug/release両変種の`<uses-permission>`に`ACCESS_FINE_LOCATION`存在＝**PASS**、(2)両変種に`ACCESS_BACKGROUND_LOCATION`の`<uses-permission>`タグ不在＝**PASS**（初回は単純文字列grepでマージ元Manifestのコメント（この制約自体を説明する日本語コメント文）に誤ヒットし`[FAIL]`と誤判定したが、`<uses-permission>`タグに限定した再検証で誤検知と確認し訂正。ログに経緯をそのまま残す）、(3)両変種に`ACCESS_COARSE_LOCATION`存在（S-1裁定どおり）＝**PASS**、(4)`grep -r "AIza" app/src/main/ app/build/intermediates/merged_manifest*`で0件＝**PASS**（`MAPS_ROUTES_API_KEY`は`local.properties`→`BuildConfig.ROUTES_API_KEY`経由のみで注入されManifest/resには一切現れない設計どおり）。4項目すべてPASSにより**G4-JVM達成** |
+
 ---
 
 ## 13. ユーザーへの依頼文（そのまま使える形）
@@ -677,6 +692,8 @@ Manifest 検証はマージ後に常に Green でありRed化不能のため、P
 | 8 | §29/§35 Screen 4 | `Start navigation` ボタンが画面仕様に存在するが、§67 の Phase 3 実装項目には含まれない | Phase 3 では既存の `isStartNavigationEnabled = false`（Phase 1 T-DEP-4）を**維持する**。外部地図アプリ起動は §88 判定で Phase 3 スコープ外。Phase 5 以降へ申し送り |
 | 9 | §30 Reality Check | `currentLocation` を比較対象に含むが、§67 Phase 3 には Reality Check 自体が含まれない（§70 Phase 6 が Recovery） | Phase 3 は `LocationService` を提供するのみで、Reality Check の周期実行は実装しない。**§95.4 は権限取得タイミングを「Departure Mode / Reality Check 機能の初回利用時」としているため、Phase 3 では Departure Mode 側のみが要求点になる**旨を ADR に記録 |
 | 10 | §95.1(b) | Execution Mode中のForeground Service継続時の位置取得許可条件（`isExecutionServiceRunning()`）は、Phase 5でForeground Serviceが実装されるまで実体を持たない | Phase 3 では`ForegroundGate.isLocationAccessAllowed()`の一部として常にfalseを返す設定可能フックを実装し、Phase 5で実配線する（修正2・Fable 5裁定2026-08-09、Gemini G1 CRITICAL対応）。**Phase 5への申し送り事項とする** |
+| 11 | §7.1（JSON選定表）・P3-P4 | 当初計画は「Robolectric上で`org.json`実装が動くか」をP3-P4として検証し、不成立時は(a) L1パーサのテストをinstrumentedへ移す、または(b) `kotlinx-serialization-json`追加、のいずれかへフォールバックする設計だった（**P3-C6・本統合サイクルでの追加実測により発見**）。しかし実装（P3-C4）では`RoutesApiRequestBuilderTest`／`RoutesApiResponseParserTest`がRobolectric不使用のプレーンJUnit（`@RunWith`指定なし）であるため、org.jsonはRobolectric互換性以前にAndroidスタブ実装（`Stub!`例外を投げる）を踏んでしまい使用不能と判明した（`RoutesApiRequestBuilder.kt`・`RoutesApiResponseParser.kt`のKDoc参照） | **計画にない第3の経路（(a)(b)いずれでもない）を採用**: `RoutesApiRequestBuilder`はStringテンプレートで固定形状のリクエストJSONを直接組み立て、`RoutesApiResponseParser`は依存ゼロの手書き`MinimalJson`パーサ（`private object`、object/array/string/number/boolean/nullの再帰下降解析）を自前実装した。org.json・kotlinx-serialization-jsonいずれも追加していない（依存追加ゼロ、§88）。**org.json／kotlinx-serialization等への置換可否は、P3-C8（instrumented・G4-E）でRobolectric非依存の実環境検証が揃った後に再評価する**（本行を申し送り事項として記録） |
+| 12 | §10エラー＆レスキューマップ#17〜20 vs 実装 | エラー＆レスキューマップは401/403（Unauthorized）・429（QuotaExceeded）・5xx（ServerError）・`routes`配列空（NoRoute）／不正JSON（MalformedResponse）の扱いを規定するが、**それ以外のHTTPステータス（例: 404・400）の扱いは仕様にもエラーマップにも規定がない**（**P3-C6・本統合サイクルでの追加実測により発見**） | `RoutesApiRoutingService.estimateRoute`（P3-C4実装）は、200/401/403/429/5xx以外のすべてのステータスを`RoutingException.ServerError`へ寄せるデフォルト分岐（`when`式の`else`節）を採用している（データを偽装せず、クラッシュもしない安全側の選択。`RoutesApiRoutingService.kt`のKDoc「契約の未定義域」参照）。**この分岐を専用に検証するJVMテストは存在しない**（T-ROUTESVC-3〜5は仕様で規定済みの401/403/429/5xxのみを対象とする）。404/400等の未定義ステータスに対する挙動は実装のみで担保されコード上の回帰検証がない状態である旨を記録し、Phase 3の残存ギャップとする |
 
 ---
 
@@ -685,21 +702,26 @@ Manifest 検証はマージ後に常に Green でありRed化不能のため、P
 **本メモで実測により確定した事項**（すべて本セッションのツール実行結果に接地）:
 - `play-services-location:21.4.0` が Google Maven の最新であり、AAR メタデータが `minCompileSdk=1` / `minCompileSdkExtension=0` / `minAndroidGradlePluginVersion=1.0.0` であること。推移依存 `play-services-base:18.9.0` / `play-services-basement:18.9.0` / `play-services-tasks:18.4.0` も同一値であること。
 - `FusedLocationProviderClient.getCurrentLocation(CurrentLocationRequest, CancellationToken): Task<Location>` / `getLastLocation()` / `setMockMode` / `setMockLocation`、`CurrentLocationRequest.Builder`（`setPriority`/`setDurationMillis`/`setMaxUpdateAgeMillis`/`setGranularity`）、`Priority.PRIORITY_*` が 21.4.0 の classes.jar に実在すること（javap 実測）。
+- `com.google.android.gms.location.LocationServices.getFusedLocationProviderClient(Context): FusedLocationProviderClient` が21.4.0のapi.jarに実在すること（**P3-C6実測・javap**）。`AppContainer`から`LocationServices.getFusedLocationProviderClient(context)`／`Geocoder(context)`を実結線した状態で、Robolectric上の全239件（`Application.onCreate()`を経由する全テストを含む）が構築時例外なく成立すること（**P3-C6実測**。P3-P2「AVD上でのPlay services実在」とは別軸の「Robolectric JVM環境でのクライアント構築可否」を実測確認した）。
 - `android.location.Geocoder` の非同期版 3メソッドが **API 33 以降**、同期版 3メソッドが **API 33 で deprecated（削除されていない）**、`isPresent()` が **API 9 以降**であること（android-35 の `api-versions.xml` 実測）。`GeocodeListener.onError(String)` が default メソッドとして存在すること。
+- **Robolectric 4.16.1の`ShadowGeocoder`は、同期`getFromLocationName(String,Int)`（API 26〜32相当の実装分岐）で`setFromLocation`により設定した値を返さない（`assertEquals(1, result.size)`が`expected:<1> but was:<0>`で実測失敗）。非同期`getFromLocationName(String,Int,GeocodeListener)`（API 33+分岐）は同じfake設定から正しく`Success`へ収束する（P3-C6実測、`PlatformGeocoderSourceTest`参照）**。P3-P4「Robolectric上でのorg.json動作」は実装がorg.jsonを採用しなかったため事後的に無関係となった（本節末尾および§15 #11参照）。
 - `kotlinx-coroutines-core` が現行構成の `debugRuntimeClasspath` で **1.9.0 に解決済み**であること（`:app:dependencies` 実測）。
 - `https://routes.googleapis.com/directions/v2:computeRoutes` がキーなしで 403、存在しないメソッドが 404 を返すこと（**メソッドパスの実在**）。
-- `.gitignore` に `local.properties` が含まれること。`buildConfig = true` が既に有効であること。`MockRoutingService` を参照するテストファイルが 0件であること。
+- `.gitignore` に `local.properties` が含まれること。`buildConfig = true` が既に有効であること。`MockRoutingService` を参照するテストファイルが 0件であること（P3-C1〜C5時点の実測）。**`mock/MockRoutingService.kt`はP3-C6で削除済み**（削除後の`:app:testDebugUnitTest`全件実測はGreen。本節末尾参照）。
+- **P3-C6実測（`p3c6-full.log`／`p3c6-full-rerun.log`、`--rerun`による強制再実行で2回とも同一結果を確認）**: `:app:testDebugUnitTest`は総239件・failures 0・errors 0・skipped 1（`AppContainerRoutingConfigTest.tCfg2`、本開発環境で`MAPS_ROUTES_API_KEY`が設定済みのためAssumeでskip＝設計どおり）・passed 238。`:app:assembleDebug`はexit 0（`p3c6-assembleDebug.log`）。詳細な内訳・引き継ぎ3件の解消記録は本書§12.1参照。
 
 **未検証（要検証）**:
 - **Routes API のリクエスト／レスポンスのフィールド仕様一式**（ヘッダ名 `X-Goog-Api-Key`／`X-Goog-FieldMask` の必須性、body フィールド名、`travelMode` 列挙値、`duration` の `"1234s"` 形式）。403 応答からエンドポイントの実在は確認したが、**中身は一切未検証**である（P3-P6）。
 - Android 12+ における FINE 単独要求の挙動（COARSE 併記の必要性）。**「必須である」と断定できる根拠を本セッションでは取得していない**（P3-P1）。
 - Routes API REST 直叩きで Android アプリ制限を効かせるための `X-Android-Package` / `X-Android-Cert` ヘッダの要否（§13 の依頼文にも未確認である旨を記載済み）。
-- AVD `actionstarter_test` における Google Play services の実在と `FusedLocationProviderClient` の動作（P3-P2）。
+- AVD `actionstarter_test` における Google Play services の実在と `FusedLocationProviderClient` の動作（P3-P2。**P3-C6でRobolectric JVM環境でのクライアント構築可否は実測済みだが、実AVD上での動作は依然未検証**であり両者は別軸である旨を明記する）。
 - `adb emu geo fix` と FusedLocationProvider の連携（P3-P3）。
-- Robolectric 4.16.1 上での `org.json` 実装の動作（P3-P4）。
+- ~~Robolectric 4.16.1 上での `org.json` 実装の動作（P3-P4）~~ → **P3-C6で事後的に無関係と判明**: 実装（P3-C4）は`RoutesApiRequestBuilder`／`RoutesApiResponseParser`のいずれもorg.jsonを採用せず、Stringテンプレート＋依存ゼロの手書き`MinimalJson`パーサで代替したため、org.json自体のRobolectric上の動作を検証する必要がなくなった（§15 #11に経緯を記録。**org.json／kotlinx-serialization等への置換可否はP3-C8後に再評価する**申し送り事項として残る）。
+- **同期Geocoder（API 26〜32、`PlatformGeocoderSource.lookupSync`）のIOディスパッチャ課題（P3-C6・本統合サイクルで発見、既知ギャップとして記録・本サイクルでは未修正）**: `lookupSync`は`geocoder.getFromLocationName(query, maxResults)`という**ブロッキングI/O呼び出し**を`withContext(Dispatchers.IO)`等で明示的にディスパッチせず、呼び出し元のディスパッチャ（`DepartureViewModel`経由では`viewModelScope`＝`Dispatchers.Main.immediate`が既定）のまま実行する（`UrlConnectionHttpPostClient`が`withContext(Dispatchers.IO)`を明示している設計と非対称）。API 26〜32の実機ではメインスレッドをブロックしうる潜在的ANRリスクである。加えて上記のとおりRobolectric 4.16.1の`ShadowGeocoder`は同期パスで`setFromLocation`の値を返さないため、**JVM/Robolectricテストではこの経路のスレッド挙動もfake到達も検証できない**（instrumented環境でのみ検証可能・P3-C8のスコープ外〔E2Eの対象はT-E2E3-1〜4でありスレッド挙動の専用検証は含まれない〕）。本サイクルは`services/location/`配下のファイル変更が制約で禁止されているため、**修正は行わずPhase 3の既知ギャップとして記録するに留める**（是正はPhase 5以降の申し送り候補）
 - エミュレータ上での `Geocoder.isPresent()` と実際の住所解決可否（P3-P5）。
 - `HttpURLConnection` と coroutine キャンセルの協調（P3-P8）。
 - Routes API の現行 SKU 別無料枠・単価（P3-P7。**仕様書自身が「実装着手時に再確認」を要求しており、本メモでは数値を一切断定していない**）。
+- 200/401/403/429/5xx以外のHTTPステータス（例: 404/400）に対する`RoutesApiRoutingService`の`ServerError`デフォルト分岐（P3-C6・本統合サイクルで発見）を専用に検証するJVMテストが存在しないこと（§15 #12参照。実装は安全側のデフォルトを採っているが、この分岐自体の回帰検証は未整備）。
 - **Phase 2 の現状**: **Phase 2はC5-fixで122/122 Green達成済み（2026-08-09・`p2c5fix-full.log`）。C6/C8のクローズ工程が進行中である。** R20 のとおり、Phase 3 着手条件は引き続きPhase 2のG4-JVM通過とし、P3-C1のベースライン確認は「着手時点の全スイートGreen実測（現行122件＋Phase 2 C6での増減を反映した件数）の記録」に簡素化する。**C6/C8完了後の最終件数は本書時点では未確定であり、P3-C1着手直前に再実測して確定することを必須条件とする。**
 
 **§61（MVP に入れない機能）・§88（Developer UX Principle）への抵触なし**: 本計画は写真証明・NFC・QR・SNS・ランキング・友達機能・習慣化・自動予約・自動予定変更のいずれも含まない。追加した機能はすべて §67 の6項目、または §95 が「義務」「必須」と明記する制約（§95.2 スロットリング、§95.1 While-in-use、§95.4 権限フォールバック）への対応であり、「その機能は、予定を今やる一つの行動に変えることに直接寄与するか？」に Yes で答えられる。逆に §88 判定で No として明示的に見送ったものを §2.2 に列挙した（地図表示・場所ピッカー・出発地手動選択・外部ナビ起動・HTTP SDK 追加・キャッシュ永続化・サーバサイドプロキシ）。

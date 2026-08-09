@@ -339,3 +339,188 @@ androidComponents {
 **再検討トリガー**: Phase 5（§69）着手時（その時点のAGP/Hilt環境で①旧Hilt版の採用②AGP 9系への引き上げ③手動DI継続の3択を再判定する）。またはAGP 9系への引き上げがADR-0007の再検討により本ADRより先に発生した場合。
 
 **付記**: `:app:testDebugUnitTest`のテスト総数の正は**73**である（ADR-0013時点の72件〔release変種unit test無効化時点の実測〕に、T-MOCK-11回帰テスト（`app/src/test/java/com/actionstarter/mock/MockEventSourceTest.kt`、コミット`1808128`「T-MOCK-11回帰テスト追加」）が追加され+1。2026-08-09のベースライン実測（`p2c1-baseline.log`、JUnit XML集計）で73/73 Greenとして確定した）。
+
+---
+
+### ADR-0015: BasicPlanningEngineの既定値は`BasicPlanningDefaults`へ隔離し仕様未定義プレースホルダと明記する
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P4-C1） ／ 関連仕様§: §4・§13・G-1
+
+**背景**: `BasicPlanningEngine`（F40〜F46）はtransition／preparation／arrivalBufferの既定値を要する。4種テンプレート構造とtransition 5分／preparation 15分の分数は仕様未定義のプレースホルダである一方、arrivalBuffer 10分は仕様§4「希望到着余裕」のNormalプリセットに根拠がある（G-1裁定、計画書§4）。既定値が実装各所へ分散すると、Phase 10のPersonal Execution Profile置換時に変更箇所を把握できなくなる（R-7）。
+
+**決定**: 既定値定数を`planning/BasicPlanningDefaults.kt`（`object`）へ集約する。KDocでtransition／preparationを「仕様未定義プレースホルダ・Phase 10で置換」、arrivalBufferを「仕様§4 Normalプリセットに根拠あり」と明記する。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| 既定値を`BasicPlanningEngine`内に`private`で保持する | `PlanReviewViewModel`の`DEFAULT_ARRIVAL_BUFFER`との出所統一（計画書§6.2）ができず、値の不一致リスクが残る（R-7） |
+
+**影響範囲**: `planning/BasicPlanningDefaults.kt`（新設）、`BasicPlanningEngine`（P4-C3で参照）、`PlanReviewViewModel`（P4-C5で参照先変更）。
+**検証方法**: T-BPE-13/14（既定値・profile優先の適用確認）。
+**再検討トリガー**: Phase 10 Personal Execution Profile永続化実装時（既定値をprofile実測値へ置換）。
+
+---
+
+### ADR-0016: BasicPlanningEngineのstep構築順序は仕様§48 enum順に一致させる
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P4-C1） ／ 関連仕様§: §48・G-6
+
+**背景**: 実測M4-8（計画書§7.1）により、現行Mock実装はTRANSITION→PREPARATION→TRAVEL→DEPARTUREの順でステップを構築しており、TRAVELとDEPARTUREが同一`scheduledStart`（`departureTime`）を持つため`ExecutionPlan`のnullsLast安定ソート（`ExecutionPlan.kt:40`）を経ても構築順がそのまま保たれ、仕様§48のenum順（TRANSITION, PREPARATION, DEPARTURE, TRAVEL）と逆順で確定してしまうことが判明した。
+
+**決定**: `BasicPlanningEngine`は`steps`のリスト構築順を仕様§48のenum順（TRANSITION→PREPARATION→DEPARTURE→TRAVEL）へ一致させる（G-6）。`ExecutionPlan`のソート仕様（`scheduledStart`昇順・nullsLast、T-DM-6）自体は変更しない。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `ExecutionPlan`のソートキーにtype enum順を副キーとして追加する | C2確定済みの`ExecutionPlan`契約（M4-2で変更不要と確認済み）への変更が必要になり影響範囲が拡大するため |
+
+**影響範囲**: `BasicPlanningEngine.createPlan`内のstep構築順序のみ（P4-C3で実装）。
+**検証方法**: T-BPE-5（順序の回帰ロック）。
+**再検討トリガー**: 仕様§48のenum定義順が変更された場合。
+
+---
+
+### ADR-0017: ExecutionStep.idはUUID.nameUUIDFromBytesによる決定的生成へ置き換える
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P4-C1） ／ 関連仕様§: §48
+
+**背景**: 実測M4-9（計画書§7.1）により、現行Mock実装は`id = UUID.randomUUID()`を用いており、同一入力で再planningしても`id`が変化することが判明した。Execution画面の完了状態追跡等、同一ステップの同一性に依存する処理が不安定になる（§9エラーマップ#10）。
+
+**決定**: `BasicPlanningEngine`は`ExecutionStep.id`を`UUID.nameUUIDFromBytes("${event.id}:$semanticId".toByteArray())`で決定的に生成する。`event.id`（イベント単位の一意性）と`semanticId`（ステップ種別、4種固定）の組を鍵とする。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `event.id`＋`ExecutionStepType`（enum）を鍵にする | `semanticId`は既にG-4によりlocalizationキーとして安定契約化されており、二重に鍵概念を持つ必要がない |
+
+**影響範囲**: `BasicPlanningEngine.createPlan`内の`ExecutionStep.id`生成箇所のみ（P4-C3で実装）。
+**検証方法**: T-BPE-26（同一入力での再planningでも同一`id`）。
+**再検討トリガー**: 同一event内で`semanticId`が重複しうる仕様変更が生じた場合（現状F41は4種固定で重複なし）。
+
+---
+
+### ADR-0018: ExecutionStep.titleは空文字固定としUI層でsemanticIdをlocalizationキーとして解決する
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P4-C1） ／ 関連仕様§: §7・§48・G-4
+
+**背景**: 実測M4-7（計画書§7.1）により、現行Mock実装は`title`に"Transition"等の英語文字列を直接埋め込んでおり、仕様§7「UI文字列の直接ハードコード禁止」に違反することが判明した。Domain層（`planning/`）がAndroidリソース（`stringResource`）へ直接依存することは仕様§7.1のレイヤー越境禁止規約にも反する。
+
+**決定**: `BasicPlanningEngine`は`ExecutionStep.title`を常に空文字で生成する（G-4）。表示文言は`features/common/StepTitle.kt`が提供する`semanticId → stringResource`解決関数をUI層（`PlanReviewScreen`／`ExecutionScreen`）が呼び出して解決する。未知`semanticId`はフォールバック文言を返しクラッシュしない。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| Engine内で`PlanningContext.locale`を見てtitle文字列を直接組み立てる | Domain層がロケール判定・文言管理を持つことになり§7.1のレイヤー分離規約に反する |
+
+**影響範囲**: `BasicPlanningEngine`（P4-C3）、`features/common/StepTitle.kt`（本ファイル・P4-C4）、`PlanReviewScreen.kt`／`ExecutionScreen.kt`（P4-C4）。
+**検証方法**: T-BPE-8（titleが空文字）、T-P4UI-2/3（表示・フォールバック確認）。
+**再検討トリガー**: なし。
+
+---
+
+### ADR-0019: mock/MockPlanFactory.ktはP4-C5統合ウィンドウで削除しBasicPlanningEngineへ完全昇格する
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P4-C1） ／ 関連仕様§: §89・計画書§2.1・§7.2
+
+**背景**: `BasicPlanningEngine`は完全決定的（LLM等の非決定的要素を含まない）処理であり、テスト用fakeを別途用意する必要がない。`MockPlanFactory`と`BasicPlanningEngine`を並存させたまま`PlanningEngine`実装を2系統保持することは、仕様§89「No duplicated domain logic」に違反する（計画書§7.2 Mock昇格方針）。
+
+**決定**: P4-C5統合ウィンドウで`AppContainer`の`planningEngine`実装を`MockPlanFactory()`から`BasicPlanningEngine()`へ切替え、`mock/MockPlanFactory.kt`と`test/.../mock/MockPlanFactoryTest.kt`を削除する。検証意図（T-MOCK-4/7/10）はT-BPE-11/18/1へ移設し弱体化しない（計画書§7.2対応表）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `MockPlanFactory`をテスト専用fakeとして残す | `BasicPlanningEngine`が完全決定的で挙動が同一のためfakeとして独立に存在させる理由がなく、仕様§89違反が生じる |
+
+**影響範囲**: `mock/MockPlanFactory.kt`・`mock/MockPlanFactoryTest.kt`（P4-C5で削除）、`di/AppContainer.kt`（P4-C5で1行差替、本ADR起票時点では未着手）。
+**検証方法**: T-P4DI-2（クラス非存在確認）、P4-C5完了後の全スイートGreen実測（件数比較）。
+**再検討トリガー**: なし。
+
+---
+
+### ADR-0020: play-services-location 21.4.0を追加依存とする
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み ／ 決定者: Fable 5（計画書§3.2 S-1関連実測、§7.1で事前承認済みの技術選定） ／ 起案agent: domain-implementer（P3-C1） ／ 関連仕様§: §67・§42・§43（記録トリガー④依存バージョンの変更）
+
+**背景**: F22（現在地取得）実装のため`FusedLocationProviderClient`が必要（仕様§42）。計画書§7.1が実測済みのとおり、`play-services-location:21.4.0`のAARメタデータは`minCompileSdk=1`／`minAndroidGradlePluginVersion=1.0.0`であり、推移依存`play-services-base:18.9.0`／`play-services-basement:18.9.0`／`play-services-tasks:18.4.0`も同一値である（ADR-0011型のminCompileSdk地雷は存在しない）。
+
+**決定**: `gradle/libs.versions.toml`に`playServicesLocation = "21.4.0"`と`google-play-services-location`ライブラリエントリを追加し、`app/build.gradle.kts`へ`implementation(libs.google.play.services.location)`を追加する。`kotlinx-coroutines-play-services`（`Task.await()`用）は追加しない（`suspendCancellableCoroutine`で手動ラップする方針、§88判定）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `kotlinx-coroutines-play-services`も追加する | `Task.await()`のためだけに依存を1本増やす価値がない（§88）。`suspendCancellableCoroutine`で代替可能（P3-P8実測でdisconnect/キャンセル協調パターンの実現可能性を確認済み） |
+| `android.location.LocationManager`のみで実装しGMS依存を回避する | 仕様§42が明示的に`FusedLocationProviderClient`（Google Play services）を指定しており、独自実装は仕様からの逸脱になる |
+
+**影響範囲**: `gradle/libs.versions.toml`・`app/build.gradle.kts`（依存追加のみ）。`services/location/FusedRawLocationSource.kt`（P3-C1でscaffold・P3-C3で実装）。
+**検証方法**: `:app:assembleDebug`のBUILD SUCCESSFUL実測（`checkDebugAarMetadata`含む。ログ: `build/agent-logs/p3c1-edit2-buildgradle.log`）。
+**再検討トリガー**: compileSdk引き上げ時（ADR-0007／ADR-0011と同時）。Play Services側の将来バージョンでminCompileSdkが引き上げられた場合。
+
+---
+
+### ADR-0021: ACCESS_FINE_LOCATIONとACCESS_COARSE_LOCATIONを追加し、ACCESS_BACKGROUND_LOCATIONは追加しない
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定S-1、計画書§3.2） ／ 決定者: Fable 5 ／ 起案agent: android-planner（計画メモ）→domain-implementer（P3-C1で実装反映） ／ 関連仕様§: §67・§95.4・§58・§95.1（記録トリガー⑤権限・プライバシー・外部送信に関わる変更）
+
+**背景**: §95.4の権限表はACCESS_FINE_LOCATIONのみを列挙するが、Android 12（API 31）以降はFINE単独の実行時要求で「正確な位置／おおよその位置」トグルが成立せずシステムが要求を無視する既知挙動がある（計画書§3.1 S-1）。一方§58／§95.1は「予定の前後だけ取得し常時監視はしない」「ACCESS_BACKGROUND_LOCATIONを要求しない設計」を明記する。
+
+**決定**: `AndroidManifest.xml`に`ACCESS_FINE_LOCATION`と`ACCESS_COARSE_LOCATION`を併記する（FINEを成立させるための前提権限として扱う）。`ACCESS_BACKGROUND_LOCATION`は追加しない。COARSEのみ許可された場合の精度低下はUIに明示する（T-PERM3-5、P3-C3/C5で実装）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| ACCESS_FINE_LOCATIONのみ追加する（§95.4表の記載どおり） | Android 12+でのトグル不成立リスクを放置することになる（計画書S-1論点） |
+| ACCESS_BACKGROUND_LOCATIONも追加し将来のPhase 5に備える | §58・§95.1が明示的に禁止し、Play審査リスクを増やす。Phase 3にバックグラウンド起動経路は存在しない |
+
+**影響範囲**: `app/src/main/AndroidManifest.xml`（uses-permission 2行追加のみ）。
+**検証方法**: debug/release両変種のマージ済みManifestに`ACCESS_FINE_LOCATION`／`ACCESS_COARSE_LOCATION`が含まれ、`ACCESS_BACKGROUND_LOCATION`がいずれにも含まれないことを実測確認済み（`app/build/intermediates/merged_manifests/{debug,release}/*/AndroidManifest.xml`、ログ: `build/agent-logs/p3c1-edit3-manifest.log`・`p3c1-edit3-manifest-release-check.log`）。P3-C7で§9.10のスクリプト検証4項目により再確認する。
+**再検討トリガー**: P3-P1（Android 12+でのFINE単独要求挙動の実機UI確認）が本サイクルでは未実施（範囲外）のため、実施され本裁定の前提と異なる結果が出た場合。Phase 5でForeground Service経由の位置取得経路が追加される場合（ACCESS_BACKGROUND_LOCATIONの要否再検討）。
+
+---
+
+### ADR-0022: LocationService／GeocodingServiceの契約（シグネチャ未定義箇所）を補完する
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定、計画書§5.2・§5.3） ／ 決定者: Fable 5 ／ 起案agent: android-planner（計画メモ§5）→domain-implementer（P3-C1で実装反映） ／ 関連仕様§: §43（記録トリガー②仕様未定義箇所の補完）
+
+**背景**: 仕様§43は`Services`直下に`LocationService`を列挙するが、`PlanningEngine`／`RecoveryEngine`／`RoutingService`とは異なりシグネチャのコードブロックが与えられていない（計画書§15 #1）。`GeocodingService`も同様に名前・役割のみが§43系の記載から類推される。
+
+**決定**: 計画書§5.2／§5.3の契約案どおり、`LocationService.currentLocation(timeout: Duration = DEFAULT_TIMEOUT): LocationResult`（`LocationResult`はsealed interface＝`Success`／`PermissionDenied`／`Failure(LocationFailureReason, Throwable?)`）、`GeocodingService.geocode(locationName: String, timeout: Duration = DEFAULT_TIMEOUT): GeocodeResult`（`GeocodeResult`はsealed interface＝`Success`／`NoMatch`／`Failure(GeocodeFailureReason, Throwable?)`。`NoMatch`を`Failure`から分離）を`services/location/`に実装する。両interfaceの`DEFAULT_TIMEOUT`はエラー＆レスキューマップ#7/#14（計画書§10）の「既定10秒」に準拠し10秒とした（計画書のコードブロックには定数の実体が示されていなかったための補完）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `Location?`を直接返す（Android標準APIに近い形） | 「取れなかった」「精度が悪い」「権限がない」が全部nullへ潰れ、§95.1が名指しで警告する「サイレントな位置取得失敗」を型で防げない |
+| geocode不能を`Failure`に含める | `CalendarContract.EVENT_LOCATION`は自由記述であり会議室名等の非住所が多数派の正常系になる。`Failure`にするとretry規則（§95.6）が意味を失う（Phase 2 P-7申し送りへの回答） |
+
+**影響範囲**: `services/location/LocationService.kt`・`GeocodingService.kt`（新規、契約のみ）。実装（`FusedLocationService`／`AndroidGeocodingService`）はP3-C3。
+**検証方法**: `:app:compileDebugKotlin`のBUILD SUCCESSFUL実測（ログ: `build/agent-logs/p3c1-scaffold-compile2.log`）。付記: 同時に作成した`GeocoderSource`（L3境界、計画書§5.5）は計画書の当該コードブロックが`fun interface`（Kotlin SAM、abstractメソッド1個限定）でありながらabstractメソッドを2個（`isAvailable`／`lookup`）宣言しておりコンパイル不能だったため、`fun`キーワードを外した通常の`interface`へ実装時に訂正した（メソッド構成・シグネチャ自体は計画書のまま）。
+**再検討トリガー**: P3-C3実装時にシグネチャ不足が判明した場合。
+
+---
+
+### ADR-0023: RoutingException／ForegroundGateの判定式を記録し、P3-C1で完全実装する2クラス（UnconfiguredRoutingService・ActivityLifecycleForegroundGate）の判断根拠を明記する
+
+- 日付: 2026-08-09 ／ ステータス: 承認済み（Fable 5裁定S-4／S-5、計画書§3.2・§5.4・§5.5） ／ 決定者: Fable 5 ／ 起案agent: android-planner（計画メモ）→domain-implementer（P3-C1で実装反映） ／ 関連仕様§: §46・§95.1・§95.6（記録トリガー②仕様未定義箇所の補完）
+
+**背景**: §46`RoutingService.estimateRoute`は`RouteEstimate`非null返却の契約だが§89／§95.6はretry・エラーハンドリングを要求する（両立方法が仕様上未定義＝S-4論点）。§95.1のWhile-in-use制約はForegroundGateという新規ガード機構を要求する（S-5論点）。加えてP3-C1（契約scaffold・TDD例外工程）は原則すべての実装本体を`TODO()`とするが、`UnconfiguredRoutingService`と`ActivityLifecycleForegroundGate`の2クラスのみ本サイクルで完全実装した。
+
+**決定**: (1) `RoutingException`をsealed class階層（`NotConfigured`／`Offline`／`Timeout`／`Unauthorized`／`QuotaExceeded`／`ServerError`／`NoRoute`／`MalformedResponse`）として`services/routing/RoutingException.kt`に定義し、§46のシグネチャは変更しない。(2) `ForegroundGate.isLocationAccessAllowed()`の判定式を`isAppInForeground() || isExecutionServiceRunning()`とし、後者はPhase 5まで常にfalseを返す注入フック（`var isExecutionServiceRunning: () -> Boolean = { false }`）とする。(3) `UnconfiguredRoutingService`（常に`RoutingException.NotConfigured()`を送出する1行）と`ActivityLifecycleForegroundGate`（`Application.ActivityLifecycleCallbacks`による起動中Activityカウント、7メソッド全て明示オーバーライド）はP3-C1で完全実装する。理由: 両クラスとも分岐・条件判断を持たないトリビアルな実装であり「テストを通すための恣意的な実装」のリスクが実質的にないこと、加えて`ActivityLifecycleForegroundGate`は本サイクルで`ActionStarterApplication.onCreate()`に無条件登録されるため（共有ファイル#6）、コールバックがTODO()のまま登録されると全画面へ影響し既存Compose/Robolectricテスト（Activity起動を伴う全テスト）を破壊する構造的必然性がある。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| S-4でRoutingServiceの戻り値型自体を変更する（`Result<RouteEstimate>`等） | TEAMS§5の契約変更経路（変更提案→影響分析→Fable5承認→ADR記録→両側テスト更新）を発動し、Phase 4のPlanningContext設計にも波及する。sealed例外＋網羅whenで同等の型安全性を達成できる |
+| `ActivityLifecycleForegroundGate`もTODO()スタブのままP3-C3まで実装を遅延する | Application.onCreate()での無条件登録と組み合わせると、全Compose/Robolectricテストがコールバック呼び出し時に`NotImplementedError`で失敗し、P3-C1完了条件（回帰なし・123/123 Green維持）を構造的に満たせない |
+| `ActivityLifecycleForegroundGate`のApplication登録自体をP3-C6まで遅延する | 本タスク（P3-C1）の指示「ActionStarterApplication.ktへのForegroundGate登録」に反する。また登録を遅延させても、いずれ登録する時点で同じ制約に直面するだけで問題を先送りするに過ぎない |
+
+**影響範囲**: `services/routing/RoutingException.kt`・`UnconfiguredRoutingService.kt`（新規）、`services/location/ForegroundGate.kt`・`ActivityLifecycleForegroundGate.kt`（新規）、`ActionStarterApplication.kt`（登録呼び出し追加）。
+**検証方法**: `:app:testDebugUnitTest`が123/123 Green（P3-C1前と同一件数、回帰なし）であることを実測（ログ: `build/agent-logs/p3c1-regression.log`）。`UnconfiguredRoutingService`／`ActivityLifecycleForegroundGate`の網羅的な単体テスト（T-ROUTESVC-8相当・ForegroundGate相当）はP3-C2（Red）／P3-C3・C4（Green）で別途固定する。
+**再検討トリガー**: P3-C2でのテスト作成時にActivityLifecycleForegroundGateのカウンタロジックに不備が判明した場合。S-4がFable 5により「戻り値型の変更」へ裁定変更された場合（R18参照、TEAMS§5契約変更経路の発動）。

@@ -17,6 +17,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.actionstarter.BuildConfig
 import com.actionstarter.R
+import com.actionstarter.features.common.resolveStepTitle
 
 /**
  * 仕様§27-28・§35 Screen3準拠（NOW画面）。プロダクト最重要UI。
@@ -77,7 +78,7 @@ fun ExecutionScreen(
                 .semantics(mergeDescendants = true) {}
         ) {
             Text(
-                text = currentStep.title.ifBlank { stringResource(R.string.execution_placeholder_step_title) },
+                text = currentStep.title.ifBlank { resolveStepTitle(currentStep.semanticId) },
                 style = MaterialTheme.typography.headlineMedium
             )
         }

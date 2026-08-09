@@ -79,4 +79,52 @@
          Execution screen is reached without a confirmed Plan; the user is redirected to
          Event Selection. -->
     <string name="nav_plan_not_confirmed_snackbar_message">Your plan isn\'t confirmed yet. Please select an event again.</string>
+
+    <!-- Location permission (F21, spec §67/§95.4, S-1 ruling). Added in P3-C1 (domain-implementer)
+         as key definitions only; final wording confirmed in P3-C6 (§6.4 row 7). -->
+    <string name="location_permission_rationale_title">Location access</string>
+    <string name="location_permission_rationale_message">We use your location to estimate travel time to your next event.</string>
+    <string name="location_permission_grant_button">Allow location access</string>
+    <string name="location_permission_denied_message">Automatic travel time isn\'t available, but you can still continue by entering your travel time manually.</string>
+    <string name="location_open_settings_button">Open app settings</string>
+    <!-- Coarse-only location precision notice (F21, spec §95.4 row/§10#4, S-1 ruling T-PERM3-5).
+         Added in P3-C2 (test-writer) since only ACCESS_COARSE_LOCATION was granted. -->
+    <string name="location_permission_coarse_only_notice">Only approximate location is available, so this estimate may be less accurate.</string>
+
+    <!-- Manual travel time input fallback (F28, spec §95.4/§95.6, S-2 ruling). Added in P3-C1. -->
+    <string name="travel_time_manual_label">Travel time (minutes)</string>
+    <string name="travel_time_manual_apply_button">Apply</string>
+
+    <!-- Transport mode selector (F26, spec §9/§67, S-3 ruling: 4 values). Added in P3-C1. -->
+    <string name="transport_mode_walking">Walking</string>
+    <string name="transport_mode_driving">Driving</string>
+    <string name="transport_mode_transit">Transit</string>
+    <string name="transport_mode_cycling">Cycling</string>
+
+    <!-- Departure screen ETA staleness / geocode fallback (F25/F23, spec §95.6/§4.5). Added in P3-C1. -->
+    <string name="departure_eta_stale_notice">This travel time may be outdated. Accuracy may be reduced.</string>
+    <string name="departure_geocode_no_match_message">We couldn\'t determine a location for this event. Enter your travel time manually.</string>
+
+    <!-- Per-reason ETA failure messages (F27, RoutingException -> EtaFailureReason, spec §95.6,
+         S-4 ruling, T-DEPVM-9). Added in P3-C5 (ui-implementer) so DepartureScreen can display
+         a distinct message per EtaFailureReason instead of a single generic fallback.
+         EtaFailureReason.MALFORMED_RESPONSE intentionally reuses departure_eta_unavailable_message
+         (no user-actionable distinction from a generic "not available" state). -->
+    <string name="departure_eta_not_configured_message">Automatic travel time isn\'t configured yet. Enter your travel time manually.</string>
+    <string name="departure_eta_offline_message">We couldn\'t reach the network to estimate travel time.</string>
+    <string name="departure_eta_timeout_message">Estimating travel time timed out.</string>
+    <string name="departure_eta_unauthorized_message">Travel time estimation isn\'t available right now.</string>
+    <string name="departure_eta_quota_exceeded_message">We\'ve reached today\'s travel time lookup limit.</string>
+    <string name="departure_eta_server_error_message">Travel time service is temporarily unavailable.</string>
+    <string name="departure_eta_no_route_message">No route could be found to this event.</string>
+
+    <!-- Step title resolution (F47, semanticId -> stringResource, spec §48/§7 "no hardcoded UI
+         strings", G-4). Added in P4-C4 (ui-implementer) for T-P4UI-1..5. Resolved by
+         features/common/StepTitle.kt#resolveStepTitle and shared by PlanReviewScreen and
+         ExecutionScreen. step_title_fallback covers unknown semanticId values (T-P4UI-3). -->
+    <string name="step_title_transition">Transition</string>
+    <string name="step_title_preparation">Preparation</string>
+    <string name="step_title_departure">Departure</string>
+    <string name="step_title_travel">Travel</string>
+    <string name="step_title_fallback">Step</string>
 </resources>

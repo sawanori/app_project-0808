@@ -13,8 +13,10 @@ import java.util.UUID
  * 置き換わり次第、本クラスは削除する。
  *
  * §11.2の表には本クラス名を直接対象とするT-MOCK-*行はないが、RecoveryScreen（F8、
- * T-REC-1〜6）がRecovery候補を表示するために必要な供給源として、
- * [com.actionstarter.mock.MockPlanFactory]と対になる構成で用意する。
+ * T-REC-1〜6）がRecovery候補を表示するために必要な供給源として、PlanReviewScreen向けの
+ * [com.actionstarter.planning.BasicPlanningEngine]と役割上対応する構成で用意する
+ * （`MockPlanFactory`はP4-C5統合ウィンドウで削除されBasicPlanningEngineへ完全昇格済み。
+ * `docs/plans/phase4-basic-engine.md`§6.3・§7.2、P4-C6申し送り修正）。
  *
  * [RecoveryEngine]を実装するのは、仕様書§7.1のレイヤー越境禁止規約に従うため。これにより
  * `features/recovery/RecoveryViewModel`が受け取る`RecoveryEngine`型の実引数として、

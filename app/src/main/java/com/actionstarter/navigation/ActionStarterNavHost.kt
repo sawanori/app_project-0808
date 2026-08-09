@@ -84,6 +84,12 @@ import kotlinx.coroutines.launch
  * 画面Composable自身は`ActivityResultLauncher`・`NavController`・ライフサイクルのいずれも
  * 直接参照しない（§7.3疎結合規約）。
  *
+ * **departure routeの位置権限・ON_RESUME結線（Phase 3 P3-C6、integration owner、計画書
+ * §6.4#5）**: eventSelection routeと同型の抽出パターンで[DepartureRoute]（private
+ * Composable）へ分離した。位置権限launcher（`RequestMultiplePermissions`、FINE＋COARSE
+ * 同時要求、S-1裁定）・ON_RESUME再チェック（T-PERM3-4）・Settings導線・手動Travel Time
+ * 入力／transport mode選択の[DepartureViewModel]への委譲は[DepartureRoute]のKDoc参照。
+ *
  * **T-NAV-4ガード**: execution routeは[SharedPlanViewModel.confirmedPlan]がnullの場合
  * （Planが未確定のままexecutionへ到達しようとした場合）、`popUpTo`でeventSelectionへ戻し
  * Snackbarで通知する（エラー＆レスキューマップ#9）。
@@ -93,8 +99,12 @@ import kotlinx.coroutines.launch
  * [SharedPlanViewModel.confirmedPlan]の最初のステップから直接[ExecutionUiState]を構築する。
  * 理由：[com.actionstarter.features.execution.ExecutionViewModel]のコンストラクタ契約
  * （`SavedStateHandle`のみ）はC4の`ExecutionViewModelTest`／`ExecutionScreenTest`に直接
- * 束縛されており自己判断で変更しない。一方、[com.actionstarter.mock.MockPlanFactory]は
- * 常に3ステップ以上（Transition／Preparation／[Travel]／Departure）を生成する構造であり、
+ * 束縛されており自己判断で変更しない。一方、`AppContainer.planningEngine`
+ * （Phase 4以降[com.actionstarter.planning.BasicPlanningEngine]。`MockPlanFactory`から
+ * P4-C5統合ウィンドウで切替済み・`docs/plans/phase4-basic-engine.md`§6.4）は、本NavHostが
+ * 結線する[PlanReviewViewModel]が`profile = null`固定で呼び出す現行配線では
+ * （[com.actionstarter.planning.BasicPlanningDefaults]の既定値がいずれも正の値のため）
+ * 引き続き3ステップ以上（Transition／Preparation／[Travel]／Departure）を生成する。
  * `NavigationFlowTest`（変更不可）のT-NAV-1／T-NAV-3は「Doneタップ1回でExecutionから
  * 離脱する」ことを前提としている。両立不能なため、[ExecutionUiState.onDone]を`null`のまま
  * 渡し、既存の[ExecutionScreen]のフォールバック（`onDone`が`null`のときDoneタップで
@@ -192,10 +202,7 @@ fun ActionStarterNavHost() {
             }
 
             composable(Destinations.Departure.route) {
-                val viewModel: DepartureViewModel = viewModel(factory = vmFactory)
-                val uiState by viewModel.uiState.collectAsState()
-
-                DepartureScreen(uiState = uiState)
+                DepartureRoute(vmFactory = vmFactory)
             }
 
             composable(Destinations.Recovery.route) {
@@ -293,5 +300,83 @@ private fun EventSelectionRoute(
             sharedPlanViewModel.selectEvent(event)
             navController.navigate(Destinations.PlanReview.route)
         }
+    )
+}
+
+/**
+ * departure routeの結線本体（Phase 3統合サイクル・P3-C6、integration owner。計画書§6.4#5・
+ * §9.7）。[EventSelectionRoute]と同型の抽出パターン（§10.6疎結合規約：
+ * `ActivityResultLauncher`・`NavController`・ライフサイクルは本Composableのみが保持し、
+ * [DepartureScreen]へはラムダのみを渡す）。
+ *
+ * **位置権限launcher（計画書§9.7 T-PERM3-1〜5、S-1裁定）**: `RequestMultiplePermissions`で
+ * [Manifest.permission.ACCESS_FINE_LOCATION]・[Manifest.permission.ACCESS_COARSE_LOCATION]を
+ * 同時要求する（S-1裁定「Android 12+でFINEのみを実行時要求すると『正確な位置／おおよその
+ * 位置』トグルが成立しない」への対応。`AndroidManifest.xml`の両権限宣言と対）。結果
+ * （許可・拒否のいずれの組み合わせでも）は[DepartureViewModel.onResume]へ委譲して再計算する：
+ * `recalculateRoute`は実際のOSレベル権限状態を`AppContainer.permissionGate`
+ * （[com.actionstarter.services.permission.AndroidPermissionGate]、`ContextCompat.
+ * checkSelfPermission`ベース）経由でその都度再照会するため、launcherが返す`Map<String,
+ * Boolean>`の個別値をここで分岐する必要はない（`EventSelectionRoute`の単一権限launcherが
+ * `isGranted`個別分岐を要するのとは異なり、Departure側は「許可の有無を問わず現在の実際の
+ * 状態で再計算する」という[onResume]の設計にそのまま委譲できる）。
+ *
+ * **ON_RESUME再チェック（計画書§9.7 T-PERM3-4、§95.4「Settingsから再許可すると自動連携に
+ * 復帰する」）**: [EventSelectionRoute]と同型の`DisposableEffect`＋`LifecycleEventObserver`で
+ * 実現する（`lifecycle-runtime-compose`は`activity-compose`／`navigation-compose`経由で
+ * 既にコンパイルクラスパス上にあるため追加依存不要）。`Lifecycle.addObserver`は登録時点の
+ * 現在状態へ追いつくよう即座にコールバックを再生する仕様のため、本Composableが
+ * コンポジションに入った直後（画面表示直後）にも1回`ON_RESUME`相当が発火し
+ * [DepartureViewModel.onResume]が呼ばれる。これは[DepartureViewModel.init]が
+ * `confirmedPlan`購読開始時に行う自動再計算に対する**追加の**呼び出しであり、
+ * [com.actionstarter.features.DepartureRoutingScreenTest]のT-PERM3-4が
+ * `callCountAfterInitialLoad + 1`という差分規約（T-DEPVM-8と同型）でこの重複発火を
+ * 前提として検証している。
+ *
+ * `onOpenLocationSettings`は[EventSelectionRoute]の`onOpenAppSettings`と同じ
+ * `Settings.ACTION_APPLICATION_DETAILS_SETTINGS`パターンを用いる。
+ * `onManualTravelMinutesChange`／`onTransportModeSelected`は状態を持たず
+ * [DepartureViewModel]へそのまま委譲する（メソッド参照）。
+ */
+@Composable
+private fun DepartureRoute(vmFactory: ViewModelProvider.Factory) {
+    val context = LocalContext.current
+    val viewModel: DepartureViewModel = viewModel(factory = vmFactory)
+    val uiState by viewModel.uiState.collectAsState()
+
+    val requestLocationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        // 個々の許可/拒否はDepartureViewModel.onResume()経由でAppContainer.permissionGateが
+        // 都度再照会するため、ここではlauncherが返すMapの値を分岐しない（クラスKDoc参照）。
+        viewModel.onResume()
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.onResume()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    DepartureScreen(
+        uiState = uiState,
+        onRequestLocationPermission = {
+            requestLocationPermissionLauncher.launch(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+            )
+        },
+        onOpenLocationSettings = {
+            val settingsIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", context.packageName, null)
+            }
+            context.startActivity(settingsIntent)
+        },
+        onManualTravelMinutesChange = viewModel::onManualTravelMinutesChanged,
+        onTransportModeSelected = viewModel::onTransportModeSelected
     )
 }

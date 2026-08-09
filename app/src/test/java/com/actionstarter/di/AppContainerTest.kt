@@ -2,9 +2,11 @@ package com.actionstarter.di
 
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.actionstarter.planning.BasicPlanningEngine
 import com.actionstarter.services.calendar.CalendarService
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -24,6 +26,12 @@ import java.io.File
  * [AppContainer]を構築する。これに伴い本クラスは`@RunWith(AndroidJUnit4::class)`で
  * Robolectric上で実行する（従来の「コンストラクタ引数なし・プレーンJUnit4テスト」という
  * 前提は解消済み）。
+ *
+ * **P4-C2追補（`docs/plans/phase4-basic-engine.md`§8.2 F40構成差し替え、T-P4DI-1／2）**:
+ * [mockEventSourceKtFile_doesNotExistUnderSrcMain]（T-DI-2）と同じ「単一Factory集約点＋
+ * src/mainソース走査」という本クラスの既存スコープに、Phase 4の構成差し替え検証
+ * （`planningEngine`の実装型・`MockPlanFactory.kt`の非存在）を追加する。[resolveMockPackageDir]
+ * を再利用する。
  */
 @RunWith(AndroidJUnit4::class)
 class AppContainerTest {
@@ -60,6 +68,43 @@ class AppContainerTest {
         assertFalse(
             "mock/MockEventSource.ktがsrc/mainに存在しています（U6未履行、P2-C6で解消予定）: " +
                 target.absolutePath,
+            target.isFile
+        )
+    }
+
+    // T-P4DI-1（計画書§8.2 F40構成差し替え、`docs/plans/phase4-basic-engine.md`）:
+    // 正常系 - AppContainer.planningEngineの型がBasicPlanningEngineである
+    // （MockPlanFactoryではない）。現状（P4-C2時点）AppContainer.planningEngineは
+    // 依然MockPlanFactory()のまま（P4-C5統合ウィンドウで差し替え予定、計画書§7.2手順3）
+    // のためRedになるのが正しい。
+    @Test
+    fun tP4Di1_planningEngine_isBasicPlanningEngineType() {
+        val container = AppContainer(ApplicationProvider.getApplicationContext())
+
+        val engine = container.planningEngine
+
+        assertTrue(
+            "AppContainer.planningEngineの型がBasicPlanningEngineではありません" +
+                "（実際: ${engine::class.qualifiedName}）。P4-C5でMockPlanFactory()から" +
+                "BasicPlanningEngine()への差し替えが必要です。",
+            engine is BasicPlanningEngine
+        )
+    }
+
+    // T-P4DI-2（計画書§8.2 F40構成差し替え）: 異常系 -
+    // com.actionstarter.mock.MockPlanFactoryがsrc/mainに存在しないこと（削除の走査確認）。
+    // ディレクトリ非存在ではなくクラス非存在で検証する安全な実装とする（R-6、
+    // mockEventSourceKtFile_doesNotExistUnderSrcMainと同じ方式）。現状（P4-C2時点）
+    // mock/MockPlanFactory.ktはP4-C5統合ウィンドウでの削除待ちのため存在しており、
+    // 本テストはRedになるのが正しい。
+    @Test
+    fun tP4Di2_mockPlanFactoryKtFile_doesNotExistUnderSrcMain() {
+        val mockPackageDir = resolveMockPackageDir()
+        val target = File(mockPackageDir, "MockPlanFactory.kt")
+
+        assertFalse(
+            "mock/MockPlanFactory.ktがsrc/mainに存在しています（P4-C5統合ウィンドウ未履行のため " +
+                "現時点ではRedが正しい）: " + target.absolutePath,
             target.isFile
         )
     }

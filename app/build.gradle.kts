@@ -1,11 +1,24 @@
 import com.android.build.api.variant.HostTestBuilder
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
+
+// Phase 3 P3-C1（計画書§6.4#2・§7.3・F29）: local.properties（gitignore済み・.gitignoreで
+// 実測確認）からMAPS_ROUTES_API_KEYを読み取り、buildConfigFieldへ渡す。ファイル自体が
+// 存在しない場合・キー行が無い場合のいずれも空文字へフォールバックし、Gradle構成が
+// 失敗しないようにする（T-CFG-3の前提）。
+val localProperties = Properties().apply {
+    val localPropertiesFile = rootProject.file("local.properties")
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.inputStream().use { load(it) }
+    }
+}
+val routesApiKey: String = localProperties.getProperty("MAPS_ROUTES_API_KEY") ?: ""
 
 android {
     namespace = "com.actionstarter"
@@ -21,6 +34,9 @@ android {
         // actionstarter/e2e/MainUxFlowTest.kt`のコンパイル・実行（G4-E、KVM解決後）に必要。
         // 未設定だったため本サイクルで追加（計画書§15 C6行の必須項目）。
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Phase 3 P3-C1（計画書§6.4#2・§7.3・F29）: キー未設定時は""（空文字）。
+        // AppContainer側（P3-C6）がisEmpty()でUnconfiguredRoutingServiceへ縮退させる。
+        buildConfigField("String", "ROUTES_API_KEY", "\"$routesApiKey\"")
     }
 
     buildTypes {
@@ -75,6 +91,9 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.core.ktx)
+    // Phase 3 P3-C1（計画書§6.4#2・§7.1・F22）: 現在地取得。AARメタデータ実測済み
+    // （gradle/libs.versions.toml参照）。
+    implementation(libs.google.play.services.location)
 
     testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.junit4)

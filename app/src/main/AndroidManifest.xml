@@ -6,6 +6,16 @@
          によりWRITE_CALENDARは追加しない（カレンダー書き込みは仕様§61で明示禁止）。 -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />
 
+    <!-- 仕様§67・§95.4（ACCESS_FINE_LOCATION行）・S-1裁定（計画書§3.2、2026-08-09）。
+         現在地取得によるRoute/ETA計算（F22）。Departure Mode初回利用時に実行時権限として
+         リクエストする（起動時の一括要求はしない）。ACCESS_COARSE_LOCATIONはS-1裁定により
+         FINEと併記する（Android 12+でFINE単独要求時に「正確な位置／おおよその位置」
+         トグルが成立しない既知挙動への対応。ADR記録トリガー⑤）。
+         ACCESS_BACKGROUND_LOCATIONは絶対に追加しない（§58「常時監視を前提にしない」・
+         §95.1 While-in-use制約・計画書§2.2「やらないこと」）。 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
     <application
         android:name=".ActionStarterApplication"
         android:allowBackup="true"
