@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- 仕様§95.4（READ_CALENDAR行）・§66「Permission」。Event Selection機能の初回利用時に
+         実行時権限としてリクエストする（起動時の一括要求はしない）。計画書§6.2・§12（裁定B7）
+         によりWRITE_CALENDARは追加しない（カレンダー書き込みは仕様§61で明示禁止）。 -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+
     <application
         android:name=".ActionStarterApplication"
         android:allowBackup="true"

@@ -5,7 +5,7 @@
 **前提**: Phase 1 **G4-JVM／G4-E達成済み**（`docs/plans/phase1-ui-skeleton-domain.md`。build成功・JVM/Robolectric 72/72 Green・lintDebugエラー0・connectedAndroidTest 3/3 Green・ja/en両ロケールスクリーンショット取得済み。commit `bd30158`）
 **起点計画メモ**: android-planner（Opus）作成、2026-08-09（`/tmp/claude-1000/.../scratchpad/phase2-planning-memo.md`）
 **追加実測メモ**: android-planner（Opus）作成、2026-08-09（emulator probe実測。M-1〜M-18。Hilt導入可否・カレンダークエリ実測・eventStatus/allDay取扱い・E2E手順確立）
-**本書作成**: plan-doc-writer（Sonnet）、2026-08-09（初版）。**本改訂**: plan-doc-writer（Sonnet）、2026-08-09（追加実測メモとFable 5後続裁定B17〜B19を統合）。**本パス**: 計画書整合担当（Sonnet）、2026-08-09（§16〜18に残存していた統合前の記述〔ADR-0014残存言及・旧サイクル番号参照・旧テストケース件数〕を修正し、論理整合を最終確定）
+**本書作成**: plan-doc-writer（Sonnet）、2026-08-09（初版）。**本改訂**: plan-doc-writer（Sonnet）、2026-08-09（追加実測メモとFable 5後続裁定B17〜B19を統合）。**本パス**: 計画書整合担当（Sonnet）、2026-08-09（§16〜18に残存していた統合前の記述〔ADR-0014残存言及・旧サイクル番号参照・旧テストケース件数〕を修正し、論理整合を最終確定）。**本改訂パス2**: ドキュメント整合担当（Sonnet）、2026-08-09（P2-C1実測でHilt導入不成立〔P-H2確定失敗〕→ADR-0014確定を受け、§3 G2／§6／§8.4／§10.2／§11／§13／§14／§17／§18のHilt・AppModule・AppEntryPoint・EntryPointAccessors関連記述をAppContainer〔手動DI〕継続へ修正。テストケース件数を64件→61件へ更新）
 **関連ハーネス文書**: `docs/TEAMS.md`（役割分担・PDCA・品質ゲートの正）、`docs/GOAL.md`（リリース判定基準）、`DECISIONS.md`（ADR記録先）
 **関連計画書**: `docs/plans/phase1-ui-skeleton-domain.md`（Phase 1・G4-JVM/G4-E達成済み）
 
@@ -67,7 +67,7 @@ F12〜F20（詳細は§5）。うちF17（権限拒否時の手動入力フォ�
 `docs/TEAMS.md`§6「コード（Gradleプロジェクトが成立後）｜G1 + G2 + G3」および「Phase完了｜上記 + G4」に基づきG1〜G4すべてを適用する。ADR-0006に倣い、G4は**G4-JVM**と**G4-E**の2段階とする。
 
 - **G1（計画承認）**: 本計画書＋エラー＆レスキューマップ（§11）＋Fable 5 Pass1/Pass2レビュー記録＋Geminiクロスレビュー結果。**Pass1/Pass2レビューおよびGeminiクロスレビューは実施済みであり（2026-08-09）、指摘事項はFable 5裁定B8〜B16として本書へ反映済みである（§4参照）。2026-08-08ユーザー指示によりG1はユーザー承認を待たず自動進行する（裁定B18）。ただしHilt導入時期の裁定（B17・ADR-0015）はユーザー拒否権を留保する。**
-- **G2（Red確認）**: P2-C3（旧P2-C2）でtest-writerが作成したfailingテスト（§10、全64件のうちJVM系56件）をquality-runnerが実測する。**T-HILT-1〜4（4件）はP2-C1でTDD例外により直接実測・Green確認するため、G2のRed実測対象に含めない**。E2E系4件（T-E2E2-1〜4）は作成のみでRed実測はG4-Eまで行わない（Phase 1と同じ扱い）。既存テスト（`MockEventSourceTest`7件の移設、`EventSelectionScreenTest`9件・`NavigationFlowTest`5件の更新）も本サイクルで行う（§6.3）。
+- **G2（Red確認）**: P2-C3（旧P2-C2）でtest-writerが作成したfailingテスト（§10、全61件のうちJVM系56件）をquality-runnerが実測する。**T-HILT-1（1件。T-HILT-2〜4はADR-0014により対象消滅・削除済み）はP2-C1でTDD例外により直接実測・Green確認済みのため、G2のRed実測対象に含めない**。E2E系4件（T-E2E2-1〜4）は作成のみでRed実測はG4-Eまで行わない（Phase 1と同じ扱い）。既存テスト（`MockEventSourceTest`7件の移設、`EventSelectionScreenTest`9件・`NavigationFlowTest`5件の更新）も本サイクルで行う（§6.3）。
 - **G3（Green確認）**: P2-C4（Domain側Green、旧P2-C3）・P2-C5（UI側Green、C4と並列、旧P2-C4）・P2-C6（統合、旧P2-C5）それぞれでのGreen実測、およびRefactor（P2-C7、旧P2-C6）後の再実測。
 - **G4-JVM（Phase 2完了・JVM側）**: P2-C7（旧P2-C6）完了時点。`./gradlew build`成功・対象範囲のJVM/Robolectric全テストPass・`lintDebug`エラー0を実測する。あわせて、マージ済みマニフェスト成果物（`build/intermediates/merged_manifests/{debug,release}/AndroidManifest.xml`）をquality-runnerがスクリプト検証し、debug変種に`READ_CALENDAR`が含まれること、release変種に`WRITE_CALENDAR`が含まれないことを確認する（旧T-MANIFEST-1/2をゲート検証手順へ統合。裁定B9）。
 - **G4-E（Phase 2完了・Emulator側）**: P2-C8（旧P2-C7）完了時点。`connectedDebugAndroidTest`実行（T-E2E2-1〜4）、実カレンダーseedの実行/cleanupログ（§12実測済み手順・Step 0〜7）、権限拒否シナリオ（`pm revoke`、P-6・M-10で手順確立済み）の実測、ja/en両ロケールでのスクリーンショット取得を行う。**G4-E未達のままPhase 3以降へ進むことを禁止する。** 未達の場合はその旨を`DECISIONS.md`と完了報告へ明記する。
@@ -115,7 +115,7 @@ Fable 5によるPass1（CRITICAL：データ安全性／信頼境界違反／サ
 | B15 | `Calendars`／`Instances`クエリに`Calendars.VISIBLE = 1`のselectionを適用し、`Instances`のクエリURIは`CONTENT_URI`へbegin/endミリ秒をappendして構築する（`CalendarQuerySpec`の責務） | Gemini指摘：Android固有制約（可視カレンダー・URI構築の未定義） | 本書§8.2 |
 | B16 | 手動入力の開始日時を入力必須とし、未入力では確定不可とする。ログ出力禁止対象（エラーマップ#16）に手動入力イベントのtitle・場所も含める | Pass1 CRITICAL：信頼境界／サイレント障害（バリデーション漏れ・ログ混入経路の見落とし） | 本書§7.5、§10.2 T-MANUAL-7（新規）、§11エラーマップ#14・#16 |
 
-**上記B8〜B16もB1〜B7同様、ユーザー承認待ちの項目ではない**（Fable 5裁定として確定済み）。後続のB17〜B19（下記参照）も同様である。テストケース表（§10.2）とエラー＆レスキューマップ（§11）への反映後の件数・行数は、それぞれ全64件（正常系23／異常系13／エッジケース28）・全24行であり、いずれも本書内で数え直して一致させている。
+**上記B8〜B16もB1〜B7同様、ユーザー承認待ちの項目ではない**（Fable 5裁定として確定済み）。後続のB17〜B19（下記参照）も同様である。テストケース表（§10.2）とエラー＆レスキューマップ（§11）への反映後の件数・行数は、それぞれ全61件（正常系20／異常系13／エッジケース28。2026-08-09のADR-0014によるT-HILT-2〜4削除後の値）・全24行であり、いずれも本書内で数え直して一致させている。
 
 ### 後続レビュー（Fable 5、android-planner追加実測メモ受領後、2026-08-09）による追加裁定
 
@@ -142,7 +142,7 @@ android-plannerは計画書提出後、エミュレータ上での追加実測�
 | F16 | READ_CALENDAR実行時権限リクエストUI | §66「Permission」、§95.4 | 事前説明カード→明示タップで要求。起動時自動要求は禁止（§95.4） |
 | F17 | 権限拒否時フォールバック（手動イベント入力フォーム＋Settings導線＋再許可時の自動復帰） | §95.4／§95.6第1行 | **Fable 5裁定B1（2026-08-09）によりPhase 2スコープに確定**。最小構成（title/開始日時/場所名のみ。座標入力・地図選択・保存/再利用なし） |
 | F18 | Event Selection画面の実データ化（Upcoming一覧＋次イベント強調＋選択） | §66「Event Selection」、§24／§35 Screen 1 | 既存UiState契約の変更を伴う（§6.3） |
-| F19 | 構成差し替え（**graph-only Hiltへの移行〔裁定B17・ADR-0015〕**、`mock/MockEventSource`削除、Manifest権限追加） | Phase 1計画書§8 U6「Phase 2で削除」／ADR-0015 | 既存テスト7件の移行を伴う（§6.3）。**DI基盤の変更はTDD例外を適用し、完了時に全テストGreen実測を必須とする（T-HILT-1〜4、§10.2）** |
+| F19 | 構成差し替え（**graph-only Hiltへの移行〔裁定B17・ADR-0015〕は不発効・ADR-0014によりPhase 5延期確定**、`mock/MockEventSource`削除、Manifest権限追加） | Phase 1計画書§8 U6「Phase 2で削除」／ADR-0014 | 既存テスト7件の移行を伴う（§6.3）。**DI基盤（Hilt）の変更は不実施。ベースライン`:app:testDebugUnitTest` 73/73 GreenをTDD例外により実測済み（T-HILT-1、§10.2）** |
 | F20 | エミュレータ用テストカレンダーseedハーネス | `docs/GOAL.md` D(1)(3)・F | adb経由seedを実測検証済み（§12実測済み手順Step 0〜7）。方式の最終確定はFable 5裁定B7によりP2-C2（旧P2-C1）完了時（**主方式は実機で一貫動作することを確認済み**） |
 
 ---
@@ -153,8 +153,6 @@ android-plannerは計画書提出後、エミュレータ上での追加実測�
 
 | パス（`app/src/main/java/com/actionstarter/`起点） | 内容 | 担当 |
 |---|---|---|
-| `di/AppModule.kt` | **【新規・裁定B17】** graph-only Hilt（ADR-0015）の`@Module @InstallIn(SingletonComponent)`。`CalendarService`/`PermissionGate`等の`@Provides`、および`createViewModelFactory`（旧`AppContainer`唯一のViewModel生成点）を提供 | domain-implementer |
-| `di/AppEntryPoint.kt` | **【新規・裁定B17】** `@EntryPoint @InstallIn(SingletonComponent)` interface。`ActionStarterNavHost`が`EntryPointAccessors.fromApplication`経由で依存を取得する入口。`@HiltViewModel`/`hiltViewModel()`/`@AndroidEntryPoint`は使わない | domain-implementer |
 | `services/calendar/CalendarService.kt` | F12 interface＋`CalendarResult`＋`CalendarFailureReason` | domain-implementer |
 | `services/calendar/CalendarProviderCalendarService.kt` | F13/F14 サービスロジック（3層分割のL2。§8.3改訂）。`CursorSource`をコンストラクタ注入し、fakeでJVMテスト | domain-implementer |
 | `services/calendar/CalendarInstanceMapper.kt` | F13/F15 Cursor行→`ExecutionEvent`の純粋写像（3層分割のL1。§8.3改訂。テスト容易性の要） | domain-implementer |
@@ -176,13 +174,13 @@ android-plannerは計画書提出後、エミュレータ上での追加実測�
 | パス | 変更内容 |
 |---|---|
 | `app/src/main/AndroidManifest.xml` | `<uses-permission android:name="android.permission.READ_CALENDAR"/>` 追加。**WRITE_CALENDARは追加しない**（§12で理由詳述、裁定B7） |
-| `ActionStarterApplication.kt` | **【裁定B17で変更】** `@HiltAndroidApp`を付与（graph-only。`@AndroidEntryPoint`は使わない）。従来の`AppContainer(this)`生成は`AppModule`のHiltグラフへ置き換わる |
+| `ActionStarterApplication.kt` | **【裁定B17は不発効・ADR-0014】** `@HiltAndroidApp`は付与しない。従来どおり`AppContainer(this)`生成を維持する（変更なし） |
 | `features/eventselection/EventSelectionUiState.kt` | `Content(nextEvent)`単一保持 →（推奨）`Content(events: List<ExecutionEvent>)` ＋ `PermissionRequired` / `PermissionDenied` / `Error` 追加 |
 | `features/eventselection/EventSelectionViewModel.kt` | `MockEventSource` → `CalendarService`＋`PermissionGate`。`refresh()`をsuspend化（`viewModelScope`） |
 | `features/eventselection/EventSelectionScreen.kt` | 一覧表示・権限UI・手動入力フォームの分岐（「巨大Composable禁止」（§89）に留意し状態ごとに関数分割） |
-| `navigation/ActionStarterNavHost.kt` | 権限リクエストlauncherとON_RESUME再チェックの結線、手動入力イベントの`SharedPlanViewModel.selectEvent`結線。**【裁定B17で変更】** 依存取得を`EntryPointAccessors.fromApplication(context, AppEntryPoint::class.java)`経由へ置換（従来の`AppContainer`直接参照から変更） |
+| `navigation/ActionStarterNavHost.kt` | 権限リクエストlauncherとON_RESUME再チェックの結線、手動入力イベントの`SharedPlanViewModel.selectEvent`結線。**【裁定B17は不発効・ADR-0014】** 依存取得は従来どおり`AppContainer`（手動DI）への直接参照を維持する（`EntryPointAccessors`経由への置換は行わない） |
 | **削除**: `mock/MockEventSource.kt` | Phase 1計画書§8 U6「Phase 2で削除する」を履行 |
-| **削除**: `di/AppContainer.kt` | **【裁定B17・ADR-0015】** graph-only Hilt導入により`di/AppModule.kt`（`@Module @InstallIn(SingletonComponent)`）へ機能吸収。`createViewModelFactory`は`AppModule`側へ移設し、単一Factory集約構造（裁定B2の保護条件）を維持する |
+| ~~**削除**: `di/AppContainer.kt`~~ | **【削除しない・ADR-0014】** 裁定B17（ADR-0015）は発効しなかったため`AppContainer`は削除しない。`createViewModelFactory`を含め現状のまま存続し、単一Factory集約構造（裁定B2の保護条件）を維持する |
 
 ### 6.3 既存テストの更新承認要請
 
@@ -319,9 +317,11 @@ API 35エミュレータでの実測（初回probe）により、繰り返しな
 
 **旧2層分割からの変更点**: 従来案は`CalendarProviderCalendarService`が`ContentResolver`を直接保持し、Robolectricの`ContentProvider`登録機構（`ShadowContentResolver.registerProviderInternal`はinternal扱いで、代替は`Robolectric.buildContentProvider()`）へ依存する設計だった。3層分割により`CursorSource`という薄い抽象を挟むことで、**`Robolectric.buildContentProvider()`への依存が完全に消える**。これによりリスクR7'（旧R7、§16）・不明点P-4（§13）の対象は「権限shadow（`grantPermissions`/`denyPermissions`）が動作するか」のみに縮小し、より複雑で実在確認が難しかったContentProvider登録機構への依存を構造的に排除できる。
 
-### 8.4 DI方針の再確認：graph-only HiltをPhase 2で導入する（裁定B17・ADR-0015。裁定B2は取り消し）
+### 8.4 DI方針の再確認：graph-only HiltをPhase 2で導入する（裁定B17・ADR-0015。裁定B2は取り消し）**→のちADR-0014により不発効（下記追記参照）**
 
 ADR-0003の再検討トリガー（「Phase 2開始時」）が本Phaseで到来した。計画書提出時点ではFable 5裁定B2により「Hilt導入をPhase 5へ再延期し、ADR-0014として記録する」との判断が下されていたが、**android-plannerが追加実測（M-13〜M-18、2026-08-09 emulator probe）を行った結果、Hilt導入の実行可能性に関する未確認要素の多くが解消され、Fable 5は後続レビューにより裁定B2を取り消し、Hilt導入をPhase 2内へ前倒しする裁定B17（ADR-0015）を下した**。
+
+**【2026-08-09追記・ADR-0014確定によりB17は不発効】** 上記裁定B17に基づきP2-C1でHilt導入を実行したところ、プローブP-H2で確定的に失敗した（Hilt Android Gradle plugin 2.60.1がAGP 9.0.0以上を必須とする内蔵チェックにより`apply`時点で失敗。実測ログ`build/agent-logs/p2c1-probe-ksp-hilt.log`、実測AGP 8.13.2）。この失敗はKSP/kapt選択とは無関係にplugin適用そのものが拒否される事象であり、下記フォールバック順の①②（KSP降格／kapt切替）では解消不能なため、Fable 5はフォールバック③（裁定B2の内容へ復帰）を適用し、**ADR-0014としてHilt導入のPhase 5延期を確定した**。ADR-0015は発効せず、以下の「実測で判明した事実」「採用方式」節はgraph-only Hilt導入の**実施されなかった設計案として参考保持**する。手動DI（`AppContainer`＋単一Factory集約）を継続する。詳細は`DECISIONS.md` ADR-0014、本書§14 P2-C1を参照。
 
 **実測で判明した事実**:
 - Hilt 2.60.1はMaven Centralに実在し、AARにaar-metadata制約がないためcompileSdk 35で導入可能（M-13/M-14。ADR-0011で4ライブラリを降格させたminCompileSdk地雷は本バージョンには存在しない）。
@@ -340,7 +340,7 @@ ADR-0003の再検討トリガー（「Phase 2開始時」）が本Phaseで到来
 2. KSPを諦めkaptへ切替える。
 3. それでも解決しない場合は、**裁定B2の内容へ復帰**する（Phase 5延期・ADR-0014を復活させる）。
 
-**TDD例外の適用**: Hilt導入はビルド基盤の変更であり、Red先行が構造的に不可能なため、`docs/TEAMS.md`のTDD例外規定（裁定B3が確立した「各Phaseの契約scaffoldサイクル」という先例と同種）を適用する。完了時点で全既存テストが同一件数でGreenであることの実測を必須とする（T-HILT-1〜4、§10.2）。
+**TDD例外の適用**: Hilt導入はビルド基盤の変更であり、Red先行が構造的に不可能なため、`docs/TEAMS.md`のTDD例外規定（裁定B3が確立した「各Phaseの契約scaffoldサイクル」という先例と同種）を適用する。完了時点で全既存テストが同一件数でGreenであることの実測を必須とする（T-HILT-1、§10.2）。**【結果】ベースライン73/73 Green実測は完了したが、P-H2確定失敗によりHilt導入自体は不実施。ADR-0014でPhase 5延期を確定した（T-HILT-2〜4は対象消滅）**。
 
 ---
 
@@ -382,7 +382,7 @@ ADR-0003の再検討トリガー（「Phase 2開始時」）が本Phaseで到来
 
 全実行は`--console=plain`で行い、ログを`build/agent-logs/`へ保存する。
 
-### 10.2 テストケース一覧（全64件：正常系23／異常系13／エッジケース28。裁定B9によりT-MANIFEST-1/2をゲート検証手順〔§3 G4-JVM、§14 P2-C7〕へ移設し、裁定B13/B16によりT-CALSVC-11・T-MANUAL-7を新規追加（メモ時点で55件）。後続レビューでandroid-planner追加実測メモを受け、T-HILT-1〜4（Hilt導入、正常系4）・T-CALSVC-12/13（正常系1・エッジケース1）・T-CALMAP-17/18/19（エッジケース3）の計9件を新規追加し、55件→64件へ拡大した）
+### 10.2 テストケース一覧（全61件：正常系20／異常系13／エッジケース28。裁定B9によりT-MANIFEST-1/2をゲート検証手順〔§3 G4-JVM、§14 P2-C7〕へ移設し、裁定B13/B16によりT-CALSVC-11・T-MANUAL-7を新規追加（メモ時点で55件）。後続レビューでandroid-planner追加実測メモを受け、T-HILT-1〜4（Hilt導入、正常系4）・T-CALSVC-12/13（正常系1・エッジケース1）・T-CALMAP-17/18/19（エッジケース3）の計9件を新規追加し、55件→64件へ拡大した。**2026-08-09、P2-C1プローブ実測（P-H2確定失敗）を受けたFable 5裁定（ADR-0014、Hilt導入のPhase 5延期確定）によりT-HILT-2〜4（正常系3件）を対象消滅として削除し、64件→61件へ縮小した。T-HILT-1はベースライン実測として完了済み扱いのまま残置する**）
 
 #### F13/F15 — `CalendarInstanceMapper`（純粋Domainロジック／`src/test`／`:app:testDebugUnitTest`／端末不要）
 
@@ -453,23 +453,25 @@ ADR-0003の再検討トリガー（「Phase 2開始時」）が本Phaseで到来
 | T-MANUAL-7 | エッジケース | 開始日時が未入力 → 確定ボタンが無効になる（裁定B16） | ManualEventEntry |
 | T-NAV2-1 | 正常系 | 権限拒否→手動入力→PlanReview→Executionの通しフローが成立する | NavHost（統合フロー） |
 
-#### F19（Hilt導入部分） — graph-only Hilt（`src/test`／`:app:testDebugUnitTest`／端末不要。**P2-C1・TDD例外〔裁定B3の系〕**）
+#### F19（Hilt導入部分） — graph-only Hilt（`src/test`／`:app:testDebugUnitTest`／端末不要。**P2-C1・TDD例外〔裁定B3の系〕**）。**【2026-08-09結果】P2-C1プローブ実測でHilt導入不成立。ADR-0014によりPhase 5延期確定。T-HILT-2〜4は対象消滅（下記参照）**
 
 | ID | 区分 | 内容・期待値 | 対象 |
 |---|---|---|---|
 | T-HILT-1 | 正常系 | Hilt導入前のベースラインとして`:app:testDebugUnitTest`を実測し、実行件数を確定する（既存メモ間の件数不一致「72/73/69」を実測値で確定。S-6解消） | ビルド全体（ベースライン測定） |
-| T-HILT-2 | 正常系 | `@HiltAndroidApp`＋`AppModule`＋`AppEntryPoint`導入後、`:app:testDebugUnitTest`がT-HILT-1と同一件数ですべてGreenになる（回帰なし） | ビルド全体（回帰確認） |
-| T-HILT-3 | 正常系 | 既存6件のCompose画面テスト（`createAndroidComposeRule<ComponentActivity>`使用）が変更なしでGreenのまま動作する（`@HiltViewModel`/`hiltViewModel()`/`@AndroidEntryPoint`を使わない設計の検証） | 既存Compose画面テスト一式 |
-| T-HILT-4 | 正常系 | `ActionStarterNavHost`が`EntryPointAccessors.fromApplication(context, AppEntryPoint::class.java)`経由で`CalendarService`等の依存を正しく解決できる | AppEntryPoint／NavHost |
+| ~~T-HILT-2~~ | ~~正常系~~ | **【削除・対象消滅（ADR-0014）】** ~~`@HiltAndroidApp`＋`AppModule`＋`AppEntryPoint`導入後、`:app:testDebugUnitTest`がT-HILT-1と同一件数ですべてGreenになる（回帰なし）~~ Hilt自体を導入しないため対象消滅 | — |
+| ~~T-HILT-3~~ | ~~正常系~~ | **【削除・対象消滅（ADR-0014）】** ~~既存6件のCompose画面テスト（`createAndroidComposeRule<ComponentActivity>`使用）が変更なしでGreenのまま動作する（`@HiltViewModel`/`hiltViewModel()`/`@AndroidEntryPoint`を使わない設計の検証）~~ Hilt自体を導入しないため対象消滅（既存Compose画面テストはHiltと無関係に動作継続する） | — |
+| ~~T-HILT-4~~ | ~~正常系~~ | **【削除・対象消滅（ADR-0014）】** ~~`ActionStarterNavHost`が`EntryPointAccessors.fromApplication(context, AppEntryPoint::class.java)`経由で`CalendarService`等の依存を正しく解決できる~~ `EntryPointAccessors`自体を導入しないため対象消滅 | — |
 
-**実装注記**: TDD例外を適用する（裁定B3の系。基盤変更のためRed先行不能）。P-H1（KSP/KGP協調）・P-H2（Hilt Gradle plugin/Kotlin世代）・P-H3（Robolectric×`@HiltAndroidApp`の共存）のprobe結果次第でT-HILT-2〜4が成立しない場合は、§8.4のフォールバック順に従いFable 5へ報告のうえ次の対応を決定する（R13/R14参照）。
+**T-HILT-1実測結果（2026-08-09）**: `:app:testDebugUnitTest` 73/73 Green（`build/agent-logs/p2c1-baseline.log`、`app/build/test-results/testDebugUnitTest/`JUnit XML集計でtests=73・failures=0を確認）として完了。件数不一致「72/73/69」は本実測により**73**で確定した（S-6解消）。以後の対応表（§10.2ヘッダ・§3 G2・§14 P2-C3）ではT-HILT-1のみを完了済み1件として計上する。
+
+**実装注記（結果確定・2026-08-09）**: TDD例外を適用した（裁定B3の系。基盤変更のためRed先行不能）。P-H2（Hilt Gradle plugin/AGP世代）が確定失敗し、§8.4のフォールバック順に従いFable 5へ報告のうえADR-0014（Phase 5延期）へ復帰した。P-H1（KSP/KGP協調）・P-H3（Robolectric×`@HiltAndroidApp`の共存）はP-H2失敗によりビルド自体が成立せず検証機会が生じなかったため対象消滅（ADR-0014、§13参照）。T-HILT-2〜4は上記のとおり対象消滅した。
 
 #### F19（構成差し替え・その他） — JUnit4純JVM／Robolectric／`src/test`／`:app:testDebugUnitTest`／端末不要
 
 | ID | 区分 | 内容・期待値 | 対象 |
 |---|---|---|---|
-| T-DI-1 | 正常系 | `AppModule`の`createViewModelFactory`から`EventSelectionViewModel`が生成できる（Hilt移行後もViewModel生成点が単一のまま保たれることの検証） | AppModule（Robolectric、Contextが必要） |
-| T-DI-2 | 異常系 | `com.actionstarter.mock.MockEventSource`および`com.actionstarter.di.AppContainer`がsrc/mainに存在しないこと（U6の履行、および裁定B17によるAppModuleへの吸収を検証） | パッケージ構成（JUnit4純JVM） |
+| T-DI-1 | 正常系 | `AppContainer`の`createViewModelFactory`から`EventSelectionViewModel`が生成できる（単一Factory集約点が保たれることの検証。**ADR-0014によりAppModuleではなくAppContainerが対象**） | AppContainer（Robolectric、Contextが必要） |
+| T-DI-2 | 異常系 | `com.actionstarter.mock.MockEventSource`がsrc/mainに存在しないこと（U6の履行）。**`com.actionstarter.di.AppContainer`は存続する（ADR-0014によりAppModuleへの吸収は発生しないため、非存在の検証対象から除外）** | パッケージ構成（JUnit4純JVM） |
 
 **マージ済みManifest検証の移設（裁定B9）**: 旧`T-MANIFEST-1`（`READ_CALENDAR`含有確認）・`T-MANIFEST-2`（release変種に`WRITE_CALENDAR`が含まれないことの確認）は、P2-C2（旧P2-C1）のManifest変更完了時点で即座にGreenとなりRed化不能（G2定義「単なるコンパイルエラー等ではなく期待値差分によるRed」の対象外）であり、かつJVMテストからのマージ済みreleaseマニフェスト取得は実行方式が不安定なため、**テストケースからは削除し「ゲート検証手順」へ移す**。P2-C7（G4-JVM、旧P2-C6）でquality-runnerがマージ済みマニフェスト成果物（`build/intermediates/merged_manifests/{debug,release}/AndroidManifest.xml`）をスクリプトで検証する（§3 G4-JVM、§14 P2-C7参照）。
 
@@ -515,7 +517,7 @@ E2E群は実行するまでpassとして報告することを禁止し、G2／G3
 | 21 | seed/cleanup実行 | 実機・意図しないデバイスへの誤実行 | 実行前に対象がエミュレータであることを検証するガード（`adb -s <emulator serial>`の明示指定＋`getprop ro.kernel.qemu`等の確認）を設け、不成立時は一切の書込/削除をせず即中断する（裁定B10） | 実カレンダーデータが保護される |
 | 22 | Calendar List／Upcoming Events読取 | `Calendars.VISIBLE = 0`のカレンダーが`Instances`クエリから自動除外されない（M-3・実測済み） | `Calendars.VISIBLE = 1`のselectionを`Calendars`／`Instances`双方のクエリに必須付与する（裁定B15。T-CALSVC-13で検証） | 非表示に設定したカレンダーの予定が候補に混入しない |
 | 23 | イベントの写像 | `eventStatus`が`NULL`（未設定）の行を誤ってキャンセル済みとして除外してしまう（M-6・実測済み） | 除外条件を`eventStatus == STATUS_CANCELED`（`= 2`）の場合のみとし、`NULL`は除外しない（T-CALMAP-17で検証） | 未設定状態の正常な予定が消えずに表示される |
-| 24 | Hilt導入（P2-C1） | KSP／KGP／Hilt Gradle pluginのバージョン協調が失敗する（P-H1/P-H2/P-H3のいずれか不成立） | フォールバック順（§8.4）：①KSPを2.3.x系の別バージョンへ降格②kaptへ切替③それでも不可なら裁定B2の内容（Phase 5延期・ADR-0014）へ復帰。**いずれの段階でもFable 5への報告を必須とし、無断でフォールバックを選択しない** | Phase 2のクリティカルパスがビルド基盤問題で止まらず、必要なら旧方針へ安全に戻せる |
+| 24 | Hilt導入（P2-C1） | KSP／KGP／Hilt Gradle pluginのバージョン協調が失敗する（P-H1/P-H2/P-H3のいずれか不成立） | フォールバック順（§8.4）：①KSPを2.3.x系の別バージョンへ降格②kaptへ切替③それでも不可なら裁定B2の内容（Phase 5延期・ADR-0014）へ復帰。**いずれの段階でもFable 5への報告を必須とし、無断でフォールバックを選択しない**。**【結果注記・2026-08-09】発生し、ADR-0014で解消。P-H2でHilt Android Gradle plugin 2.60.1がAGP 9.0.0以上を必須とすることが判明（実測AGP 8.13.2、`p2c1-probe-ksp-hilt.log`）。KSP/kaptと無関係にplugin適用自体が拒否される事象のためフォールバック①②は適用不能と判断し、フォールバック③（Phase 5延期）を適用してADR-0014を確定した** | Phase 2のクリティカルパスがビルド基盤問題で止まらず、必要なら旧方針へ安全に戻せる |
 
 ---
 
@@ -571,11 +573,11 @@ AVD `actionstarter_test`は`system-images/android-35/google_apis/x86_64`。実�
 | P-6 | ~~ホスト側で`adb shell pm revoke`を実行した後、新規起動したテストプロセスで拒否UIが表示されるか（裁定B14方式）~~ **【解決済み】** `pm revoke`は終了コード0でも実際には権限が剥奪されていない場合があるため、`dumpsys package <pkg> \| grep "android.permission.READ_CALENDAR: granted="`で`granted=false`を確認する手順を確立（M-10・§12 Step 6） | 実測済み | 影響なし（解決済み。手順どおりP2-C8で実行） |
 | P-7 | `EVENT_LOCATION`の実態分布（住所/店名/会議室名/URL等） | Phase 3のGeocoder設計時に再検討 | Phase 2への影響なし。Phase 3への申し送り |
 | P-8 | エミュレータの安定性（プロセス消失を観測） | **軽減策を実測で確立**（コールドブートオプション＋`sys.boot_completed`ポーリング、約15秒。§12 Step1） | 軽減策はあるが根本的な安定性リスクはR10'として残存 |
-| P-H1 | KSP 2.3.11とKGP（Kotlin Gradle Plugin）2.4.10の協調動作可否（M-16） | P2-C1でのビルド実測 | 失敗時は§8.4のフォールバック順（KSP降格→kapt→Phase5延期）を適用 |
-| P-H2 | Hilt Gradle plugin 2.60.1（Kotlin 2.3.21世代想定）とプロジェクトのKotlin 2.4.10との互換性（M-17/M-18） | P2-C1でのビルド実測 | 失敗時は§8.4のフォールバック順を適用 |
-| P-H3 | `@HiltAndroidApp`付与後、既存Robolectric JVMテストが追加設定なしにそのまま動作するか（`HiltTestApplication`が必要にならないか） | P2-C1での既存テスト実測（T-HILT-2/3） | 失敗時はR14のフォールバック（`@Config(application = HiltTestApplication::class)`→それでも不可ならPhase 5延期）を適用 |
+| P-H1 | ~~KSP 2.3.11とKGP（Kotlin Gradle Plugin）2.4.10の協調動作可否（M-16）~~ **【対象消滅（ADR-0014）】** P-H2が確定失敗（plugin適用時点でビルド不能）したため、KSP/KGP協調を検証する機会自体が生じなかった | 対象消滅につき実施せず | 影響なし（対象消滅。§8.4・`DECISIONS.md` ADR-0014参照） |
+| P-H2 | ~~Hilt Gradle plugin 2.60.1（Kotlin 2.3.21世代想定）とプロジェクトのKotlin 2.4.10との互換性（M-17/M-18）~~ **【実測済み・失敗確定】** Hilt Android Gradle plugin 2.60.1はAGP 9.0.0以上を必須とする内蔵チェックにより`apply`時点で失敗（実測AGP 8.13.2） | 実測済み（`build/agent-logs/p2c1-probe-ksp-hilt.log`） | 影響なし（実測により確定。ADR-0014でHilt導入をPhase 5延期） |
+| P-H3 | ~~`@HiltAndroidApp`付与後、既存Robolectric JVMテストが追加設定なしにそのまま動作するか（`HiltTestApplication`が必要にならないか）~~ **【対象消滅（ADR-0014）】** P-H2が確定失敗したため、`@HiltAndroidApp`を付与する段階に到達せず検証機会が生じなかった | 対象消滅につき実施せず | 影響なし（対象消滅。§8.4・`DECISIONS.md` ADR-0014参照） |
 
-**未検証事項一覧（要検証・P2-C1〔P-H系〕・P2-C2〔probe〕で確定）**: P-H1／P-H2／P-H3／P-2／P-3／P-4（権限shadowのみ）／P-5（主方式採用時は優先度低）。C2のprobeで解決しない依存関係は、C3（Red）でのコンパイル・テスト実装時に併せて最終確認される。
+**未検証事項一覧（要検証・P2-C2〔probe〕で確定）**: P-2／P-3／P-4（権限shadowのみ）／P-5（主方式採用時は優先度低）。**P-H1／P-H2／P-H3はP2-C1で実測済み・確定済み（P-H2失敗確定、P-H1/P-H3対象消滅。ADR-0014）のため本一覧から除外する**。C2のprobeで解決しない依存関係は、C3（Red）でのコンパイル・テスト実装時に併せて最終確認される。
 
 ---
 
@@ -585,16 +587,16 @@ AVD `actionstarter_test`は`system-images/android-35/google_apis/x86_64`。実�
 
 | サイクル | 内容 | 担当agent（Do） | 到達ゲート |
 |---|---|---|---|
-| **P2-C1** | **【新設・裁定B17／ADR-0015】** Hilt導入（graph-only）: ①ベースライン`:app:testDebugUnitTest`実測（T-HILT-1。件数不一致「72/73/69」を実測確定＝S-6解消）②P-H1/P-H2/P-H3プローブ ③`@HiltAndroidApp`付与＋`di/AppModule.kt`（`@Module @InstallIn(SingletonComponent)`）＋`di/AppEntryPoint.kt`新設、`ActionStarterNavHost`の依存取得を`EntryPointAccessors.fromApplication`へ置換、`createViewModelFactory`は維持 ④既存テスト同一件数Green実測（T-HILT-2/3/4）⑤ADR-0015を`DECISIONS.md`へ記録 | domain-implementer | **TDD例外の適用（裁定B3の系）**。全既存テストが同一件数でGreenであることの実測 |
+| **P2-C1** | **実施済み（結果: Hilt導入不成立→ADR-0014確定）**。成果物=ベースライン実測73/73（T-HILT-1完了）＋P-H2失敗の実測記録＋ADR-0014。（当初計画：`@HiltAndroidApp`付与＋`di/AppModule.kt`／`di/AppEntryPoint.kt`新設によるgraph-only Hilt導入〔裁定B17／ADR-0015〕。②P-H2確定失敗によりこの導入部分〔③④⑤〕は不実施、ADR-0015は発効せず） | domain-implementer | **TDD例外の適用（裁定B3の系）**。ベースライン73/73 Green実測・P-H2失敗実測ともに完了 |
 | **P2-C2**（旧P2-C1） | probe＋契約scaffold: P-2/P-3/P-4（権限shadowのみ）/P-5/P-7/P-8の実測、`CalendarService`/`CalendarResult`/`PermissionGate`/`CursorSource`/新UiState型のコンパイル可能なscaffold（実装は`TODO()`）、Manifestへ`READ_CALENDAR`追加。**P-1はM-1/M-2により、P-6はM-10により本サイクル開始前に解決済みのため実測のみ再確認する**。probe結果を`DECISIONS.md`へ記録。**裁定B4（externalCalendarId）・B6（NavHost簡略結線の既知の制限）のADR記録もあわせて本サイクルで行う（裁定B2／ADR-0014は裁定B17により取消・無効）** | domain-implementer | **TDD例外の適用（裁定B3）**。scaffoldコンパイル成功とprobe実測ログ |
-| **P2-C3**（旧P2-C2） | Red: §10の全64テストケースのうちJVM系56件をfailing化し実測でRedを確認する（T-HILT-1〜4〔4件〕はP2-C1でTDD例外により実測済みのためG2対象外、E2E系4件〔T-E2E2-1〜4〕は作成のみ・実行はG4-E。Phase 1と同じ扱い）。旧T-MANIFEST-1/2は裁定B9によりP2-C7のゲート検証手順へ移設済みのため本サイクルの対象外。既存テストの更新と`MockEventSourceTest`7件の移設も本サイクルで行う（§6.3の対応表に基づく） | test-writer → quality-runner | **G2** |
+| **P2-C3**（旧P2-C2） | Red: §10の全61テストケースのうちJVM系56件をfailing化し実測でRedを確認する（T-HILT-1〔1件。T-HILT-2〜4はADR-0014により対象消滅済み〕はP2-C1でTDD例外により実測済みのためG2対象外、E2E系4件〔T-E2E2-1〜4〕は作成のみ・実行はG4-E。Phase 1と同じ扱い）。旧T-MANIFEST-1/2は裁定B9によりP2-C7のゲート検証手順へ移設済みのため本サイクルの対象外。既存テストの更新と`MockEventSourceTest`7件の移設も本サイクルで行う（§6.3の対応表に基づく） | test-writer → quality-runner | **G2** |
 | **P2-C4**（旧P2-C3） | Green（Domain側）: `CalendarInstanceMapper`（L1）/`CalendarProviderCalendarService`（L2）/`ContentResolverCursorSource`（L3）/`PermissionGate`のAndroid実装（3層分割、§8.3改訂） | domain-implementer | **G3** |
 | **P2-C5**（旧P2-C4） | Green（UI側）: 事前説明カード・権限拒否UI・手動入力フォーム・Event Selection一覧化。画面Composableは遷移も権限要求もラムダ引数で受け取る | ui-implementer（**P2-C4と同一メッセージで並列起動**） | **G3** |
-| **P2-C6**（旧P2-C5） | 統合（直列）: `AppModule`／`AppEntryPoint`結線、NavHostへの権限launcher/ON_RESUME再チェック/手動入力イベントの結線、`mock/MockEventSource.kt`削除（U6履行）。**「ViewModel生成点1箇所への集約」の維持を本サイクルのレビュー観点に含める（裁定B2の保護条件・裁定B17によりgraph-only方式で継承）** | domain-implementer（integration owner） | **G3** |
+| **P2-C6**（旧P2-C5） | 統合（直列）: `AppContainer`（手動DI）への結線、NavHostへの権限launcher/ON_RESUME再チェック/手動入力イベントの結線、`mock/MockEventSource.kt`削除（U6履行）。**「ViewModel生成点1箇所への集約」の維持を本サイクルのレビュー観点に含める（裁定B2の保護条件。ADR-0014により手動DI継続のため`AppContainer`がそのまま維持対象）** | domain-implementer（integration owner） | **G3** |
 | **P2-C7**（旧P2-C6） | Refactor＋`./gradlew build`/`lintDebug`エラー0の再実測。**あわせてquality-runnerがマージ済みマニフェスト成果物（`build/intermediates/merged_manifests/{debug,release}/AndroidManifest.xml`）をスクリプト検証し、debug変種に`READ_CALENDAR`が含まれること・release変種に`WRITE_CALENDAR`が含まれないことを確認する（旧T-MANIFEST-1/2、裁定B9）** | ui-implementer/domain-implementer → quality-runner | **G4-JVM** |
 | **P2-C8**（旧P2-C7） | instrumented: §12実測済み手順（Step 0〜7）でseed実行→`connectedDebugAndroidTest`（T-E2E2-1〜4、Step 6の権限E2Eを含む）→cleanup | quality-runner | **G4-E** |
 
-**P2-C5並列時の所有権規則（旧P2-C4。Phase 1計画書§15の規則をそのまま適用）**: `build.gradle.kts`/`settings.gradle.kts`/`AndroidManifest.xml`/`AppModule`/`AppEntryPoint`/`ActionStarterApplication`/`ActionStarterNavHost`の既定所有者はdomain-implementerのみ。ui-implementerはP2-C5の間これらに一切触れず、必要が生じたら中断してFable 5へ報告する。
+**P2-C5並列時の所有権規則（旧P2-C4。Phase 1計画書§15の規則をそのまま適用）**: `build.gradle.kts`/`settings.gradle.kts`/`AndroidManifest.xml`/`AppContainer`/`ActionStarterApplication`/`ActionStarterNavHost`の既定所有者はdomain-implementerのみ。ui-implementerはP2-C5の間これらに一切触れず、必要が生じたら中断してFable 5へ報告する。
 
 ---
 
@@ -628,7 +630,7 @@ AVD `actionstarter_test`は`system-images/android-35/google_apis/x86_64`。実�
 |---|---|---|
 | R7 | Robolectricの権限shadow（`grantPermissions`/`denyPermissions`）が期待どおり動かず、権限連携テスト戦略（JVM中心）が崩れる | 3層分割（§8.3改訂）により`Robolectric.buildContentProvider()`への依存は構造的に解消済みで、リスクは権限shadowの実在確認のみに縮小している（R7'）。P-4（P2-C2〔旧P2-C1〕の最優先probe対象）が不成立の場合は、権限shadow依存のテスト（T-PERM-1〜7）のみinstrumentedへ移し、`CalendarInstanceMapper`（L1）・`CalendarProviderCalendarService`（L2、fake `CursorSource`のみに依存）はJVM側に残して被害を局所化する |
 | R8 | §66と§95.4/§95.6のスコープ齟齬が未裁定のまま実装が進む | **裁定B1により解消済み**。裁定前にP2-C3（旧P2-C2、Red）へ進まない方針は履行済み（本計画書はB1確定後に作成） |
-| R9 | Hilt導入判断を曖昧にしたまま進み、Phase 5で手戻りする | **裁定B17（ADR-0015）によりPhase 2内（graph-only方式）へ前倒しし解消済み**（裁定B2・ADR-0014は取り消し済み。P-H1〜P-H3が不成立の場合のみ§8.4のフォールバック順に従いADR-0014の内容へ復帰しうる）。「AppContainer＋単一Factory集約」の維持（裁定B2の保護条件）はgraph-only方式が構造的に満たすため、新設P2-C1（Hilt導入サイクル）の完了条件および後続P2-C6（統合サイクル、旧P2-C5）のレビュー観点の両方に含める |
+| R9 | Hilt導入判断を曖昧にしたまま進み、Phase 5で手戻りする | **【2026-08-09解消】** 裁定B17（ADR-0015・graph-only方式への前倒し）はP2-C1プローブ実測（P-H2確定失敗）を受けて**発効せず**、フォールバック③が適用された。**ADR-0014（Hilt導入のPhase 5延期）が確定し、判断の曖昧さは解消済み**である。手動DI（`AppContainer`＋単一Factory集約。裁定B2の保護条件）を継続し、Phase 5着手時に旧Hilt版／AGP9引上げ／手動DI継続の3択を再判定する（ADR-0014再検討トリガー） |
 | R10 | エミュレータの不安定性によりG4-Eが再び未達となる | P-8。P2-C8（旧P2-C7）手順にコールドブート＋確認＋リトライ1回を組み込み、失敗時は推測せず実行不能として報告 |
 | R11 | 実カレンダーのtitle/notesがログへ混入する（§58/§60違反） | エラーマップ#16。G4コード差分レビューの必須確認項目に追加。権限・プライバシー変更のためGemini/Codexクロスレビュー必須（`docs/TEAMS.md`§6 G4） |
 | R12 | `MockEventSource`削除によりUI検証が実カレンダー依存になりテスト不安定化 | `CalendarService`のfake実装を`src/test`配下に置き、UI層テストは常にfake経由で決定的に動かす |
@@ -640,10 +642,9 @@ AVD `actionstarter_test`は`system-images/android-35/google_apis/x86_64`。実�
 - `Dispatchers.IO`/`lifecycle-runtime-compose`の推移的依存の有無（P-2/P-3）は未確認。
 - Robolectric 4.16.1における権限shadow（`shadowOf(application).grantPermissions`/`denyPermissions`）の動作（P-4）は未確認（4.7時点javadocに基づく推定）。3層分割（§8.3改訂）により`Robolectric.buildContentProvider()`への依存は解消済みのため、検証対象はこの権限shadowのみに縮小している。
 - instrumentedテストからのカレンダー書込に必要な権限宣言の配置（P-5、副方式採用時のみ必要）は未確認。
-- KSP 2.3.11とKGP 2.4.10の協調動作（P-H1）、Hilt Gradle plugin 2.60.1とプロジェクトのKotlin世代との互換性（P-H2）、`@HiltAndroidApp`付与後の既存Robolectric JVMテストの継続動作（P-H3）は、いずれもP2-C1での実測待ちであり未確認。
 - probe終盤のエミュレータプロセス消失により、`probe2@local`カレンダー/`InstProbe`イベントの残存有無は未確認。
 
-**解決済み（参考。上記の未確認リストから除外済み）**: `Instances`のprojection列指定可否（P-1）は§8.2・M-1により14列とも解決済み。`pm revoke`後の拒否UI検証手順（P-6）は§12 Step 6・M-10により解決済み。
+**解決済み（参考。上記の未確認リストから除外済み）**: `Instances`のprojection列指定可否（P-1）は§8.2・M-1により14列とも解決済み。`pm revoke`後の拒否UI検証手順（P-6）は§12 Step 6・M-10により解決済み。**KSP/KGP協調（P-H1）・Hilt Gradle plugin/Kotlin世代互換性（P-H2）・Robolectric×`@HiltAndroidApp`共存（P-H3）は2026-08-09のP2-C1実測により確定した：P-H2はHilt Android Gradle plugin 2.60.1がAGP 9.0.0以上を必須とする内蔵チェックで`apply`時点で失敗することが確定し（実測AGP 8.13.2）、P-H1／P-H3はその時点でビルド自体が成立せず検証機会が生じなかった（対象消滅）。Fable 5はADR-0014によりHilt導入をPhase 5へ延期した（§13・§14 P2-C1・`DECISIONS.md`参照）。**
 
 Sources:
 - Robolectric ShadowApplication javadoc (4.7)
@@ -658,8 +659,8 @@ Sources:
 
 - 本計画書はFable 5 Pass1/Pass2アーキテクトレビューおよびGeminiクロスレビュー（`model: "gemini-3.5-flash"`）を**実施済みである（2026-08-09）**。指摘事項はFable 5裁定B8〜B16として本書へ反映済みであり（§4参照）、その後の後続レビューによる裁定B17〜B19も両セッションの成果として本書へ統合済みである。**2026-08-08のユーザー指示によりG1はユーザー承認を待たず自動進行する（裁定B18）。唯一の例外はHilt導入時期の裁定（B17・ADR-0015）であり、これについてはユーザーの拒否権を留保する。**
 - Fable 5裁定B1〜B7（2026-08-09、計画メモ提出時点のエスカレーション裁定）、B8〜B16（2026-08-09、G1レビュー由来の裁定）、およびB17〜B19（2026-08-09、後続レビュー由来の裁定）はいずれも確定済みであり、ユーザー承認待ちの対象ではない（唯一の例外はB17が記録するADR-0015〔Hilt導入時期〕で、これについてはユーザーの拒否権を留保する）。
-- ADR-0015（graph-only Hilt導入、裁定B17）はP2-C1完了時に`DECISIONS.md`へ記録する予定であり、本計画書時点では未記録である。ADR-0014（Hilt再延期案）は裁定B17により**取り消し済み**であり記録しない（P-H1〜P-H3が不成立の場合のフォールバックとしてのみ復活しうる。§8.4）。externalCalendarId複合キー（裁定B4・ADR記録トリガー②）およびNavHost簡略結線の既知の制限（裁定B6）のADRは、P2-C2（旧P2-C1）完了時に`DECISIONS.md`へ記録する予定であり、いずれも本計画書時点では未記録である。
+- **【2026-08-09更新】** P2-C1実測の結果、ADR-0015（graph-only Hilt導入、裁定B17）は発効せず`DECISIONS.md`へ記録されなかった。フォールバック③（裁定B2の内容への復帰）が適用され、**ADR-0014（Hilt導入のPhase 5延期）が`DECISIONS.md`へ記録・確定した**（詳細は本書§14 P2-C1、`DECISIONS.md` ADR-0014）。externalCalendarId複合キー（裁定B4・ADR記録トリガー②）およびNavHost簡略結線の既知の制限（裁定B6）のADRは、P2-C2（旧P2-C1）完了時に`DECISIONS.md`へ記録する予定であり、いずれも本計画書時点では未記録である。
 - seed方式（§12）は主方式（adb seed）を既定として設計しており、android-planner追加実測（§12.1 Step 0〜7）により主方式が実機で一貫動作することを確認済みである。残るP-5（副方式に必要な権限宣言配置）は主方式を採用する限り不要であり、主方式が失敗した場合のフォールバックとしてのみ検証対象となる（P-6の`pm revoke`検証手順はM-10により確立済みで解決済み）。正式な最終確定はP2-C2（旧P2-C1、probe＋契約scaffold）完了時点で`DECISIONS.md`へ記録する（裁定B7）。
-- P2-C2（旧P2-C1）のprobe対象はP-2／P-3／P-4（権限shadowのみ）／P-5／P-7／P-8であり、いずれも未実測である（P-1はM-1/M-2により、P-6はM-10により本書時点で解決済み）。P2-C1のprobe対象はP-H1／P-H2／P-H3（Hiltのバージョン協調・既存テスト互換性）であり、これも未実測である。本計画書の一部設計（フィルタ規則の実装可否・依存追加要否・テスト戦略・seed方式・Hilt導入可否）は、これらのprobe結果により変更されうる。
+- P2-C2（旧P2-C1）のprobe対象はP-2／P-3／P-4（権限shadowのみ）／P-5／P-7／P-8であり、いずれも未実測である（P-1はM-1/M-2により、P-6はM-10により本書時点で解決済み）。**P2-C1のprobe対象であったP-H1／P-H2／P-H3（Hiltのバージョン協調・既存テスト互換性）は2026-08-09に実測済みである（P-H2確定失敗、P-H1/P-H3対象消滅。ADR-0014）**。本計画書の一部設計（フィルタ規則の実装可否・依存追加要否・テスト戦略・seed方式）は、残るP-2／P-3／P-4／P-5／P-7／P-8のprobe結果により変更されうる（Hilt導入可否はADR-0014により確定済みのため変更対象から除く）。
 - 計画メモに記載のなかった内容の追加、および転記漏れは確認していない（本書は計画メモ§0〜§14の全項目を転記済み）。B8〜B16はG1レビューにより、B17〜B19は後続レビュー（android-planner追加実測メモ受領後）により、それぞれ新たに追加された裁定であり、計画メモには存在しない（メモとの差分は§4で「G1レビューによる裁定」「後続レビューによる追加裁定」としてそれぞれ明示区分している）。
-- テストケース件数の反映結果（裁定B9でT-MANIFEST-1/2をゲート検証手順へ移設・裁定B13/B16でT-CALSVC-11／T-MANUAL-7を新規追加・後続レビューでT-HILT-1〜4／T-CALSVC-12/13／T-CALMAP-17/18/19を新規追加）: §10.2ヘッダ・§3 G2・§14 P2-C3のいずれも「全64件（正常系23／異常系13／エッジケース28）、うちJVM系56件がRed対象（T-HILT-1〜4はP2-C1でTDD例外により実測済みのため対象外）・E2E系4件は作成のみ」で一致していることを本書内で数え直して確認済み。エラー＆レスキューマップ（§11）は裁定B10の#21追加および後続レビューの#22〜#24追加により全24行で一致している。
+- テストケース件数の反映結果（裁定B9でT-MANIFEST-1/2をゲート検証手順へ移設・裁定B13/B16でT-CALSVC-11／T-MANUAL-7を新規追加・後続レビューでT-HILT-1〜4／T-CALSVC-12/13／T-CALMAP-17/18/19を新規追加・**2026-08-09のADR-0014によりT-HILT-2〜4を対象消滅として削除**）: §10.2ヘッダ・§3 G2・§14 P2-C3のいずれも「**全61件（正常系20／異常系13／エッジケース28）**、うちJVM系56件がRed対象（**T-HILT-1〔1件〕**はP2-C1でTDD例外により実測済みのため対象外、**T-HILT-2〜4はADR-0014により対象消滅**）・E2E系4件は作成のみ」で一致していることを本書内で数え直して確認済み。エラー＆レスキューマップ（§11）は裁定B10の#21追加および後続レビューの#22〜#24追加により全24行で一致している（#24は2026-08-09、ADR-0014による結果注記を追加済み）。

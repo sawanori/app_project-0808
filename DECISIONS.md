@@ -316,3 +316,26 @@ androidComponents {
 **影響範囲**: `app/build.gradle.kts`（`androidComponents`ブロック追加・`HostTestBuilder`のimport追加のみ）。debug変種のテスト実行（`:app:testDebugUnitTest`）・release変種のビルド（`assembleRelease`・lint等）には影響しない。
 **検証方法**: `./gradlew build --console=plain`のBUILD SUCCESSFUL実測（ログ: `build/agent-logs/c6-g4jvm-build-2.log`）。同ログに`:app:testReleaseUnitTest`タスクが一切出現しないこと（タスクグラフから除外）、`:app:testDebugUnitTest`が実行され`app/build/test-results/testDebugUnitTest/`配下のJUnit XML集計でtests=72・failures=0・errors=0であることを確認した。
 **再検討トリガー**: release固有ロジック（release専用の分岐処理・release専用Feature Flag等）が増え、release変種特有のunit testが必要になった場合。AGP 9.0への移行時（`enableUnitTest`非推奨API自体は本ADRでは未使用のため直接の影響はないが、`hostTests`系APIの変更有無を再確認する）。
+
+---
+
+### ADR-0014: Hilt導入のPhase 5延期（P2-C1プローブ実測による確定）
+
+- 日付: 2026-08-09 ／ ステータス: 承認 ／ 決定者: Fable 5 ／ 起案agent: domain-implementer（P2-C1） ／ 関連仕様§: 計画書`docs/plans/phase2-calendar.md`§8.4・§14 P2-C1（ADR-0003の再検討トリガー「Phase 2開始時」に対応）
+
+**背景**: ADR-0003はPhase 2先頭でのHilt導入を予定していた。`docs/plans/phase2-calendar.md`裁定B17により、この方針は一旦「graph-only Hilt」方式（`@HiltViewModel`／`hiltViewModel()`／`@AndroidEntryPoint`を使わず、`@HiltAndroidApp`＋モジュール＋`EntryPointAccessors`のみを導入する最小構成。ADR-0015案）へ前倒しされたが、そのP2-C1プローブ実測で、Hilt Android Gradle plugin 2.60.1が**AGP 9.0.0以上を必須**とする内蔵チェックにより`apply`時点で失敗することが判明した（実測ログ: `build/agent-logs/p2c1-probe-ksp-hilt.log`。エラー原文「The Hilt Android Gradle plugin is only compatible with Android Gradle plugin (AGP) version 9.0.0 or higher (found Android Gradle Plugin version 8.13.2).」）。本プロジェクトのAGPは8.13.2（ADR-0007）で確定済みである。この失敗はKSP/kapt選択（計画書§8.4のフォールバック①②が対処する領域）とは無関係にplugin適用そのものが拒否される事象（プローブP-H2の確定失敗）であり、フォールバック①（KSPバージョン変更）／②（kapt切替）では解消不能と判断した。
+
+**決定**: Hilt導入をPhase 5（§69 Notification+Execution）へ延期する。`docs/plans/phase2-calendar.md`裁定B17が前提としていたADR-0015（graph-only Hilt導入）は発効しない。手動DI（`AppContainer`＋単一`ViewModelProvider.Factory`集約＝ADR-0003の延期条件）を継続する。ベースライン`:app:testDebugUnitTest` 73/73 Greenは、P2-C1で加えた変更（Hilt plugin適用等）を全復元した状態で復元検証済みである（実測ログ: `build/agent-logs/p2c1-post-revert-sanity.log`。`app/build/test-results/testDebugUnitTest/`配下のJUnit XML集計でtests=73・failures=0を確認）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| AGP 9系へ引き上げる | 影響範囲がPhase 2本題（Calendar機能）に不釣り合いであり、ADR-0007の再検討トリガー（Phase 13配布前）を待たずに前倒しする理由がない。ADR-0007の再検討時にあわせて再評価する |
+| AGP 8.x対応の旧Hilt版を採用する | 機能価値ゼロ（DIの実利益は依然として発生しない）のまま、動作するHiltバージョンを探索する「版考古学」の検証コストだけが発生する。空プレースホルダ禁止（§88）に反する |
+
+**影響範囲**: なし。P2-C1でHilt関連に加えた変更（`app/build.gradle.kts`のplugin適用等）は全復元済み（`git diff --stat HEAD -- app/build.gradle.kts gradle/libs.versions.toml`で差分0、両ファイルに`hilt`文字列の残存なしを実測確認）。**なお本ADR記録時点でP2-C2（probe＋契約scaffold）が並行して進行中であり、`AndroidManifest.xml`（READ_CALENDAR追加）・`services/calendar/`・`services/permission/`配下に未コミットの変更が別途存在するが、いずれもHilt/AppModule/AppEntryPointへの参照を含まないことを確認済みであり、本ADRの対象（Hilt導入可否）とは無関係のP2-C2作業である。**
+**検証方法**: `build/agent-logs/p2c1-baseline.log`（変更前ベースライン、BUILD SUCCESSFUL）／`build/agent-logs/p2c1-probe-ksp-hilt.log`（Hilt plugin適用失敗の実測）／`build/agent-logs/p2c1-post-revert-sanity.log`（復元後の健全性確認、BUILD SUCCESSFUL）。
+**再検討トリガー**: Phase 5（§69）着手時（その時点のAGP/Hilt環境で①旧Hilt版の採用②AGP 9系への引き上げ③手動DI継続の3択を再判定する）。またはAGP 9系への引き上げがADR-0007の再検討により本ADRより先に発生した場合。
+
+**付記**: `:app:testDebugUnitTest`のテスト総数の正は**73**である（ADR-0013時点の72件〔release変種unit test無効化時点の実測〕に、T-MOCK-11回帰テスト（`app/src/test/java/com/actionstarter/mock/MockEventSourceTest.kt`、コミット`1808128`「T-MOCK-11回帰テスト追加」）が追加され+1。2026-08-09のベースライン実測（`p2c1-baseline.log`、JUnit XML集計）で73/73 Greenとして確定した）。
