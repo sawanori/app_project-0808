@@ -17,9 +17,10 @@ import java.time.Duration
 import java.time.Instant
 
 /**
- * T-OPTIN-1・T-OPTIN-2（計画書§9.9 `docs/plans/phase3-routing-location.md`、F31）。Phase 3
- * C2後半（test-writer, 2026-08-09）が新規作成、P3-C9（domain-implementer, 2026-08-09）が
- * T-OPTIN-1の前提修正とT-OPTIN-2追加を行った。
+ * T-OPTIN-1・T-OPTIN-2・T-OPTIN-3（計画書§9.9 `docs/plans/phase3-routing-location.md`、F31）。
+ * Phase 3 C2後半（test-writer, 2026-08-09）が新規作成、P3-C9（domain-implementer, 2026-08-09）が
+ * T-OPTIN-1の前提修正とT-OPTIN-2追加を行い、P3-C10（domain-implementer, 2026-08-09）が
+ * T-OPTIN-3を追加した。
  *
  * opt-in実API疎通ハーネス。`BuildConfig.ROUTES_API_KEY`が空文字の場合は
  * `Assume.assumeTrue`によりskipされ、CI／通常のG4-E実行では常にskipされる設計とする
@@ -58,6 +59,18 @@ import java.time.Instant
  * 出発時刻から計算される値であり通常十分に未来のため、この競合が実運用の
  * `DepartureViewModel`経路で顕在化するかは本サイクルの範囲外（変更許可ファイル外）のため
  * 未検証のまま次サイクルへ申し送る**。
+ *
+ * **P3-C10追加（本サイクル、domain-implementer、Fable 5裁定・ADR-0030）**: 上記の申し送り事項
+ * （本番`DepartureViewModel.estimateAndApplyRoute`が`departureDate = clock.instant()`＝
+ * バッファ0で渡す設計であり、この競合を実運用で踏みうる）を受け、`RoutesApiRequestBuilder`
+ * （アダプタ層）へ`clock`パラメータ（既定`Clock.systemUTC()`）を追加し、送信直前に
+ * `departureTime`を`max(departureTime, clock.instant() + 120秒)`へクランプする恒久対応を
+ * 実装した（`RoutesApiRequestBuilder.kt`KDoc参照）。**`DepartureViewModel`は変更していない**
+ * （`departureDate = now`は「今すぐ出発する」という意味論として正しく、Routes API固有の
+ * 時刻制約への適応はアダプタ＝本ビルダーの責務と裁定されたため）。本番と完全に同一条件
+ * （バッファを一切加算せず`Instant.now()`をそのまま渡す）で正のDurationが得られることを
+ * 端到端で証明するため、新設のT-OPTIN-3を本ファイルへ追加する。既存のT-OPTIN-1（2分バッファ・
+ * WALK・正のDuration）・T-OPTIN-2（TRANSIT→NoRoute）は回帰ロックとして無変更のまま維持する。
  */
 @RunWith(AndroidJUnit4::class)
 class RoutesApiLiveTest {
@@ -135,5 +148,42 @@ class RoutesApiLiveTest {
                 )
             }
         }
+    }
+
+    // T-OPTIN-3（P3-C10新設、Fable 5裁定・ADR-0030。クラスKDoc「P3-C10追加」参照）: 正常系 -
+    // キーが設定されている場合のみ実行し、WALK・departureDate = Instant.now()（バッファ0・
+    // 本番のDepartureViewModel.estimateAndApplyRouteと完全に同一条件）で実Routes APIを1回呼び、
+    // 正のDurationを確認する。T-OPTIN-1が意図的に[FUTURE_DEPARTURE_BUFFER]（2分）を加算している
+    // のに対し、本テストは一切バッファを加算せず「今すぐ出発」をそのまま渡すことで、
+    // `RoutesApiRequestBuilder`のクランプ実装（本サイクルP3-C10）が本番シナリオの競合（
+    // ネットワーク往復中にdepartureTimeが過去へずれHTTP 400「Timestamp must be set to a
+    // future time.」になる問題）を実際に解消していることを端到端で証明する。キー未設定時は
+    // Assumeによりskipされる。
+    @Test
+    fun tOptin3_apiKeyConfigured_zeroBufferDepartureDateMatchingProductionReturnsPositiveDuration() {
+        assumeTrue(
+            "ROUTES_API_KEY未設定のためスキップ（計画書§9.9、opt-in実API疎通。" +
+                "F31「CI/通常テストからは常にskipされる設計」）",
+            BuildConfig.ROUTES_API_KEY.isNotEmpty()
+        )
+
+        val routingService = RoutesApiRoutingService(
+            httpPostClient = UrlConnectionHttpPostClient(),
+            apiKey = BuildConfig.ROUTES_API_KEY
+        )
+
+        val estimate = runBlocking {
+            routingService.estimateRoute(
+                origin = Coordinate(lat = 35.6586, lon = 139.7454), // 東京タワー付近（実在の任意点）
+                destination = Coordinate(lat = 35.6595, lon = 139.7005), // 明治神宮付近（実在の任意点）
+                mode = TransportMode.WALKING,
+                departureDate = Instant.now() // バッファ0＝本番DepartureViewModelと完全に同一条件
+            )
+        }
+
+        assertTrue(
+            "Routes API duration should be positive, was ${estimate.duration}",
+            !estimate.duration.isNegative && !estimate.duration.isZero
+        )
     }
 }

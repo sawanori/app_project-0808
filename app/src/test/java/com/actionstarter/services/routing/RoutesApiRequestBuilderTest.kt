@@ -5,7 +5,10 @@ import com.actionstarter.domain.valueobject.TransportMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
+import java.time.Clock
+import java.time.Duration
 import java.time.Instant
+import java.time.ZoneOffset
 
 /**
  * T-ROUTEREQ-1〜3（計画書§9.2）。対象は[RoutesApiRequestBuilder]（L1純粋関数）。契約は
@@ -29,8 +32,21 @@ class RoutesApiRequestBuilderTest {
         val origin = Coordinate(lat = 35.681236, lon = 139.767125)
         val destination = Coordinate(lat = 34.733611, lon = 135.500138)
         val departureTime: Instant = Instant.parse("2026-08-09T01:23:45Z")
+        // P3-C10（ADR-0030）注記: build()はdepartureTimeがclock.instant()+120秒未満なら
+        // クランプするようになった。本テストの意図（クランプの影響を受けずorigin/destination/
+        // mode/departureTimeの写像そのものを検証する）を保つため、departureTimeより十分過去の
+        // 固定Clockを注入してクランプが発火しない状態を固定する（既定のClock.systemUTC()に
+        // 依存すると、実行時の実時刻がdepartureTimeへ追いついた時点でクランプが意図せず発火し
+        // 本テストが壊れてしまうため、固定Clockで決定的にする）。
+        val clockWellBeforeDepartureTime = Clock.fixed(Instant.parse("2020-01-01T00:00:00Z"), ZoneOffset.UTC)
 
-        val json = RoutesApiRequestBuilder.build(origin, destination, TransportMode.TRANSIT, departureTime)
+        val json = RoutesApiRequestBuilder.build(
+            origin = origin,
+            destination = destination,
+            mode = TransportMode.TRANSIT,
+            departureTime = departureTime,
+            clock = clockWellBeforeDepartureTime
+        )
 
         val originSeg = originSegment(json)
         val destSeg = destinationSegment(json)
@@ -69,20 +85,34 @@ class RoutesApiRequestBuilderTest {
         }
     }
 
-    // T-ROUTEREQ-3: エッジ - departureDateが過去 → 規則どおりに処理される（規則を固定して
-    // ロック）。RoutesApiRequestBuilderはCoordinate/TransportMode/Instantのみを受け取る
-    // 純粋写像関数であり、計画書のどこにも「過去日付を拒否する」規則は存在しない
-    // （バリデーションはCoordinateのinitのみが担う設計、domain/valueobject/Coordinate.kt）。
-    // そのため過去日時でも例外を投げずRFC3339文字列へそのまま写像することを固定する。
+    // T-ROUTEREQ-3（P3-C10で契約更新、Fable 5裁定・ADR-0030）: エッジ - departureDateが過去 →
+    // 【旧契約・P3-C1〜C9】RoutesApiRequestBuilderはバリデーション無しの純粋写像関数であり、
+    // 過去日時でも例外を投げずそのまま写像していた（計画書のどこにも「過去日付を拒否する」
+    // 規則は存在しないため）。【新契約・P3-C10】実機診断で「departureTimeが現在時刻ぴったり
+    // （バッファ0）だとネットワーク往復中に過去へずれ、Routes APIがHTTP 400
+    // "Timestamp must be set to a future time."を返す」競合が判明したため（本ファイルKDoc参照）、
+    // Fable 5裁定によりbuild()自身がdepartureTimeをclock.instant()+120秒へクランプする責務を
+    // 持つよう変更された。この新契約の下では、過去日時は（どれだけ過去でも）例外を投げず
+    // クランプ後の値へ写像される。T-ROUTEREQ-6が境界値（departureTime==clock.instant()）を
+    // 検証するのに対し、本テストは2020年という大きく過去の値でも同じ床値へ寄せられることを
+    // 検証し、max()ベースのクランプが過去のズレ幅によらず頑健であることを固定する。
     @Test
-    fun build_withPastDepartureDate_mapsAsIsWithoutValidation() {
+    fun build_withFarPastDepartureDate_clampsToClockPlus120Seconds() {
+        val fixedNow = Instant.parse("2026-08-09T01:00:00Z")
+        val fixedClock = Clock.fixed(fixedNow, ZoneOffset.UTC)
         val origin = Coordinate(lat = 35.0, lon = 139.0)
         val destination = Coordinate(lat = 36.0, lon = 140.0)
-        val pastDepartureTime = Instant.parse("2020-01-01T00:00:00Z")
+        val farPastDepartureTime = Instant.parse("2020-01-01T00:00:00Z")
 
-        val json = RoutesApiRequestBuilder.build(origin, destination, TransportMode.DRIVING, pastDepartureTime)
+        val json = RoutesApiRequestBuilder.build(
+            origin = origin,
+            destination = destination,
+            mode = TransportMode.DRIVING,
+            departureTime = farPastDepartureTime,
+            clock = fixedClock
+        )
 
-        assertEquals("2020-01-01T00:00:00Z", extractString(json, "departureTime"))
+        assertEquals("2026-08-09T01:02:00Z", extractString(json, "departureTime"))
     }
 
     // T-ROUTEREQ-4〜5（P3-C9、Fable 5裁定・curl実測2026-08-09）: DRIVE + departureTime
@@ -126,6 +156,61 @@ class RoutesApiRequestBuilderTest {
                 containsKey(json, "routingPreference")
             )
         }
+    }
+
+    // T-ROUTEREQ-6〜7（P3-C10、Fable 5裁定・ADR-0030）: P3-C9が実機で新規発見した競合の恒久対応。
+    // DRIVE/WALK系で`departureTime`に「現在時刻ぴったり」（バッファ0の`Instant.now()`）を送ると、
+    // ネットワーク往復＋サーバ処理の間に過去時刻へずれ、Routes APIがHTTP 400
+    // 「Timestamp must be set to a future time.」を返すことが実測確定した（`RoutesApiLiveTest`
+    // クラスKDoc・ADR-0029付記2参照。時計ズレではないことは3者時計比較で確認済み）。この対応は
+    // 呼び出し元（`DepartureViewModel`）ではなくRoutes APIアダプタ層（本ビルダー）の責務と裁定された
+    // （FieldMask必須・DRIVE限定TRAFFIC_AWAREと同格の「APIの作法」）。[RoutesApiRequestBuilder.build]
+    // へ`clock`パラメータ（既定`Clock.systemUTC()`）を追加し、送信する`departureTime`を
+    // `max(departureTime, clock.instant() + 120秒)`へクランプする。120秒はC9実測で十分性が
+    // 確認されたバッファ（`RoutesApiLiveTest.FUTURE_DEPARTURE_BUFFER`と同根拠）。
+
+    // T-ROUTEREQ-6: エッジ - departureTimeがclock.instant()ちょうど（クランプ閾値の過去側）→
+    // 出力JSONのdepartureTimeがclock.instant()+120秒のRFC3339へクランプされる
+    @Test
+    fun build_withDepartureTimeAtClockNow_clampsToClockPlus120Seconds() {
+        val fixedNow = Instant.parse("2026-08-09T01:00:00Z")
+        val fixedClock = Clock.fixed(fixedNow, ZoneOffset.UTC)
+        val origin = Coordinate(lat = 35.681236, lon = 139.767125)
+        val destination = Coordinate(lat = 34.733611, lon = 135.500138)
+
+        val json = RoutesApiRequestBuilder.build(
+            origin = origin,
+            destination = destination,
+            mode = TransportMode.WALKING,
+            departureTime = fixedNow,
+            clock = fixedClock
+        )
+
+        assertEquals("2026-08-09T01:02:00Z", extractString(json, "departureTime"))
+    }
+
+    // T-ROUTEREQ-7: エッジ（回帰ロック） - departureTimeがclock.instant()+10分（クランプ閾値=120秒を
+    // 大きく超える未来）→ クランプされずそのまま+10分が出力される。max(departureTime,
+    // clock.instant()+120s)のセマンティクスにより、クランプ閾値を超えて十分未来の値は無加工で
+    // 通過するという既存のpass-through契約（T-ROUTEREQ-3が過去日付について固定した契約と同型）が
+    // 新パラメータ追加後も破られないことを固定する
+    @Test
+    fun build_withDepartureTimeWellBeyondClampThreshold_mapsAsIsRegressionLock() {
+        val fixedNow = Instant.parse("2026-08-09T01:00:00Z")
+        val fixedClock = Clock.fixed(fixedNow, ZoneOffset.UTC)
+        val farFutureDepartureTime = fixedNow.plus(Duration.ofMinutes(10))
+        val origin = Coordinate(lat = 35.681236, lon = 139.767125)
+        val destination = Coordinate(lat = 34.733611, lon = 135.500138)
+
+        val json = RoutesApiRequestBuilder.build(
+            origin = origin,
+            destination = destination,
+            mode = TransportMode.WALKING,
+            departureTime = farFutureDepartureTime,
+            clock = fixedClock
+        )
+
+        assertEquals("2026-08-09T01:10:00Z", extractString(json, "departureTime"))
     }
 
     // ---- 共有ヘルパー（org.json非依存の正規表現ベース抽出。クラスKDoc参照） --------------

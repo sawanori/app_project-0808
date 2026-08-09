@@ -2,6 +2,8 @@ package com.actionstarter.services.routing
 
 import com.actionstarter.domain.valueobject.Coordinate
 import com.actionstarter.domain.valueobject.TransportMode
+import java.time.Clock
+import java.time.Duration
 import java.time.Instant
 
 /**
@@ -45,6 +47,20 @@ import java.time.Instant
  *   （WALK/BICYCLE/TRANSITはrouting Preferenceなしで実測済みHTTP 200のため付与しない。
  *   APIがDRIVE系以外へのroutingPreference指定を拒否するため）。departureTimeは全モード
  *   維持する（本アプリは未来出発時刻のETAがコア機能のため）
+ * - **P3-C10実測確定内容（2026-08-09、Fable 5裁定＝ADR-0030）**: `departureTime`に「現在時刻
+ *   ぴったり」（バッファ0の`Instant.now()`）を送ると、ネットワーク往復＋サーバ側処理の間に
+ *   過去時刻へずれ、Routes APIがHTTP 400 `"Timestamp must be set to a future time."`
+ *   （`INVALID_ARGUMENT`）を返すことが実測確定した（DRIVE/WALK系。host／emulator／Googleサーバの
+ *   3者時計比較により時計ズレが原因でないことも確認済み＝ADR-0029付記2・`RoutesApiLiveTest`
+ *   クラスKDoc参照。TRANSITは有効経路0件の応答経路が本検証より先に短絡すると推測されこの検証を
+ *   受けない）。本番`DepartureViewModel.estimateAndApplyRoute`は`departureDate = clock.instant()`
+ *   （バッファ0）をそのまま渡す設計だが、これは「今すぐ出発する」という意味論として正しく、
+ *   呼び出し元を変更すべき欠陥ではない。したがってこの対応はRoutes API固有の作法（FieldMask
+ *   必須・DRIVE限定TRAFFIC_AWAREと同格）として**本ビルダー（アダプタ層）の責務**と裁定された
+ *   （Fable 5裁定、ADR-0030）：[build]は新規`clock`パラメータ（既定`Clock.systemUTC()`、
+ *   既存呼び出し元は無変更で動作＝デフォルト引数）を受け取り、送信する`departureTime`を
+ *   `max(departureTime, clock.instant() + 120秒)`へクランプする。120秒はC9実測で十分性が
+ *   確認された安全マージン（opt-inテスト`RoutesApiLiveTest.FUTURE_DEPARTURE_BUFFER`と同根拠）
  * - Android REST直叩き時の`X-Android-Package`/`X-Android-Cert`ヘッダについて、Googleの
  *   セキュリティベストプラクティスは "Android: Use the X-Android-Package and
  *   X-Android-Cert HTTP headers" と案内する一方、"Android and iOS application
@@ -61,7 +77,18 @@ import java.time.Instant
  * は固定形状のJSONを`String`テンプレートで直接組み立てる（依存追加ゼロ、§88）。
  */
 object RoutesApiRequestBuilder {
-    fun build(origin: Coordinate, destination: Coordinate, mode: TransportMode, departureTime: Instant): String {
+    // P3-C10実測確定（本ファイルKDoc）: ネットワーク往復＋サーバ処理の間にdepartureTimeが
+    // 過去時刻へずれ「Timestamp must be set to a future time.」（HTTP 400）を引き起こす競合を
+    // 回避するための安全マージン。C9実測（opt-inテストのFUTURE_DEPARTURE_BUFFER）で十分性を確認済み。
+    private val MINIMUM_FUTURE_BUFFER: Duration = Duration.ofSeconds(120)
+
+    fun build(
+        origin: Coordinate,
+        destination: Coordinate,
+        mode: TransportMode,
+        departureTime: Instant,
+        clock: Clock = Clock.systemUTC()
+    ): String {
         val travelMode = travelModeOf(mode)
         return buildString {
             append('{')
@@ -82,9 +109,22 @@ object RoutesApiRequestBuilder {
             }
             // Instant.toString()はナノ秒=0のときRFC3339（例: "2026-08-09T01:23:45Z"）を
             // 小数部なしで返す（java.time.Instant契約、ISO_INSTANTフォーマッタ準拠）。
-            append("\"departureTime\":\"").append(departureTime).append('"')
+            append("\"departureTime\":\"").append(clampToFuture(departureTime, clock)).append('"')
             append('}')
         }
+    }
+
+    /**
+     * P3-C10実測確定（本ファイルKDoc）: `departureTime`が`clock.instant() + 120秒`より過去
+     * （＝クランプ閾値未満）の場合のみ`clock.instant() + 120秒`へ引き上げる
+     * （`max(departureTime, clock.instant() + 120秒)`と等価）。クランプ閾値以上の未来値は
+     * 無加工でそのまま返す（T-ROUTEREQ-7が固定するpass-through契約）。クランプ閾値未満の
+     * 値はどれだけ過去でも同じ床値へ寄せられる（T-ROUTEREQ-6が境界値、T-ROUTEREQ-3改め
+     * `build_withFarPastDepartureDate_clampsToClockPlus120Seconds`が大きく過去の値を検証）。
+     */
+    private fun clampToFuture(departureTime: Instant, clock: Clock): Instant {
+        val earliestAllowed = clock.instant().plus(MINIMUM_FUTURE_BUFFER)
+        return if (departureTime.isBefore(earliestAllowed)) earliestAllowed else departureTime
     }
 
     /**
