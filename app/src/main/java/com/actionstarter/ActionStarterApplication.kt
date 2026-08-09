@@ -11,6 +11,10 @@ import com.actionstarter.di.AppContainer
  * `AndroidManifest.xml`の`<application android:name=".ActionStarterApplication">`で
  * 本クラスを指定する必要がある（Robolectricもマニフェストからこの指定を読み取り、
  * `src/test`実行時にも本クラスが使われる）。
+ *
+ * [AppContainer]は`applicationContext`を要求する（統合サイクルでの実結線、計画書§14
+ * P2-C6／旧P2-C5行）。`CalendarProviderCalendarService`／`AndroidPermissionGate`が
+ * `ContentResolver`／権限照会を解決するために使う。
  */
 class ActionStarterApplication : Application() {
 
@@ -19,6 +23,6 @@ class ActionStarterApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        appContainer = AppContainer()
+        appContainer = AppContainer(applicationContext)
     }
 }

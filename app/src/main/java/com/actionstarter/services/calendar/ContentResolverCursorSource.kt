@@ -10,8 +10,8 @@ import android.net.Uri
  * テストはinstrumented（`src/androidTest`）のみで行い、JVM/Robolectricではテストしない
  * （計画書§8.3・§10.1）。
  *
- * DI結線（`AppContainer`からの生成）は本サイクル（P2-C2）では行わない（P2-C5で結線する）。
- * 本体は本サイクル（P2-C2、契約scaffold・TDD例外）では`TODO()`とし、P2-C4で実装する。
+ * DI結線（`AppContainer`からの生成）は本サイクル（P2-C4）でも行わない（P2-C5で結線する）。
+ * P2-C4で実装済み。
  */
 class ContentResolverCursorSource(
     private val contentResolver: ContentResolver
@@ -23,6 +23,6 @@ class ContentResolverCursorSource(
         selectionArgs: Array<String>?,
         sortOrder: String?
     ): Cursor? {
-        TODO("P2-C4で実装")
+        return contentResolver.query(uri, projection, selection, selectionArgs, sortOrder)
     }
 }

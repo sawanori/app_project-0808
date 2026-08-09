@@ -8,6 +8,35 @@
     <string name="event_selection_prepare_button">Prepare this event</string>
     <string name="event_selection_empty_title">No upcoming events</string>
     <string name="event_selection_empty_message">You\'re all caught up. Nothing to prepare for right now.</string>
+    <!-- P2-C3a追補scaffold: T-SEL2-5 / 計画書§9（title列null/空白時のフォールバック表示）向け。 -->
+    <string name="event_untitled">Untitled event</string>
+    <!-- P2-C4 (ui-implementer): T-SEL2-6 (CalendarResult.Failure -> error display + retry). -->
+    <string name="event_selection_error_message">Something went wrong while loading your events.</string>
+    <string name="event_selection_retry_button">Retry</string>
+
+    <!-- Calendar permission UI (F16/F17, spec §66/§95.4/§95.6). Added in P2-C3b (test-writer)
+         for T-PERM-1/2/4, T-SEL2-7, T-E2E2-2 contract scaffolding. -->
+    <string name="calendar_permission_rationale_title">Calendar access</string>
+    <string name="calendar_permission_rationale_message">Action Starter reads your calendar to find your next event and help you prepare.</string>
+    <string name="calendar_permission_grant_button">Allow calendar access</string>
+    <string name="calendar_open_settings_button">Open app settings</string>
+    <!-- Event Selection list (F18). Added in P2-C3b for T-SEL2-1/7 (per-row "next event" badge). -->
+    <string name="event_selection_next_event_label">Next up</string>
+
+    <!-- Manual event entry fallback form (F17, spec §7.5/§95.6). Added in P2-C3b for
+         T-MANUAL-1/2/3/7. -->
+    <string name="manual_event_title_required_error">Title is required.</string>
+    <string name="manual_event_start_required_error">Start date and time is required.</string>
+    <string name="manual_event_past_start_warning">You\'ve already passed the start time.</string>
+    <string name="manual_event_submit_button">Add event</string>
+    <!-- P2-C4 (ui-implementer): field labels and date/time picker affordances (form widget
+         choice is intentionally unpinned by ManualEventEntryTest; these back the concrete
+         DatePicker/TimePicker implementation chosen for this cycle). -->
+    <string name="manual_event_title_label">Title</string>
+    <string name="manual_event_location_label">Location (optional)</string>
+    <string name="manual_event_start_date_button">Select date</string>
+    <string name="manual_event_start_time_button">Select time</string>
+    <string name="manual_event_picker_confirm_button">OK</string>
 
     <!-- Plan Review (Screen 2, spec §26/§35). Added in C3b (test-writer) for T-PLAN-1..6. -->
     <string name="plan_review_title">Your plan</string>

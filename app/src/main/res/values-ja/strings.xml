@@ -8,6 +8,35 @@
     <string name="event_selection_prepare_button">この予定の準備を始める</string>
     <string name="event_selection_empty_title">予定はありません</string>
     <string name="event_selection_empty_message">直近の予定はありません。今のところ準備することはありません。</string>
+    <!-- P2-C3a追補scaffold: T-SEL2-5 / 計画書§9（title列がnull/空白時のフォールバック表示）向け。 -->
+    <string name="event_untitled">無題の予定</string>
+    <!-- P2-C4（ui-implementer）: T-SEL2-6（CalendarResult.Failure → エラー表示＋再試行導線）向け。 -->
+    <string name="event_selection_error_message">予定の読み込み中に問題が発生しました。</string>
+    <string name="event_selection_retry_button">再試行</string>
+
+    <!-- カレンダー権限UI（F16/F17、仕様§66/§95.4/§95.6）。P2-C3b（test-writer）で
+         T-PERM-1/2/4・T-SEL2-7・T-E2E2-2の契約scaffold向けに追加。 -->
+    <string name="calendar_permission_rationale_title">カレンダーへのアクセス</string>
+    <string name="calendar_permission_rationale_message">Action Starterはカレンダーを読み取り、次の予定を見つけて準備をサポートします。</string>
+    <string name="calendar_permission_grant_button">カレンダーへのアクセスを許可</string>
+    <string name="calendar_open_settings_button">アプリ設定を開く</string>
+    <!-- Event Selectionリスト（F18）。P2-C3bでT-SEL2-1/7（各行の「次の予定」バッジ）向けに追加。 -->
+    <string name="event_selection_next_event_label">直近の予定</string>
+
+    <!-- 手動イベント入力フォールバックフォーム（F17、仕様§7.5/§95.6）。P2-C3bで
+         T-MANUAL-1/2/3/7向けに追加。 -->
+    <string name="manual_event_title_required_error">タイトルは必須です。</string>
+    <string name="manual_event_start_required_error">開始日時は必須です。</string>
+    <string name="manual_event_past_start_warning">すでに開始時刻を過ぎています。</string>
+    <string name="manual_event_submit_button">予定を追加</string>
+    <!-- P2-C4（ui-implementer）: 入力欄ラベルおよび日時ピッカー導線
+         （ManualEventEntryTestはウィジェット形状を意図的に未確定のままにしているため、
+         本サイクルで選択した具体実装＝DatePicker/TimePickerに対応する文言）。 -->
+    <string name="manual_event_title_label">タイトル</string>
+    <string name="manual_event_location_label">場所（任意）</string>
+    <string name="manual_event_start_date_button">日付を選択</string>
+    <string name="manual_event_start_time_button">時刻を選択</string>
+    <string name="manual_event_picker_confirm_button">OK</string>
 
     <!-- Plan Review (Screen 2, 仕様§26/§35)。C3bでT-PLAN-1..6向けに追加。 -->
     <string name="plan_review_title">あなたのプラン</string>

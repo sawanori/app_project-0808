@@ -71,7 +71,7 @@ class EventSelectionScreenTest {
         val event = sampleEvent()
         composeTestRule.setContent {
             EventSelectionScreen(
-                uiState = EventSelectionUiState.Content(nextEvent = event),
+                uiState = EventSelectionUiState.Content(events = listOf(event)),
                 onNavigateToPlanReview = {}
             )
         }
@@ -90,7 +90,7 @@ class EventSelectionScreenTest {
         var navigated = false
         composeTestRule.setContent {
             EventSelectionScreen(
-                uiState = EventSelectionUiState.Content(nextEvent = event),
+                uiState = EventSelectionUiState.Content(events = listOf(event)),
                 onNavigateToPlanReview = { navigated = true }
             )
         }
@@ -122,7 +122,7 @@ class EventSelectionScreenTest {
         val event = sampleEvent(locationName = null, coordinates = null)
         composeTestRule.setContent {
             EventSelectionScreen(
-                uiState = EventSelectionUiState.Content(nextEvent = event),
+                uiState = EventSelectionUiState.Content(events = listOf(event)),
                 onNavigateToPlanReview = {}
             )
         }
@@ -142,7 +142,7 @@ class EventSelectionScreenTest {
         val event = sampleEvent(title = longTitle)
         composeTestRule.setContent {
             EventSelectionScreen(
-                uiState = EventSelectionUiState.Content(nextEvent = event),
+                uiState = EventSelectionUiState.Content(events = listOf(event)),
                 onNavigateToPlanReview = {}
             )
         }
@@ -162,7 +162,7 @@ class EventSelectionScreenTest {
         val event = sampleEvent()
         composeTestRule.setContent {
             EventSelectionScreen(
-                uiState = EventSelectionUiState.Content(nextEvent = event),
+                uiState = EventSelectionUiState.Content(events = listOf(event)),
                 onNavigateToPlanReview = {}
             )
         }
@@ -179,7 +179,7 @@ class EventSelectionScreenTest {
         val event = sampleEvent()
         composeTestRule.setContent {
             EventSelectionScreen(
-                uiState = EventSelectionUiState.Content(nextEvent = event),
+                uiState = EventSelectionUiState.Content(events = listOf(event)),
                 onNavigateToPlanReview = {}
             )
         }
@@ -201,7 +201,7 @@ class EventSelectionScreenTest {
         val event = sampleEvent(startDate = fixedNow.plus(10, ChronoUnit.HOURS))
         composeTestRule.setContent {
             EventSelectionScreen(
-                uiState = EventSelectionUiState.Content(nextEvent = event),
+                uiState = EventSelectionUiState.Content(events = listOf(event)),
                 onNavigateToPlanReview = {}
             )
         }
@@ -218,7 +218,7 @@ class EventSelectionScreenTest {
         val event = sampleEvent(startDate = fixedNow.plus(10, ChronoUnit.HOURS))
         composeTestRule.setContent {
             EventSelectionScreen(
-                uiState = EventSelectionUiState.Content(nextEvent = event),
+                uiState = EventSelectionUiState.Content(events = listOf(event)),
                 onNavigateToPlanReview = {}
             )
         }

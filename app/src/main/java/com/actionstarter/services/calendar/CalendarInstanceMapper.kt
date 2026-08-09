@@ -1,8 +1,11 @@
 package com.actionstarter.services.calendar
 
 import android.database.Cursor
+import android.provider.CalendarContract
 import com.actionstarter.domain.model.ExecutionEvent
+import com.actionstarter.domain.valueobject.CalendarSource
 import java.time.Instant
+import java.util.UUID
 
 /**
  * L1：`Instances`カーソルの1行 → [ExecutionEvent]の純粋写像（計画書§8.3改訂）。
@@ -19,7 +22,7 @@ import java.time.Instant
  * み[map]を呼び、結果が`null`であれば行データ不正（`begin`欠損等）とみなし
  * `skippedRowCount`へ計上する（T-CALMAP-7、裁定B8）。
  *
- * 本体は本サイクル（P2-C2、契約scaffold・TDD例外）では`TODO()`とし、P2-C4で実装する。
+ * P2-C4で実装済み（T-CALMAP-1〜19）。
  */
 class CalendarInstanceMapper {
 
@@ -37,7 +40,42 @@ class CalendarInstanceMapper {
      * 意図的に非除外（T-CALMAP-12）。
      */
     fun isExcluded(cursor: Cursor, from: Instant): Boolean {
-        TODO("P2-C4で実装")
+        // 除外1: begin <= from（未来のみ）。beginがNULLの行はここでは除外と判定しない
+        // （map()側がnullを返し、呼び出し元がskippedRowCountへ計上する。裁定B8）。
+        val beginIndex = cursor.getColumnIndexOrThrow(CalendarContract.Instances.BEGIN)
+        if (!cursor.isNull(beginIndex) && cursor.getLong(beginIndex) <= from.toEpochMilli()) {
+            return true
+        }
+
+        // 除外2: deleted != 0 または eventStatus == STATUS_CANCELED（NULLは除外しない）
+        val deletedIndex = cursor.getColumnIndexOrThrow(CalendarContract.Events.DELETED)
+        if (cursor.getInt(deletedIndex) != 0) {
+            return true
+        }
+        val statusIndex = cursor.getColumnIndexOrThrow(CalendarContract.Instances.STATUS)
+        if (!cursor.isNull(statusIndex) &&
+            cursor.getInt(statusIndex) == CalendarContract.Instances.STATUS_CANCELED
+        ) {
+            return true
+        }
+
+        // 除外3: allDay == 1（終日予定。beginの時刻値ではなくフラグそのもので判定。M-5）
+        val allDayIndex = cursor.getColumnIndexOrThrow(CalendarContract.Instances.ALL_DAY)
+        if (cursor.getInt(allDayIndex) == 1) {
+            return true
+        }
+
+        // 除外4: selfAttendeeStatus == ATTENDEE_STATUS_DECLINED（NULLは除外しない）
+        val selfAttendeeStatusIndex =
+            cursor.getColumnIndexOrThrow(CalendarContract.Instances.SELF_ATTENDEE_STATUS)
+        if (!cursor.isNull(selfAttendeeStatusIndex) &&
+            cursor.getInt(selfAttendeeStatusIndex) == CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED
+        ) {
+            return true
+        }
+
+        // availability == AVAILABILITY_FREE は意図的に非除外（読み取りも行わない）。
+        return false
     }
 
     /**
@@ -52,6 +90,46 @@ class CalendarInstanceMapper {
      * `CalendarResult.Failure(CalendarFailureReason.QUERY_FAILED)`へ写像。T-CALMAP-8、裁定B8）。
      */
     fun map(cursor: Cursor): ExecutionEvent? {
-        TODO("P2-C4で実装")
+        // begin欠損（NULL）は行データ不正とみなしnullを返す（例外を投げない。T-CALMAP-7）。
+        // projectionにbegin列自体が無い場合はgetColumnIndexOrThrowがIllegalArgumentExceptionを
+        // 投げ、そのまま伝播する（クエリ構造の問題。T-CALMAP-8、裁定B8）。
+        val beginIndex = cursor.getColumnIndexOrThrow(CalendarContract.Instances.BEGIN)
+        if (cursor.isNull(beginIndex)) {
+            return null
+        }
+        val begin = cursor.getLong(beginIndex)
+
+        val eventIdIndex = cursor.getColumnIndexOrThrow(CalendarContract.Instances.EVENT_ID)
+        val eventId = cursor.getLong(eventIdIndex)
+        val externalCalendarId = "$eventId@$begin"
+
+        // titleはnull/空白でも行を捨てない。ExecutionEvent.titleは非null Stringのため
+        // null→""へ正規化する（UI側でstringResource(R.string.event_untitled)を表示）。
+        val titleIndex = cursor.getColumnIndexOrThrow(CalendarContract.Instances.TITLE)
+        val title = cursor.getString(titleIndex).orEmpty()
+
+        val locationIndex = cursor.getColumnIndexOrThrow(CalendarContract.Instances.EVENT_LOCATION)
+        val locationName = cursor.getString(locationIndex)?.trim()?.takeIf { it.isNotEmpty() }
+
+        // notesはあらゆるログレベルで出力禁止（§58／§60）。ここでは値の受け渡しのみ行う。
+        val descriptionIndex = cursor.getColumnIndexOrThrow(CalendarContract.Instances.DESCRIPTION)
+        val notes = cursor.getString(descriptionIndex)
+
+        val calendarIdIndex = cursor.getColumnIndexOrThrow(CalendarContract.Instances.CALENDAR_ID)
+        val calendarId = cursor.getLong(calendarIdIndex)
+        val calendarDisplayNameIndex =
+            cursor.getColumnIndexOrThrow(CalendarContract.Instances.CALENDAR_DISPLAY_NAME)
+        val calendarDisplayName = cursor.getString(calendarDisplayNameIndex).orEmpty()
+
+        return ExecutionEvent(
+            id = UUID.nameUUIDFromBytes(externalCalendarId.toByteArray()),
+            externalCalendarId = externalCalendarId,
+            title = title,
+            notes = notes,
+            startDate = Instant.ofEpochMilli(begin),
+            locationName = locationName,
+            coordinates = null,
+            sourceCalendar = CalendarSource(id = calendarId.toString(), displayName = calendarDisplayName)
+        )
     }
 }
