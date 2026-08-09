@@ -1,7 +1,9 @@
 package com.actionstarter.features
 
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -269,5 +271,44 @@ class EventSelectionListTest {
         composeTestRule.onNodeWithTag("event_selection_retry_button").performClick()
 
         assertTrue(retryCount == 1)
+    }
+
+    // T-SEL2-8（C8欠陥の回帰ロック・Fable 5承認2026-08-09）: 正常系 - 複数件表示時、先頭行
+    // （event_selection_row_0、ヒーロー行）自体がクリック対象になる。実機E2E（tE2e2_1/4）が
+    // event_selection_row_0の「中心タップ」で遷移することを前提にしているため
+    // （Composeの`performClick()`は対象ノードにOnClickセマンティクスが無い場合、実座標への
+    // フォールバックgestureへ切り替わり、行の中心が内側の"Prepare this event"ボタン上に
+    // 一致しないと遷移しない＝C8で実測された欠陥そのもの）、行ノード自身が
+    // `hasClickAction()`を満たすことを幾何（実際の描画座標）に依存せず決定的に検証する。
+    // あわせて、その行をクリックするとonNavigateToPlanReviewが呼ばれることを検証する。
+    // 「選択イベントが先頭イベントであること」は、T-SEL2-1と同じ手がかり
+    // （event_selection_row_0がevent_selection_next_badgeを子に持つ＝一覧先頭=events[0]の行で
+    // あることの構造的確認）によって担保する。本ComposableのonNavigateToPlanReviewは
+    // 引数なし（クラスKDoc「既知の限界」参照）のため、どのイベントが選ばれたかという値自体の
+    // 伝搬検証はこのファイルの対象外であり、ここでは「先頭行＝先頭イベントの行」であることと
+    // 「その行のクリックで遷移ラムダが呼ばれること」の両方を確認する。
+    @Test
+    fun tSel2_8_heroRowIsClickable_tapInvokesNavigateToPlanReviewForHeadEvent() {
+        val first = sampleEvent(title = "Team Standup", startDate = fixedNow.plus(1, ChronoUnit.HOURS))
+        val second = sampleEvent(title = "Client Call", startDate = fixedNow.plus(3, ChronoUnit.HOURS))
+        val third = sampleEvent(title = "Design Review", startDate = fixedNow.plus(6, ChronoUnit.HOURS))
+        var navigated = false
+        composeTestRule.setContent {
+            EventSelectionScreen(
+                uiState = EventSelectionUiState.Content(events = listOf(first, second, third)),
+                onNavigateToPlanReview = { navigated = true }
+            )
+        }
+
+        // row_0 が一覧先頭（=events[0]=first）を表す行であることをT-SEL2-1と同じ手がかりで
+        // 確認したうえで、行自体がクリック可能であることを幾何非依存に検証する。
+        composeTestRule.onNode(
+            hasTestTag("event_selection_row_0") and hasAnyDescendant(hasTestTag("event_selection_next_badge"))
+        ).assertExists()
+        composeTestRule.onNodeWithTag("event_selection_row_0").assert(hasClickAction())
+
+        composeTestRule.onNodeWithTag("event_selection_row_0").performClick()
+
+        assertTrue(navigated)
     }
 }

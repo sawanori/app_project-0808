@@ -1,6 +1,7 @@
 package com.actionstarter.features.eventselection
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,9 +21,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.actionstarter.R
@@ -246,14 +250,24 @@ private fun EventSelectionErrorContent(onRetry: () -> Unit) {
 }
 
 /**
- * 一覧内の1行（計画書§7.3〜§7.5、T-SEL2-1〜5）。[index] 0（次の予定）のみ次バッジと
- * "Prepare this event"ボタンを表示し、行自体はクリック対象にしない（ボタンのみ）。
- * 1件以上の一覧の場合、2件目以降は行全体がクリック対象になる（T-SEL2-2）。
+ * 一覧内の1行（計画書§7.3〜§7.5、T-SEL2-1〜5・8）。[index] 0（次の予定）は次バッジと
+ * "Prepare this event"ボタンを表示し、**行全体もクリック対象にする**（ボタンと同一の
+ * [onNavigateToPlanReview]を呼ぶ。C8で実測されたヒーロー行クリック不可欠陥の修正、
+ * T-SEL2-8で回帰ロック）。1件以上の一覧の場合、2件目以降も行全体がクリック対象になる
+ * （T-SEL2-2）。ボタンと行の両方をタップ可能にしているが、遷移先・遷移動作はどちらも
+ * 同一である。
  *
  * 行コンテナ自体は`mergeDescendants`によるセマンティクス統合を意図的に行わない。
  * "event_selection_next_badge" 等の子testTagが[hasAnyDescendant]（[EventSelectionListTest]）で
  * 個別に検出可能であることを要件とするため（親へマージし単一ノード化すると子のtestTagが
  * 失われる。`SemanticsProperties.TestTag`のマージポリシーは祖先の値を優先し子の値を捨てる）。
+ * このため[isNext]の行（先頭・バッジを子に持つ）には`Modifier.clickable`をそのまま使わない
+ * （`clickable`は内部で`mergeDescendants = true`を強制し、"event_selection_next_badge"が
+ * 個別ノードとして検出できなくなり、T-SEL2-1（既存・変更禁止）を破壊することを実測で確認
+ * 済み）。代わりに(1)実タップに応答する`pointerInput`＋(2)`mergeDescendants = false`を
+ * 明示した`semantics{onClick=...}`を組み合わせ、クリック可能でありながら子のtestTagを
+ * 吸収しない行を構成する。バッジを持たない2件目以降（`!isNext`）は素の`Modifier.clickable`
+ * のままでよい（マージされても検出すべき子testTagが存在しないため影響がない）。
  */
 @Composable
 private fun EventRow(
@@ -266,13 +280,23 @@ private fun EventRow(
     val formattedTime = timeFormatter.format(ZonedDateTime.ofInstant(event.startDate, ZoneId.systemDefault()))
     val displayTitle = event.title.ifBlank { stringResource(R.string.event_untitled) }
 
-    var rowModifier = Modifier
+    val rowModifier = Modifier
         .testTag("event_selection_row_$index")
         .fillMaxWidth()
         .padding(vertical = 12.dp)
-    if (!isNext) {
-        rowModifier = rowModifier.clickable(onClick = onNavigateToPlanReview)
-    }
+        .then(
+            if (isNext) {
+                Modifier
+                    .pointerInput(onNavigateToPlanReview) {
+                        detectTapGestures(onTap = { onNavigateToPlanReview() })
+                    }
+                    .semantics(mergeDescendants = false) {
+                        onClick(action = { onNavigateToPlanReview(); true })
+                    }
+            } else {
+                Modifier.clickable(onClick = onNavigateToPlanReview)
+            }
+        )
 
     Column(modifier = rowModifier) {
         if (isNext) {

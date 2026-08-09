@@ -88,6 +88,11 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
+    // P2-C8fix: OS権限ダイアログ（com.google.android.permissioncontroller、Composeの外側）を
+    // 操作するために追加（CalendarPermissionDeniedTest、裁定B14実装の一部）。追加前に
+    // AARメタデータのminCompileSdkを実測確認済み（minCompileSdk=34 <= compileSdk 35、
+    // ADR-0011の教訓に基づく事前検証）。
+    androidTestImplementation(libs.androidx.test.uiautomator)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
