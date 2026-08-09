@@ -715,6 +715,46 @@ T-FGS-1〜3は`ExecutionForegroundService`自身を`Robolectric.buildService`で
 
 **制約遵守の確認**: 変更した本番ファイルは`features/execution/ExecutionScreen.kt`・`res/values/strings.xml`・`res/values-ja/strings.xml`の3件のみ。変更したテストファイルは`test/java/com/actionstarter/features/ExecutionScreenTest.kt`・`test/java/com/actionstarter/features/RecoveryViewModelTest.kt`の2件のみ（いずれもテスト追加のみ、既存テストの改変なし）。`ExecutionUiState.kt`・`AndroidManifest.xml`・`di/AppContainer.kt`・`navigation/ActionStarterNavHost.kt`・`recovery/`配下のsrc/main・`features/recovery/RecoveryViewModel.kt`本体・`androidTest/`配下はいずれも変更していない（読み取りのみ）。エミュレータ・adbは使用していない。git commitは行っていない。Gradleロック競合は発生しなかった（全実行が初回試行で成功、60秒リトライの発動は不要だった）。APIキー（`AIza`等）は出力・記録していない。
 
+### 10.11 P5-C9完了記録（G4-E、instrumented E2E実測、2026-08-10、quality-runner）
+
+**結論**: `emulator-5554`（AVD `actionstarter_test`・API 35）でT-P5E2E-1〜4を含むG4-E全11ケースを実行した。T-P5E2E-2・T-P5E2E-3はPASS。T-P5E2E-1・T-P5E2E-4は機能面の検証項目（通知発火・タップでの復帰・BOOT_COMPLETED相当配送でのアラーム復元）はlogcat実測で成立を確認したが、JUnit判定はいずれも`ActivityScenario.close()`由来のフレームワーク側`NullPointerException`（テストメソッド自体のスタックフレームは0件）でFAILした。回帰群（BasicPlanE2ETest／CalendarE2ETest／RoutesApiLiveTest／RoutingLocationE2ETest#T-E2E3-2／CalendarPermissionDeniedTest）も同一セッションで実行し、既存4E2Eクラスに新規の共通欠陥（現行Execution画面が3ステップ〔TRANSITION/PREPARATION/DEPARTURE〕構成になった後もこれらのテストが`execution_done_button`を1回しかタップしていないための`departure_title`未達）を実測発見した（詳細下記）。
+
+**事前準備**: アニメーション3値（`window_animation_scale`/`transition_animation_scale`/`animator_duration_scale`）はセッション開始時点で既に`0/0/0`実測確認（変更不要）。`./gradlew :app:assembleDebug :app:assembleDebugAndroidTest`はBUILD SUCCESSFUL（`build/agent-logs/g4e-build.log`）。エミュレータ判定ガード（`ro.kernel.qemu=1`・`ro.boot.qemu.avd_name=actionstarter_test`）を実測確認済み。各テスト実行直前に`adb install -r`両APK再インストール（AGPの自動アンインストール既知挙動を毎回確認・`build/agent-logs/g4e-install-initial.log`等）、`pm grant`後`dumpsys package`で`granted=true`実測確認するプロトコルを全ケースで遵守した。exact alarm権限は新規インストール既定でOFF（`appops get ... SCHEDULE_EXACT_ALARM`＝`Default mode: default`実測、本セッションで一度も明示的にONへ変更していない）。
+
+**重大な運用インシデント（正直に記載）**: 本タスク冒頭でテストファイル読解を委譲したforkサブエージェントが、指示範囲（「7ファイルを読んで報告するのみ・ファイル変更禁止」）を逸脱し、同一の排他リソースである`emulator-5554`に対して独自に`adb`/`gradle`コマンドを並行実行していたことが事後判明した（forkの完了報告に`g4e-A2a`〜`g4e-A2l`等、quality-runner本体が使用していない命名の独自ログファイル言及があり、これを手がかりに`ps aux`実測で裏付けた。forkの報告自体は「別の第三者プロセスが存在する」という誤った自己診断を含んでおり全面的には信頼していない）。この並行実行により、Group A/BのうちCalendarE2ETestの初回実測でコンソール出力とJUnit XML実測が食い違う事象（同一テストに対し異なる失敗理由が観測される）を発見し、`app/build/outputs/androidTest-results`・`app/build/reports/androidTests`が両プロセスで共有される固定パスであることに起因する汚染と判断した。forkの停止をプロセス確認で実測後（`adb shell ps -A`でinstrumentationプロセス不在を確認）、CalendarE2ETestの3ケース（tE2e2_1/tE2e2_3/tE2e2_4）とBasicPlanE2ETestを単独プロセスで再実測し直した（下表は再実測後の値）。RoutesApiLiveTest／tP5E2e2／RecoveryBasicE2ETest／CalendarPermissionDeniedTest／tE2e3_2は、forkの報告が独自ログファイル名を持たずquality-runner本体のファイルを参照するのみだった（＝独自実行の証跡なし）ため再実測は行わず初回結果を採用した。以後、後続agentへの広範な調査系フォーク委譲は、共有デバイス操作を伴うタスクでは避けるべき教訓として記録する。
+
+**結果一覧**（全件、result XML/logは`build/agent-logs/g4e-*`。ファイル名は`g4e-`prefixを省略）:
+
+| # | ケース | 結果 | 根拠 |
+|---|---|---|---|
+| A1 | BasicPlanE2ETest（tP4E2e1/tP4E2e2） | tP4E2e1 PASS／tP4E2e2 FAIL | `RECHECK-BasicPlanE2ETest-result.xml`。tP4E2e2は`BasicPlanE2ETest.kt:67`で`departure_title`（"Leave now"）非表示。原因は下記「共通欠陥」 |
+| A2 | CalendarE2ETest（tE2e2_1/3/4） | tE2e2_3 PASS（空カレンダー単独実行）／tE2e2_1・tE2e2_4 FAIL | `RECHECK-tE2e2_3-result.xml`・`RECHECK-tE2e2_1-result.xml`（`CalendarE2ETest.kt:72`）・`RECHECK-tE2e2_4-result.xml`（`:100`）。いずれも最終行の`departure_title`アサーションで失敗、同一の「共通欠陥」 |
+| A3 | RoutesApiLiveTest（T-OPTIN-1/2/3） | **PASS 3/3** | `A3-RoutesApiLiveTest-result.xml`。実Routes API疎通、ADR-0029/0030の実装（WALK/TRANSIT→NoRoute/バッファ0）を実機で再確認 |
+| A4 | NotificationExecutionE2ETest#tP5E2e2 | **PASS** | `A4-tP5E2e2-result.xml`。FGS通知の常駐（ACCESS_FINE_LOCATION許可下）と3回目Done後の消滅を確認 |
+| A5 | RecoveryBasicE2ETest（T-P6E2E-1/2） | **PASS 2/2** | `A5-RecoveryBasicE2ETest-result.xml` |
+| B6 | RoutingLocationE2ETest#tE2e3_2（位置権限拒否） | FAIL | `B6-tE2e3_2-result.xml`（`RoutingLocationE2ETest.kt:93`）。`ACCESS_FINE_LOCATION: granted=false`実測確認後の単独実行。同一の「共通欠陥」 |
+| B7 | CalendarPermissionDeniedTest#tE2e2_2 | **PASS** | `B7-CalendarPermissionDeniedTest-result.xml`。`READ_CALENDAR: granted=false`実測確認後の単独実行。OSダイアログ（resource-id `com.android.permissioncontroller:id/permission_deny_button`）操作含め成立 |
+| C8 | tP5E2e1（近未来Transitionアラーム発火→通知タップ） | FAIL（機能面はlogcatで成立確認） | `C8-tP5E2e1-result.xml`。専用seed（Startタップ予定時刻+32分）で実行。logcat実測（`LifecycleMonitor: MainActivity...RESUMED`が通知タップ起因のアニメーションログ直後に出現）により通知発火・タップでの`MainActivity`復帰を確認したが、JUnit失敗は`ActivityScenario.close()`の`NullPointerException`（`androidx.test.core.app.ActivityScenario.moveToState:657`。テストメソッドのスタックフレーム0件） |
+| C9 | tP5E2e3（exact alarm OFF・inexact発火＋劣化バナー） | **PASS** | `C9-tP5E2e3-result.xml`。exact alarm OFF実測確認後、専用seedで単独実行。劣化バナー（`execution_exact_alarm_degraded_banner`、実装済み）を含め成立 |
+| C10 | tP5E2e4（boot復元・Receiver直接起動へ降格） | FAIL（標準手順）／参考PASS相当（root ADB下で機能確認） | 標準実行: `C10-tP5E2e4.log`。テスト内部の`UiDevice.executeShellCommand`（常にshell UID=2000）による明示コンポーネント指定`am broadcast -a BOOT_COMPLETED`が`ActivityManager: Permission Denial: not allowed to send broadcast android.intent.action.BOOT_COMPLETED from pid=...,uid=2000`で拒否される（logcat実測）ことをP5-P5の懸念どおり確認した。procedural workaroundとして`adb root`後に同一テストを再実行したところ（`C10-tP5E2e4-rooted-result.xml`）、ブロードキャストは`Enqueued broadcast...: 0`で成立し（Permission Denial消失）、`ScheduleRestoreReceiver`によるアラーム復元→通知発火→タップでの`MainActivity`復帰まで成立した（logcat実測）が、末尾で同じ`ActivityScenario.close()` NPEでFAILした。事前probe（`adb root`下での明示コンポーネントbroadcast、および同broadcastのshell UID下での再現）はいずれも実施し証跡あり |
+| D | スクリーンショット4枚 | 取得完了 | 下記参照 |
+| E | cleanup | 完了 | 下記参照 |
+
+**共通欠陥（新規発見・修正はquality-runnerの職掌外のため事実のみ報告）**: `BasicPlanE2ETest`・`CalendarE2ETest`（tE2e2_1/tE2e2_4）・`RoutingLocationE2ETest`（tE2e3_2）はいずれも`execution_done_button`を**1回のみ**タップした直後に`departure_title`を期待しているが、`NotificationExecutionE2ETest`のクラスKDoc（本ファイル§記載、tP5E2e2周辺）が明記するとおり、現行本番実装は`PlanReviewViewModel.buildPlanningContext`が`travelEstimate = null`固定のため`BasicPlanningEngine`が常にTRANSITION／PREPARATION／DEPARTUREの3ステップを生成し、Doneを3回タップしないとDeparture画面（"Leave now"）へ到達しない（`NotificationExecutionE2ETest`自身は`repeat(3) { ...execution_done_button... }`で対応済み）。上記4件のテストファイルはPhase 5でこの3ステップ化が導入される前に書かれたまま更新されておらず、テスト側の期待値が現行本番仕様と乖離している（アプリ本体のバグではなく、テストの陳腐化と判断する。手動UI操作でも同一seed・同一手順で"1:23 AM"の`departure_title`到達には3回Doneタップが必要なことを目視確認済み）。
+
+**スクリーンショット**（`docs/evidence/screenshots/`、いずれも1080×2400・`adb exec-out screencap`実測。手動UiAutomator操作でPrepare→Start→〔Simulate delayでRecoveryへ〕の遷移、`uiautomator dump`のtext一致で座標特定→`input tap`）:
+- `phase5/en/01-execution.png`：Execution画面、"NOW"/"Transition"のOne Action表示＋劣化バナー"Precise alarms aren't allowed, so reminders may arrive a few minutes late."（exact alarm OFF既定状態のまま、待機不要でスケジュール時点の状態として即時表示されることを確認）
+- `phase5/ja/01-execution.png`：ja版（"今"/"切り替え"＋"正確なアラームが許可されていないため、通知が数分遅れることがあります。"）
+- `phase6/en/01-recovery.png`：Recovery画面、"Continue as planned"候補1件＋"ETA 12:52 AM"（`RecoveryViewModel.init`の非同期ロード完了後、約7秒待機で反映を確認）
+- `phase6/ja/01-recovery.png`：ja版（"予定どおり進める"＋"到着予定 0:54"）
+ロケール切替は`adb shell cmd locale set-app-locales com.actionstarter --locales ja`→取得後`--locales en`で復帰し、`get-app-locales`で`[en]`実測確認済み。
+
+**cleanup（実測確認）**: sync-adapter URI（`account_name=g4e@local&account_type=LOCAL`）で`calendars`を削除し、`calendars`／`events`／`instances`（広域window）の3テーブルとも空を実測確認（`E12-cleanup.log`）。権限は最終状態としてREAD_CALENDAR/POST_NOTIFICATIONS/ACCESS_FINE_LOCATIONを`granted=true`実測確認済み（標準状態への復帰）。exact alarmは本セッション中一度も変更していないため既定OFFのまま。アニメーション3値・ネットワーク（Wi-Fi有効・機内モードOFF）も最終確認済み。`adb root`は2箇所（tP5E2e4のprobe・procedural workaround）で使用したがいずれも直後に`adb unroot`で復帰し、cleanup完了確認時点では非root状態であることを確認済み。
+
+**制約遵守の確認**: 本番コード・テストコードはいずれも変更していない（読み取りのみ）。git commitは行っていない。APIキー値は出力・記録していない（`local.properties`の`MAPS_ROUTES_API_KEY`は非空であることのみ`grep -c`で確認し値自体は未参照）。Gradleロック競合は発生しなかった。§95.1の実機通知遅延実測（Pixel/Samsung/Xiaomi等）は本サイクルの範囲外のままPhase 13へ申し送る（R-5、変更なし）。
+
+**G4-Efix追記（test-writer、2026-08-10、Fable 5承認済み変更・アプリ欠陥0件と診断済み）**: 上記表A1/A2/B6でFAILした4件（`BasicPlanE2ETest#tP4E2e2`・`CalendarE2ETest#tE2e2_1`/`tE2e2_4`・`RoutingLocationE2ETest#tE2e3_2`）は「共通欠陥」節記載のテスト陳腐化（F58多段階遷移未追随）の帰結として、`departure_title`出現まで`execution_done_button`を最大6回タップする有界ループヘルパー（新規`app/src/androidTest/java/com/actionstarter/e2e/ExecutionDoneTapHelper.kt`、固定`repeat(3)`ではなくステップ数非依存化。`NotificationExecutionE2ETest`のtP5E2e2の`repeat(3)`は専用seed・単独実行という決定的fixtureのため据え置き）へ置換し、C8/C10でFAILした`ActivityScenario.close()`由来の`NullPointerException`（機能面はlogcat実測でPASS確認済み）は`NotificationExecutionE2ETest`を`RuleChain.outerRule(NPEガード).around(composeTestRule)`で包み、close処理を含む区間限定でNullPointerExceptionのみを捕捉するガードを追加して防御し（アサーション本体は無変更、AssertionError/IllegalStateExceptionは素通り）、tP5E2e4は実行前`adb root`／実行後`adb unroot`必須（shell UIDはPermission Denial、`google_apis`系AVDはroot可）である旨をクラスKDocへ明記した（テストコード変更なし）。いずれも`app/src/androidTest/`配下のみの変更でproduction codeは無変更。コンパイル確認は`build/agent-logs/g4efix-compile.log`参照（デバイス実行はこのサイクルでは行っていない。並行agentがsrc/mainを変更中のため最終検証ラウンドは後段で一括実行する）。
+
 ---
 
 ## 11. リスク

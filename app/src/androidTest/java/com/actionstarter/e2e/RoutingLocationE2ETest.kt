@@ -56,10 +56,19 @@ class RoutingLocationE2ETest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
+    // Fable 5承認済み更新（2026-08-10）: F58多段階遷移結線（ADR-0028）の帰結として
+    // execution_done_buttonの1回タップだけではdeparture_titleへ到達しない
+    // （BasicPlanningEngineが常にTRANSITION/PREPARATION/DEPARTUREの3ステップを生成するため、
+    // tE2e3_2でG4-E実測・FAIL。docs/plans/phase5-notification-execution.md§10.11）。
+    // 本クラス4テストが共用するこの遷移ヘルパーをステップ数非依存化することで、tE2e3_2に加え
+    // 同じ前提を持つ他3テスト（tE2e3_1/3/4、いずれもG4-Eでは未実行のまま同型の陳腐化を抱えて
+    // いた）も合わせて解消する。固定回数ではなくdeparture_title出現まで最大6回タップし続ける
+    // 有界ループヘルパーを使う（ExecutionDoneTapHelper.kt参照。テスト側の陳腐化でありアプリの
+    // 欠陥ではないと診断済み）。
     private fun navigateToDeparture(context: Context) {
         composeTestRule.onNodeWithTag("event_selection_row_0").performClick()
         composeTestRule.onNodeWithText(context.getString(R.string.plan_review_start_button)).performClick()
-        composeTestRule.onNodeWithText(context.getString(R.string.execution_done_button)).performClick()
+        composeTestRule.tapExecutionDoneUntilDepartureTitleShown(context)
     }
 
     // T-E2E3-1: 正常系 - `adb emu geo fix`で投入した現在地＋Phase 2のseed済みイベントで、
@@ -82,6 +91,8 @@ class RoutingLocationE2ETest {
     // T-E2E3-2: 異常系 - 位置権限拒否状態で起動 → 手動Travel Time入力で継続動作する
     // （GOAL.md D(3)/F、エラー＆レスキューマップ#2）。`pm revoke`済みの状態（クラスKDoc参照）で
     // quality-runnerが単独起動する。
+    // Fable 5承認済み更新（2026-08-10）: F58多段階遷移結線（ADR-0028）の帰結・ステップ数
+    // 非依存化（G4-E実測FAILの修正、navigateToDepartureのKDoc参照）。
     @Test
     fun tE2e3_2_locationPermissionDenied_continuesWithManualTravelTimeInput() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

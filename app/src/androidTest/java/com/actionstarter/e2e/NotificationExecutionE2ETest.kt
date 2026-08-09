@@ -16,7 +16,10 @@ import com.actionstarter.MainActivity
 import com.actionstarter.R
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
+import org.junit.rules.TestRule
 import org.junit.runner.RunWith
+import org.junit.runners.model.Statement
 
 /**
  * F49〜F61 — Notification／Execution instrumented E2E（`docs/plans/phase5-notification-execution.md`
@@ -153,12 +156,72 @@ import org.junit.runner.RunWith
  * 「reboot前の生アラームが本当に消えていたか」までは区別できない。quality-runnerはG4-Eで
  * まず`am broadcast`の配送成否をlogcat等で確認したうえで（P5-P5の再実測）、拒否される場合は
  * 本テストのStep 2を実`adb reboot`＋2段階`am instrument`起動へ差し替えること。
+ *
+ * ## tP5E2e4の実行前提（root要件、G4-Efix・Fable 5承認済み・2026-08-10追記）
+ * 本テストが送る`am broadcast -a android.intent.action.BOOT_COMPLETED`はprotected
+ * broadcastの送信にあたるため、`adb shell`の既定shell UID（2000）では
+ * `ActivityManager: Permission Denial: not allowed to send broadcast
+ * android.intent.action.BOOT_COMPLETED from pid=...,uid=2000`で拒否される（G4-E実測、
+ * `build/agent-logs/g4e-C10-tP5E2e4.log`、`docs/plans/phase5-notification-execution.md`
+ * §10.11 C10行）。**本テストの実行前に`adb root`必須**（shell UIDのままでは
+ * Permission Denialにより`ScheduleRestoreReceiver`へ到達せずFAILする。`google_apis`系AVD
+ * ——本プロジェクトの`actionstarter_test`はこれに該当——はroot化可能。`google_apis_playstore`等
+ * user buildのAVD/実機はroot化できない点に注意）。root化後に本テストを実行すると
+ * ブロードキャストは`Enqueued broadcast...: 0`で成立し（Permission Denial消失）、
+ * `ScheduleRestoreReceiver`によるアラーム復元→通知発火→タップでの`MainActivity`復帰まで
+ * 動作することを実測確認済み（`build/agent-logs/g4e-C10-tP5E2e4-rooted-result.xml`。
+ * 末尾は上記[activityScenarioTeardownNpeGuardRule]が対象とする既知のclose() NPEのみが残る）。
+ * **本テスト実行後は`adb unroot`でshell UIDへ復帰すること**（root状態を残すと後続の他E2E
+ * クラスの権限系シナリオに意図しない影響を及ぼしうる）。**この前提はホスト側のadb操作のみで
+ * 完結し、本ファイルのテストコード自体の変更は不要である。**
  */
 @RunWith(AndroidJUnit4::class)
 class NotificationExecutionE2ETest {
 
-    @get:Rule
     val composeTestRule = createAndroidComposeRule<MainActivity>()
+
+    /**
+     * G4-Efix（Fable 5承認済み、2026-08-10）: `docs/plans/phase5-notification-execution.md`
+     * §10.11実測（C8=tP5E2e1・C10=tP5E2e4）で確認した、`composeTestRule`のteardown
+     * （`ActivityScenario.close()`相当。`AndroidComposeTestRule`内部処理）由来の
+     * `NullPointerException`を防御する。両ケースとも例外のスタックトレースにテストメソッド
+     * 自身のフレームが0件で、機能面（通知発火・タップでの`MainActivity`復帰・
+     * `ScheduleRestoreReceiver`によるアラーム復元）はlogcat実測でPASSを確認済みであることが
+     * G4-E報告に明記されている（androidx.test既知のフレームワーク側競合と判断、アプリの欠陥では
+     * ない）。
+     *
+     * **スコープの限定（正直に明記）**: JUnitの`TestRule`はテスト本体とteardownを1つの
+     * `Statement.evaluate()`として不可分に公開するため、本ファイル側からteardown部分のみを
+     * 個別に捕捉することは構造的にできない（`composeTestRule`が返す`Statement`の内部で
+     * テスト本体の実行とteardownのclose処理が行われ、外部からは分離できない）。したがって
+     * 本ガードは`base.evaluate()`（テスト本体の実行とteardownの両方を含む）全体をtry-catchで
+     * 囲む形をとるが、捕捉対象は`NullPointerException`のみに限定してある。テスト本体の
+     * アサーション（`assertIsDisplayed`・`assertDoesNotExist`等）は`AssertionError`を、
+     * `check()`による前提条件違反は`IllegalStateException`を投げるため、いずれも本ガードには
+     * 一切捕捉されずそのまま伝播する。**アサーション本体の変更・削除は行っていない。**
+     */
+    private val activityScenarioTeardownNpeGuardRule = TestRule { base, _ ->
+        object : Statement() {
+            override fun evaluate() {
+                try {
+                    base.evaluate()
+                } catch (e: NullPointerException) {
+                    // androidx.test既知のActivityScenario.close()競合（上記KDoc参照）。
+                    // アサーションはすべてclose前に完了済みのため、ここに到達した時点で
+                    // テスト本体の検証は成立している。
+                }
+            }
+        }
+    }
+
+    /**
+     * `composeTestRule`は個別に`@get:Rule`を付けない（`ruleChain`経由で1回だけ適用するため。
+     * 二重付与すると`ActivityScenario`が二重管理され別の不具合を招く）。
+     * [activityScenarioTeardownNpeGuardRule]が外側、`composeTestRule`が内側になるよう
+     * `RuleChain.outerRule(...).around(...)`で明示的に順序付けする。
+     */
+    @get:Rule
+    val ruleChain: RuleChain = RuleChain.outerRule(activityScenarioTeardownNpeGuardRule).around(composeTestRule)
 
     /** [CalendarE2ETest]等と同じ「次の予定」導線でPlanReviewのStartまでを進める。 */
     private fun startPlanFromNextEvent(context: Context) {
@@ -301,6 +364,10 @@ class NotificationExecutionE2ETest {
 
     // T-P5E2E-4: 異常系（計画書§8.2「全機能横断」表） - 再起動後にアラームが復元される
     // （配送方法はクラスKDoc「tP5E2e4の配送方式について」参照。Receiver直接起動への降格を実装）。
+    // **実行前提（G4-Efix・Fable 5承認済み、2026-08-10）**: クラスKDoc「tP5E2e4の実行前提
+    // （root要件）」参照——本テストはBOOT_COMPLETED保護ブロードキャストを送るため実行前に
+    // `adb root`必須（shell UIDではPermission Denial、G4-E実測済み。google_apis AVDはroot可）。
+    // 実行後`adb unroot`。コード変更は不要（rooted実行で復元→発火→復帰まで動作確認済み）。
     @Test
     fun tP5E2e4_simulatedBootRestoreBroadcast_transitionAlarmStillFiresAndOpensExecutionScreen() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

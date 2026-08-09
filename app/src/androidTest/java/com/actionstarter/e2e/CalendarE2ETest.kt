@@ -68,7 +68,14 @@ class CalendarE2ETest {
         composeTestRule.onNodeWithTag("event_selection_row_0").performClick()
 
         composeTestRule.onNodeWithText(context.getString(R.string.plan_review_start_button)).performClick()
-        composeTestRule.onNodeWithText(context.getString(R.string.execution_done_button)).performClick()
+        // Fable 5承認済み更新（2026-08-10）: F58多段階遷移結線（ADR-0028）の帰結として
+        // execution_done_buttonの1回タップだけではdeparture_titleへ到達しない
+        // （BasicPlanningEngineが常にTRANSITION/PREPARATION/DEPARTUREの3ステップを生成するため、
+        // G4-E実測。docs/plans/phase5-notification-execution.md§10.11）。ステップ数の
+        // 環境依存変化（P4-C8の移動時間統合等）に備え、固定回数ではなくdeparture_title出現まで
+        // タップし続ける有界ループヘルパーを使う（ExecutionDoneTapHelper.kt参照。テスト側の
+        // 陳腐化でありアプリの欠陥ではないと診断済み）。
+        composeTestRule.tapExecutionDoneUntilDepartureTitleShown(context)
         composeTestRule.onNodeWithText(context.getString(R.string.departure_title)).assertIsDisplayed()
     }
 
@@ -96,7 +103,14 @@ class CalendarE2ETest {
         composeTestRule.onNodeWithText(context.getString(R.string.plan_review_title)).assertIsDisplayed()
         composeTestRule.onNodeWithText(context.getString(R.string.plan_review_start_button)).performClick()
         composeTestRule.onNodeWithText(context.getString(R.string.execution_now_label)).assertIsDisplayed()
-        composeTestRule.onNodeWithText(context.getString(R.string.execution_done_button)).performClick()
+        // Fable 5承認済み更新（2026-08-10）: F58多段階遷移結線（ADR-0028）の帰結として
+        // execution_done_buttonの1回タップだけではdeparture_titleへ到達しない
+        // （BasicPlanningEngineが常にTRANSITION/PREPARATION/DEPARTUREの3ステップを生成するため、
+        // G4-E実測。docs/plans/phase5-notification-execution.md§10.11）。ステップ数の
+        // 環境依存変化（P4-C8の移動時間統合等）に備え、固定回数ではなくdeparture_title出現まで
+        // タップし続ける有界ループヘルパーを使う（ExecutionDoneTapHelper.kt参照。テスト側の
+        // 陳腐化でありアプリの欠陥ではないと診断済み）。
+        composeTestRule.tapExecutionDoneUntilDepartureTitleShown(context)
         composeTestRule.onNodeWithText(context.getString(R.string.departure_title)).assertIsDisplayed()
     }
 }

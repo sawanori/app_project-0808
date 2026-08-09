@@ -250,7 +250,23 @@ class AppContainer(
                     savedStateHandle = createSavedStateHandle()
                 )
             }
-            initializer { PlanReviewViewModel(planningEngine, sharedPlanViewModel) }
+            // P4-C8実配線（`docs/plans/phase4-basic-engine.md`P4-C8行、仕様§13の完全実装）:
+            // geocodingService／locationService／routingService／permissionGateを実引数で渡す。
+            // routingServiceは本コンテナ内で既に構築済みの単一インスタンス
+            // （CachingRoutingServiceまたはUnconfiguredRoutingService、上記routingServiceプロパティ
+            // 参照）をDepartureViewModelと共有するため、Departure画面遷移時の再取得は
+            // CachingRoutingServiceのキャッシュ（§8、目的地・移動手段一致かつ移動500m未満・
+            // 経過10分未満）によりヒットしうる（二重フェッチにならない）。
+            initializer {
+                PlanReviewViewModel(
+                    planningEngine = planningEngine,
+                    sharedPlanViewModel = sharedPlanViewModel,
+                    geocodingService = geocodingService,
+                    locationService = locationService,
+                    routingService = routingService,
+                    permissionGate = permissionGate
+                )
+            }
             initializer {
                 DepartureViewModel(
                     sharedPlanViewModel = sharedPlanViewModel,
