@@ -9,6 +9,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.actionstarter.R
 import com.actionstarter.domain.valueobject.TransportMode
@@ -47,11 +49,18 @@ fun TransportModeSelector(
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = modifier) {
         TransportMode.entries.forEach { mode ->
+            // P11-C6（F81取りこぼし是正、T-P11A-12c）: 既存T-P11A-5はmergeされたラベルText
+            // へのフォールバックを許容する設計だったが、フォールバックに頼らず明示的
+            // contentDescriptionを実装する。testTagと同一ノードへ追加するため、T-DEP2-4
+            // （`assertIsDisplayed`／`performClick`）への回帰影響はない。
+            val label = stringResource(transportModeLabelRes(mode))
             FilterChip(
                 selected = mode == selectedMode,
                 onClick = { onModeSelected(mode) },
-                label = { Text(text = stringResource(transportModeLabelRes(mode))) },
-                modifier = Modifier.testTag(transportModeSelectorTestTag(mode))
+                label = { Text(text = label) },
+                modifier = Modifier
+                    .testTag(transportModeSelectorTestTag(mode))
+                    .semantics { contentDescription = label }
             )
         }
     }

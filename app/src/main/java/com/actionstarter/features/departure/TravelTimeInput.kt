@@ -7,6 +7,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.text.KeyboardOptions
@@ -40,16 +42,22 @@ fun TravelTimeInput(
     onMinutesChange: (Int?) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // P11-C6（F81取りこぼし是正、`docs/plans/phase11-i18n-a11y.md`§10、T-P11A-12b）:
+    // 計画書§6.1のfootprint表が元々要求していたcontentDescription付与。testTagと同一ノードへ
+    // 追加するため、T-DEP2-3（`performTextInput`によるテキスト入力検証）への回帰影響はない。
+    val label = stringResource(R.string.travel_time_manual_label)
     OutlinedTextField(
         value = minutes?.toString().orEmpty(),
         onValueChange = { raw ->
             val digitsOnly = raw.filter { it.isDigit() }
             onMinutesChange(digitsOnly.toIntOrNull())
         },
-        label = { Text(text = stringResource(R.string.travel_time_manual_label)) },
+        label = { Text(text = label) },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
-        modifier = modifier.testTag(TRAVEL_TIME_INPUT_TEST_TAG)
+        modifier = modifier
+            .testTag(TRAVEL_TIME_INPUT_TEST_TAG)
+            .semantics { contentDescription = label }
     )
 }
 

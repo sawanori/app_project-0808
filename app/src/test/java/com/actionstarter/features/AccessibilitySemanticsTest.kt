@@ -12,6 +12,7 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.actionstarter.R
@@ -24,7 +25,14 @@ import com.actionstarter.domain.model.StepPriority
 import com.actionstarter.domain.valueobject.CalendarSource
 import com.actionstarter.domain.valueobject.Coordinate
 import com.actionstarter.domain.valueobject.TransportMode
+import com.actionstarter.features.departure.DepartureScreen
+import com.actionstarter.features.departure.DepartureUiState
+import com.actionstarter.features.departure.EtaFailureReason
+import com.actionstarter.features.departure.LocationPermissionRationaleCard
+import com.actionstarter.features.departure.LocationPermissionState
+import com.actionstarter.features.departure.TRAVEL_TIME_INPUT_TEST_TAG
 import com.actionstarter.features.departure.TransportModeSelector
+import com.actionstarter.features.departure.TravelTimeInput
 import com.actionstarter.features.departure.transportModeSelectorTestTag
 import com.actionstarter.features.eventselection.EventSelectionScreen
 import com.actionstarter.features.eventselection.EventSelectionUiState
@@ -50,12 +58,21 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 
 /**
- * T-P11A-1〜11（計画書§8.3、F81、`docs/plans/phase11-i18n-a11y.md`§7.2・§12 S-5）。
+ * T-P11A-1〜12（計画書§8.3、F81、`docs/plans/phase11-i18n-a11y.md`§7.2・§12 S-5・§10 P11-C6）。
  *
  * 対象はアイコンラベルではなく、①警告状態の非視覚的伝達、②複合情報のグルーピング、
  * ③既存の空`semantics(mergeDescendants = true) {}`の完成（`ExecutionScreen.kt:86`・
  * `RecoveryScreen.kt:99`。加えて`PlanReviewScreen.kt:126`も同型で実在する）、
  * ④Recovery選択行の視覚的インジケータ（S-5裁定）の4点（計画書§0-2・§7.2）。
+ *
+ * ## T-P11A-12（P11-C6、F81取りこぼし是正）
+ * 最終デバイスラウンド（P11-C4、`docs/plans/phase5-notification-execution.md`§10.12）の
+ * 実機`uiautomator dump`でDeparture画面のみcontentDescriptionが0件と判明した（他4画面は
+ * 実装済み）。計画書§6.1のfootprint表は元々Departureにも「`TravelTimeInput`・
+ * `LocationPermissionRationaleCard`・設定導線ボタンへcontentDescription付与」を要求して
+ * いたが、P11-C3（Green）の完了記録はEventSelection／PlanReview／Execution／Recoveryの
+ * 4画面のみを対象として明記しており、実際にはDepartureへ実装されていなかった。tP11a12a〜e
+ * はこの取りこぼしを埋める（詳細は`DepartureScreen.kt`のP11-C6 KDoc参照）。
  *
  * ## T-P11A-1（EventRow）の意図的なスコープ限定
  * `EventSelectionScreen.kt`の`EventRow`は、先頭行（`isNext`＝インデックス0、「次の予定」
@@ -470,5 +487,151 @@ class AccessibilitySemanticsTest {
             false,
             otherNode.config.getOrNull(SemanticsProperties.Selected)
         )
+    }
+
+    // ============================================================
+    // T-P11A-12（P11-C6、Phase 11 F81取りこぼし是正）。クラスKDoc「T-P11A-12」節参照。
+    // ============================================================
+
+    // T-P11A-12a: 正常系 - Departureの警告表示3種（ETA未取得／バッファ負値／
+    // EtaFailureReason）がいずれも「警告」であることをcontentDescriptionで非視覚的に伝える
+    // （T-P11A-4と同型、§63 color-only禁止）。可視テキストと異なることをロケール非依存に
+    // 検証する。
+    @Test
+    fun tP11a12a_departureWarningTexts_conveyWarningNonVisually_viaContentDescriptionDistinctFromPlainText() {
+        composeTestRule.setContent {
+            DepartureScreen(
+                uiState = DepartureUiState(
+                    estimatedArrival = null,
+                    eventStart = fixedNow.plus(60, ChronoUnit.MINUTES),
+                    arrivalBuffer = Duration.ofMinutes(-5),
+                    etaFailureReason = EtaFailureReason.OFFLINE,
+                    permissionState = LocationPermissionState.GRANTED
+                )
+            )
+        }
+        val context = RuntimeEnvironment.getApplication()
+
+        val visibleTexts = listOf(
+            context.getString(R.string.departure_eta_unavailable_message),
+            context.getString(R.string.departure_buffer_negative_warning),
+            context.getString(R.string.departure_eta_offline_message)
+        )
+
+        visibleTexts.forEach { visibleText ->
+            val node = composeTestRule.onNodeWithText(visibleText).fetchSemanticsNode()
+            val description = node.config.getOrNull(SemanticsProperties.ContentDescription)
+                ?.joinToString(" ").orEmpty()
+
+            assertTrue("warning text '$visibleText' contentDescription must not be blank", description.isNotBlank())
+            assertNotEquals(
+                "warning text '$visibleText' contentDescription must convey 'warning' non-visually (must differ " +
+                    "from the plain visible message, not just repeat it)",
+                visibleText,
+                description
+            )
+        }
+    }
+
+    // T-P11A-12b: 正常系 - Departureの手動Travel Time入力欄（TravelTimeInput）が明示的な
+    // 非空contentDescriptionを持つ（T-P11A-5と異なりmergedTextフォールバックに頼らない）。
+    @Test
+    fun tP11a12b_travelTimeInput_exposesExplicitNonBlankContentDescription() {
+        composeTestRule.setContent {
+            TravelTimeInput(minutes = null, onMinutesChange = {})
+        }
+
+        val node = composeTestRule.onNodeWithTag(TRAVEL_TIME_INPUT_TEST_TAG).fetchSemanticsNode()
+        val description = node.config.getOrNull(SemanticsProperties.ContentDescription)?.joinToString(" ")
+
+        assertTrue(
+            "travel time input must expose an explicit (non-fallback) contentDescription",
+            !description.isNullOrBlank()
+        )
+    }
+
+    // T-P11A-12c: 正常系 - DepartureのTransportModeSelector各選択肢が明示的contentDescription
+    // （mergedTextフォールバックでなく実プロパティとして）を持ち、相互に異なる（T-P11A-5は
+    // 「contentDescriptionまたはmergedText」を許容する設計だったが、本ケースはP11-C6の
+    // Green実装がcontentDescriptionプロパティ自体を実装したことを直接検証する）。
+    @Test
+    fun tP11a12c_transportModeSelector_eachOptionHasExplicitDistinctContentDescription() {
+        composeTestRule.setContent {
+            TransportModeSelector(selectedMode = TransportMode.TRANSIT, onModeSelected = {})
+        }
+
+        val descriptionsByMode = TransportMode.entries.associateWith { mode ->
+            composeTestRule.onNodeWithTag(transportModeSelectorTestTag(mode)).fetchSemanticsNode()
+                .config.getOrNull(SemanticsProperties.ContentDescription)?.joinToString(" ")
+        }
+
+        TransportMode.entries.forEach { mode ->
+            assertTrue(
+                "transport mode $mode must expose an explicit (non-fallback) contentDescription",
+                !descriptionsByMode.getValue(mode).isNullOrBlank()
+            )
+        }
+        assertEquals(
+            "each transport mode's explicit contentDescription must be distinct from the others",
+            TransportMode.entries.size,
+            descriptionsByMode.values.toSet().size
+        )
+    }
+
+    // T-P11A-12d: 正常系 - LocationPermissionRationaleCardがタイトル＋説明文を含む
+    // contentDescriptionを持つ一方、既存の"departure_location_permission_grant_button"
+    // testTagクエリ（T-PERM3-2、変更禁止）が引き続きデフォルト（マージ済み）ツリーで成立する
+    // （回帰保護。カード側はmergeDescendants=trueを新設せず、ボタンと独立した別ノードへ
+    // contentDescriptionを付与する設計のため、ボタンのtestTagは失われない）。
+    @Test
+    fun tP11a12d_locationPermissionRationaleCard_exposesGroupedContentDescription_grantButtonTagStillQueryable() {
+        composeTestRule.setContent {
+            LocationPermissionRationaleCard(onRequestLocationPermission = {})
+        }
+        val context = RuntimeEnvironment.getApplication()
+        val title = context.getString(R.string.location_permission_rationale_title)
+        val message = context.getString(R.string.location_permission_rationale_message)
+
+        val cardNode = composeTestRule.onNodeWithTag("departure_location_permission_rationale_card")
+            .fetchSemanticsNode()
+        val cardDescription = cardNode.config.getOrNull(SemanticsProperties.ContentDescription)
+            ?.joinToString(" ").orEmpty()
+
+        assertTrue(
+            "rationale card's contentDescription ('$cardDescription') must include the title",
+            cardDescription.contains(title)
+        )
+        assertTrue(
+            "rationale card's contentDescription ('$cardDescription') must include the message",
+            cardDescription.contains(message)
+        )
+
+        // 回帰保護（T-PERM3-2、変更禁止）: ボタンのtestTagは引き続きデフォルトツリーで見つかる。
+        composeTestRule.onNodeWithTag("departure_location_permission_grant_button").assertIsDisplayed()
+    }
+
+    // T-P11A-12e: 正常系 - Departure DENIED状態の設定導線ボタン
+    // （"departure_location_open_settings_button"）が非空のcontentDescriptionを持つ一方、
+    // 既存のtestTagクエリ・可視テキストクエリ（T-PERM3-3、変更禁止）が引き続き成立する
+    // （回帰保護。ボタン自身のノードへcontentDescriptionを追加するのみで新規の
+    // mergeDescendantsは発生しないため、子Textは失われない）。
+    @Test
+    fun tP11a12e_openSettingsButton_exposesNonBlankContentDescription_regressionSafeForExistingQueries() {
+        composeTestRule.setContent {
+            DepartureScreen(uiState = DepartureUiState(permissionState = LocationPermissionState.DENIED))
+        }
+        val context = RuntimeEnvironment.getApplication()
+
+        val node = composeTestRule.onNodeWithTag("departure_location_open_settings_button").fetchSemanticsNode()
+        val description = node.config.getOrNull(SemanticsProperties.ContentDescription)?.joinToString(" ")
+
+        assertTrue(
+            "open-settings button must expose a non-blank contentDescription",
+            !description.isNullOrBlank()
+        )
+
+        // 回帰保護（T-PERM3-3、変更禁止）: 可視テキストによるクエリも引き続き成立する。
+        composeTestRule.onNodeWithText(context.getString(R.string.location_open_settings_button))
+            .assertIsDisplayed()
     }
 }

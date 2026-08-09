@@ -14,6 +14,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.actionstarter.R
 import com.actionstarter.domain.valueobject.TransportMode
@@ -43,6 +45,25 @@ import java.time.format.FormatStyle
  * コンパイル・動作する。実際のラムダ結線（`ActivityResultLauncher`の起動・ON_RESUME観測・
  * アプリ設定Intent起動）はNavHost所有のためP3-C6の対象（本サイクルでは行わない。完了報告
  * 「NavHost結線の要否判定」参照）。
+ *
+ * **P11-C6（F81取りこぼし是正、`docs/plans/phase11-i18n-a11y.md`§10）**: 計画書§6.1の
+ * footprint表はDepartureにも「`TravelTimeInput`・`LocationPermissionRationaleCard`・
+ * 設定導線ボタンへcontentDescription付与」を要求していたが、P11-C3（Green）の完了記録は
+ * EventSelection／PlanReview／Execution／Recoveryの4画面のみを対象として明記しており、
+ * 実際にDepartureへは実装されていなかった（最終デバイスラウンド・P11-C4の実機ダンプで
+ * content-desc 0件として発覚）。本サイクルで以下を追加した（T-P11A-12a〜e）:
+ * ①ETA未取得・バッファ負値・[EtaFailureReason]メッセージ（いずれも色のみに依存する警告、
+ * §63）へ[R.string.accessibility_warning_announcement]による非視覚的「警告」シグナルを追加
+ * （[ExecutionScreen]の劣化バナー、T-P11A-4と同型）、②[TravelTimeInput]・
+ * [TransportModeSelector]の各要素へ明示的`contentDescription`を追加（既存T-P11A-5は
+ * mergedTextフォールバックを許容する設計だったが、フォールバックに頼らず実装した）、
+ * ③[LocationPermissionRationaleCard]へタイトル＋説明文をグルーピングした
+ * `contentDescription`を追加、④設定導線ボタン（"departure_location_open_settings_button"）
+ * へ`contentDescription`を追加。いずれも新規の`mergeDescendants = true`境界を作らず
+ * （既存の`testTag`を持つノードと同一ノードへ属性を追加する、または独立した非マージノードとして
+ * 追加する設計のため、既存`testTag`ベースの回帰（T-PERM3-2/3・T-DEP2-3/4）への影響はない
+ * （T-P11A-12d/eで直接re-verifyする）。新規文字列リソースは追加していない
+ * （[R.string.accessibility_warning_announcement]・各種既存ラベル文言を再利用）。
  */
 @Composable
 fun DepartureScreen(
@@ -116,10 +137,15 @@ private fun DeparturePermissionAndRoutingSection(
     }
 
     uiState.etaFailureReason?.let { reason ->
+        // P11-C6（F81取りこぼし是正、T-P11A-12a）: 上記2件と同型の警告シグナル追加。
+        val etaFailureMessage = stringResource(etaFailureMessageRes(reason))
+        val etaFailureWarningDescription =
+            stringResource(R.string.accessibility_warning_announcement, etaFailureMessage)
         Text(
-            text = stringResource(etaFailureMessageRes(reason)),
+            text = etaFailureMessage,
             color = MaterialTheme.colorScheme.error,
-            style = MaterialTheme.typography.bodySmall
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.semantics { contentDescription = etaFailureWarningDescription }
         )
     }
 
@@ -163,11 +189,17 @@ private fun DeparturePermissionAndRoutingSection(
     }
 
     if (uiState.permissionState == LocationPermissionState.DENIED) {
+        // P11-C6（F81取りこぼし是正、T-P11A-12e）: 計画書§6.1footprint表が元々要求していた
+        // 設定導線ボタンへのcontentDescription付与。既存testTagと同一ノードへ追加するため
+        // T-PERM3-3（可視テキストクエリ）への回帰影響はない。
+        val openSettingsLabel = stringResource(R.string.location_open_settings_button)
         Button(
             onClick = onOpenLocationSettings,
-            modifier = Modifier.testTag("departure_location_open_settings_button")
+            modifier = Modifier
+                .testTag("departure_location_open_settings_button")
+                .semantics { contentDescription = openSettingsLabel }
         ) {
-            Text(text = stringResource(R.string.location_open_settings_button))
+            Text(text = openSettingsLabel)
         }
     }
 }
@@ -186,9 +218,16 @@ private fun DepartureEtaSection(uiState: DepartureUiState, timeFormatter: DateTi
     if (estimatedArrival != null) {
         Text(text = timeFormatter.format(ZonedDateTime.ofInstant(estimatedArrival, ZoneId.systemDefault())))
     } else {
+        // P11-C6（F81取りこぼし是正、T-P11A-12a）: 色のみに依存する警告（§63）のため、
+        // ExecutionScreenの劣化バナー（T-P11A-4）と同型でaccessibility_warning_announcement
+        // による非視覚的シグナルを追加する。可視テキスト自体は不変更。
+        val etaUnavailableMessage = stringResource(R.string.departure_eta_unavailable_message)
+        val etaUnavailableWarningDescription =
+            stringResource(R.string.accessibility_warning_announcement, etaUnavailableMessage)
         Text(
-            text = stringResource(R.string.departure_eta_unavailable_message),
-            color = MaterialTheme.colorScheme.error
+            text = etaUnavailableMessage,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.semantics { contentDescription = etaUnavailableWarningDescription }
         )
     }
 
@@ -208,9 +247,14 @@ private fun DepartureEtaSection(uiState: DepartureUiState, timeFormatter: DateTi
     val buffer = uiState.arrivalBuffer
     if (buffer != null) {
         if (buffer.isNegative) {
+            // P11-C6（F81取りこぼし是正、T-P11A-12a）: 上記ETA未取得と同型の警告シグナル追加。
+            val bufferNegativeMessage = stringResource(R.string.departure_buffer_negative_warning)
+            val bufferNegativeWarningDescription =
+                stringResource(R.string.accessibility_warning_announcement, bufferNegativeMessage)
             Text(
-                text = stringResource(R.string.departure_buffer_negative_warning),
-                color = MaterialTheme.colorScheme.error
+                text = bufferNegativeMessage,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.semantics { contentDescription = bufferNegativeWarningDescription }
             )
         } else {
             Text(text = stringResource(R.string.departure_buffer_minutes_format, buffer.toMinutes()))
@@ -244,21 +288,28 @@ private fun etaFailureMessageRes(reason: EtaFailureReason): Int = when (reason) 
  * ボタンタップで[onRequestLocationPermission]を1回だけ呼ぶ（T-PERM3-2）。
  *
  * testTag: "departure_location_permission_grant_button"（T-PERM3-2契約）。
+ *
+ * **P11-C6（F81取りこぼし是正、T-P11A-12d）**: カード全体（タイトル＋説明文）をグルーピングした
+ * `contentDescription`を外側`Column`（testTag "departure_location_permission_rationale_card"、
+ * 新設）へ追加した。`mergeDescendants`は明示的に付与しない（既定値`false`のまま）ため、
+ * 内部の`TextButton`（"departure_location_permission_grant_button"）は独立したノードのまま
+ * デフォルト（マージ済み）ツリーで引き続きクエリ可能——T-PERM3-2（変更禁止）への回帰なし。
  */
 @Composable
 fun LocationPermissionRationaleCard(
     onRequestLocationPermission: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier) {
-        Text(
-            text = stringResource(R.string.location_permission_rationale_title),
-            style = MaterialTheme.typography.labelLarge
-        )
-        Text(
-            text = stringResource(R.string.location_permission_rationale_message),
-            style = MaterialTheme.typography.bodySmall
-        )
+    val title = stringResource(R.string.location_permission_rationale_title)
+    val message = stringResource(R.string.location_permission_rationale_message)
+    val cardDescription = listOfNotNull(title, message).joinToString(" ")
+    Column(
+        modifier = modifier
+            .testTag("departure_location_permission_rationale_card")
+            .semantics { contentDescription = cardDescription }
+    ) {
+        Text(text = title, style = MaterialTheme.typography.labelLarge)
+        Text(text = message, style = MaterialTheme.typography.bodySmall)
         TextButton(
             onClick = onRequestLocationPermission,
             modifier = Modifier.testTag("departure_location_permission_grant_button")

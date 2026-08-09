@@ -757,6 +757,76 @@ T-FGS-1〜3は`ExecutionForegroundService`自身を`Robolectric.buildService`で
 
 ---
 
+### 10.12 最終デバイスラウンド完了記録（全E2E最終適合表＋Phase 11 C4、2026-08-10、quality-runner）
+
+**結論**: commit `1772480`（HEAD、Phase 11完了時点）でビルドしたAPKに統一して実測した。全20ケース中19件を実行し**19件全てPASS**、1件は既知R16（AVD位置バックエンド不在）のため実行不能——**FAILは0件**。§10.11で発見された「共通欠陥」（F58多段階遷移未追随によるdeparture_title未達）と`ActivityScenario.close()`由来のNullPointerExceptionは、いずれも同一系譜のコミット（1022ba2、`ExecutionDoneTapHelper`・NPEガード）で既にsrc/androidTest配下へ反映済みであることを本ラウンドで再実測確認した。サブエージェント／フォークは本ラウンドを通じて一切起動していない（前回G4-Eのフォーク汚染事故の再発防止という本タスクの明示的制約を遵守）。
+
+**事前準備**: アニメーション3値（window/transition/animator）はセッション開始時点で`0/0/0`実測確認（変更不要）。`./gradlew :app:assembleDebug :app:assembleDebugAndroidTest`はBUILD SUCCESSFUL（`build/agent-logs/final-build.log`）。AGPの`connectedDebugAndroidTest`はテスト完了ごとに両APK（app・androidTest）を自動アンインストールすることを本ラウンドでも再確認したため（`pm list packages`実測）、実質的に**テスト呼び出しごとに**`adb install -r`両APK＋権限再grant＋dumpsys確認を実施した。ベースライン権限（READ_CALENDAR/POST_NOTIFICATIONS/ACCESS_FINE_LOCATION）はdumpsysで`granted=true`実測確認。exact alarmは新規インストール既定のOFF（`appops get`: `Default mode: default`）のまま本ラウンドで一度も変更していない。
+
+**全E2E最終適合表（全20件、result XMLは`build/agent-logs/final-*-result.xml`）**:
+
+| # | ケース | 結果 | 根拠 |
+|---|---|---|---|
+| 1 | `BasicPlanE2ETest#tP4E2e1` | PASS | `final-round1-seeded-batch-result.xml` |
+| 2 | `BasicPlanE2ETest#tP4E2e2` | PASS | 同上 |
+| 3 | `CalendarE2ETest#tE2e2_1` | PASS | 同上 |
+| 4 | `CalendarE2ETest#tE2e2_3`（0件state。標準seed投入前の空カレンダー状態で単独先行実行、§12.1先例踏襲） | PASS | `final-round1-tE2e2_3-result.xml` |
+| 5 | `CalendarE2ETest#tE2e2_4` | PASS | `final-round1-seeded-batch-result.xml` |
+| 6 | `RecoveryBasicE2ETest#tP6E2e1` | PASS | 同上 |
+| 7 | `RecoveryBasicE2ETest#tP6E2e2` | PASS | 同上 |
+| 8 | `NotificationExecutionE2ETest#tP5E2e2` | PASS | 同上 |
+| 9 | `RoutesApiLiveTest#tOptin1` | PASS | 同上（実キーで実施、`MAPS_ROUTES_API_KEY`非空を`grep`で確認済み・値は未出力） |
+| 10 | `RoutesApiLiveTest#tOptin2` | PASS | 同上 |
+| 11 | `RoutesApiLiveTest#tOptin3` | PASS | 同上 |
+| 12 | `RoutingLocationE2ETest#tE2e3_2`（位置権限拒否・`pm revoke`後dumpsysで`granted=false`確認・単独実行） | PASS | `final-round2-tE2e3_2-result.xml` |
+| 13 | `RoutingLocationE2ETest#tE2e3_3`（`svc wifi/data disable`） | PASS | `final-round2-tE2e3_3-4-result.xml` |
+| 14 | `RoutingLocationE2ETest#tE2e3_4` | PASS | 同上 |
+| 15 | `CalendarPermissionDeniedTest#tE2e2_2`（カレンダー権限拒否・OSダイアログ操作込み・単独実行） | PASS | `final-round2-tE2e2_2-result.xml` |
+| 16 | `NotificationExecutionE2ETest#tP5E2e1`（専用seed`finalalarm1@local`・event開始=seed時刻+32分・単独実行・実待機約170秒） | PASS | `final-round3-tP5E2e1-result.xml` |
+| 17 | `NotificationExecutionE2ETest#tP5E2e3`（exact alarm OFF・専用seed`finalalarm3@local`・単独実行・実待機約179秒） | PASS | `final-round3-tP5E2e3-result.xml` |
+| 18 | `NotificationExecutionE2ETest#tP5E2e4`（boot復元・専用seed`finalboot@local`・`adb root`必須・単独実行・実待機約102秒） | PASS | `final-round4-tP5E2e4-result.xml` |
+| 19 | `RoutingLocationE2ETest#tE2e3_1` | **実行不能（R16維持）** | AVD位置バックエンド不在（Play services/geocoding未搭載）。本ラウンドでも別途Departure画面が"Travel time not available"/"移動時間を取得できませんでした"を表示し続けることを実測し、ACCESS_FINE_LOCATIONが`granted=true`・`location_mode=3`（高精度）・`location_providers_allowed`に`gps`を含む状態でも解消しないことを確認した（下記Part 2参照）。R16は現在も有効と判断し、指示どおり実行せず「実行不能」として記録する |
+
+**実行19件・全件PASS。実行不能1件（既知R16維持）。FAIL 0件。**
+
+**seed／ラウンド運用の詳細**:
+1. 標準seed: sync-adapter経由でaccount `final@local`にローカルカレンダー作成（`_id=1`）→通常予定1件（title="Final Round E2E Check-in"、eventLocation="東京都港区芝公園4丁目2-8"〔実在住所＝東京タワー、Phase 3 P3-C8と同一地点〕、dtstart=seed時刻+3時間、eventTimezone=Asia/Tokyo）を投入→`instances/when/<now>/<now+7d>`への14列projectionで1件を実測確認。
+2. 権限拒否ラウンド: `tE2e3_2`はFINE/COARSE双方`pm revoke`→dumpsysで`granted=false`確認後に単独実行。`tE2e3_3`/`tE2e3_4`は標準権限（位置権限再grant）へ復帰後、同一インスツルメンテーション呼び出しで連続実行（いずれも位置権限状態に依存しないテストのため）。`tE2e2_2`はREAD_CALENDARを`pm revoke`→dumpsysで`granted=false`確認後に単独実行し、OSダイアログ（`com.android.permissioncontroller:id/permission_deny_button`、U+2019アポストロフィ込みの実文言。既存実装どおり）操作を含め成立。ラウンド終了後READ_CALENDARを`pm grant`で復帰し`granted=true`実測確認した。
+3. アラーム発火ラウンド: `tP5E2e1`は専用account`finalalarm1@local`、`tP5E2e3`は`finalalarm3@local`にそれぞれ単独の近未来イベント（seed時刻+32分、eventTimezone=Asia/Tokyo、継続時間15分）を投入し単独実行、実行後に当該calendarを都度削除（cascade）した。両ケースとも`transitionStart = event.startDate - 30分`の計算式どおり、実待機約2分50秒／2分59秒で通知発火・タップでのExecution復帰を確認した。
+4. boot復元ラウンド: 専用account`finalboot@local`に同様の近未来seedを投入→`adb root`→`adb wait-for-device`→post-root `adb shell id`で`uid=0(root)`実測確認→`tP5E2e4`単独実行（実待機約102秒でPASS）→`adb unroot`→`adb wait-for-device`→post-unroot `adb shell id`で`uid=2000(shell)`復帰を実測確認した。
+
+**Part 2: Phase 11実機項目（C4）実測結果**
+
+1. **fontScale 1.5x**（`adb shell settings put system font_scale 1.5`）: EventSelection/PlanReview/Execution/Departure/Recoveryの5画面を実際にタップ操作で遷移させながらスクリーンショット取得（`docs/evidence/screenshots/phase11/fontscale15/01〜05-*.png`、1080×2400、`adb exec-out screencap`）。目視確認の結果、5画面いずれもテキストの重なり・切れは観測されず、F82（`RecoveryScreen`への`verticalScroll`追加）を含め1.5倍表示下でのレイアウト破綻は本ラウンドでは確認されなかった。取得後直ちに`settings put system font_scale 1.0`へ復帰し`get`で`1.0`を実測確認済み。
+
+2. **アクセシビリティ実証**（`uiautomator dump`によるノードダンプ、`build/agent-logs/final-a11y-dump-0{1..5}-*.xml`。en版5画面遷移時に取得）。grep実測結果:
+   - EventSelection: `content-desc="Final Round E2E Check-in, 5:09 AM, 東京都港区芝公園4丁目2-8"`（イベント行、タイトル+時刻+場所統合、`EventSelectionScreen.kt:310/315`実装分）を確認。
+   - PlanReview: `content-desc="4:39 AM Transition"`等3件（ステップ行、時刻+タイトル、`PlanReviewScreen.kt:138`実装分）を確認。
+   - Execution: `content-desc="Transition"`（ステップ、`ExecutionScreen.kt:92`）および`content-desc="Warning: Precise alarms aren't allowed, so reminders may arrive a few minutes late."`（劣化バナー、`ExecutionScreen.kt:159/171/189`のいずれか）を確認。
+   - Departure: content-desc該当**0件**。ソース側`grep -n "contentDescription" DepartureScreen.kt`も0件のため、`DepartureScreen`にはPhase 11のcontentDescription追加が存在しないことをソース・実機ダンプ両方で確認した（F81のスコープにDepartureが含まれていたか否かの判断はFable 5に委ね、事実のみ報告する）。
+   - Recovery: content-desc該当**0件**（2回試行。1回目は通常フロー、2回目は「Start」タップから3分間の実待機を経て「Simulate delay」をタップし実際の遅延を作った上で再実測したが、いずれも候補0件「No alternatives available. Please proceed manually.」の状態に帰着したため、`RecoveryScreen.kt:153`の選択状態contentDescription実装をこのラウンドの手動操作では実機ダンプで直接証明できなかった）。ただし同一ラウンドのRound 1で`tP6E2e1`（候補≥1件をComposeテストでassert）・`tP6E2e2`（候補選択→Use this planタップ）がいずれもPASSしており（上記適合表#6/#7）、当該実装が別経路（instrumented Compose test）では機能していることは実測確認済みである。手動操作で候補0件に帰着した原因分析（`RecoveryViewModel`の`clock.instant()`ベースの実時間lateness計算と本セッションの操作速度の関係等）は本ラウンドでは深追いしていない（quality-runnerの職掌外のため事実のみ報告する）。
+   - 実TalkBack音声読み上げは実機ハードウェア要件のため本ラウンドでは**未実施**。エミュレータ上ではノードダンプによるcontentDescription存在確認で代替実証した（5画面中3画面〔EventSelection/PlanReview/Execution〕で直接確認、Departureは未実装、Recoveryは上記のとおり本ラウンドの状態依存で未観測）。
+
+3. **ja/enスクリーンショット**（`cmd locale set-app-locales com.actionstarter --locales ja`→5画面→`docs/evidence/screenshots/phase11/ja/`、`--locales en`復帰→5画面→`.../en/`、いずれも`get-app-locales`で実測確認）: 目視の結果、ja/enいずれも文字列欠落・レイアウト破綻は観測されなかった。Departure画面はja/enともに"Travel time not available"/"移動時間を取得できませんでした"（赤字）と"Allow location access"/"位置情報へのアクセスを許可"を表示し続けた——ACCESS_FINE_LOCATIONはdumpsysで`granted=true`、`settings get secure location_mode`は`3`（高精度）、`location_providers_allowed`は`gps`を含むことを実測確認済みであり、OS権限・システム設定いずれも許可状態にもかかわらずこの表示になることを確認した（R16＝AVDに位置情報/geocodingバックエンドが無いことに起因すると推測されるが、確定診断はquality-runnerの職掌外のため事実のみ報告する）。
+
+**Part 3: cleanup（実測確認）**: `final@local`カレンダーをsync-adapter URIで削除し、`calendars`／`events`テーブルとも空を実測確認した。権限は最終状態としてREAD_CALENDAR/POST_NOTIFICATIONS/ACCESS_FINE_LOCATIONを`granted=true`実測確認（標準復帰）。`font_scale`は`1.0`を実測確認。adbdは`adb shell id`で`uid=2000(shell)`、非root状態を実測確認。アプリlocaleは`en`へ復帰済みを確認。アニメーション3値は`0/0/0`のまま不変を確認。
+
+**制約遵守の確認**: `app/src`配下（main・androidTestいずれも）は一切変更していない（読み取りのみ）。git commitは行っていない。APIキー値は出力・記録していない（`local.properties`の`MAPS_ROUTES_API_KEY`は`grep`で非空〔40文字〕であることのみ確認し値自体は出力していない）。Gradleロック競合は本ラウンドでは発生しなかった（リトライ機構の発動なし）。サブエージェント／フォークは一切起動していない。
+
+**Part 4: 通知権限拒否・実機縮退証拠（P11-C6、2026-08-10追記、`docs/GOAL.md` D(3)/F行の最終証拠、quality-runner）**
+
+上記Part 2で「実TalkBack音声読み上げは未実施、ノードダンプで代替実証」としたのと同種の制約（実機ハードウェア要件）の下、通知権限拒否時のExecution画面フォールバック表示（F80、§95.6エラー＆レスキューマップ「通知」行「拒否時は通知送信をスキップしアプリ内表示のみに切替え、設定導線を提示する」）について、P11-C6（`docs/plans/phase11-i18n-a11y.md`§10）でDeparture画面のcontentDescription実装を追加した最新ビルド（`app-debug.apk`、`adb install -r`で導入。テスト新設は行わずGOAL.md D(3)/Fの証拠収集のみ）を対象に実機縮退証拠を取得した。
+
+1. **権限状態の実測**: seedアカウント`polish@local`にローカルカレンダーを作成し次イベント1件（title="PolishRoundCheckin"、eventLocation="Shibuya"、dtstart=seed時刻+3時間）を投入（`instances`クエリで1件を確認）。READ_CALENDAR／ACCESS_FINE_LOCATION／ACCESS_COARSE_LOCATIONを`pm grant`、**POST_NOTIFICATIONSのみ`pm revoke`**し、`dumpsys package com.actionstarter`で`android.permission.POST_NOTIFICATIONS: granted=false`を実測確認した（`build/agent-logs/p11c6-notifdenied-dumpsys-permissions.log`）。
+2. **実操作によるフロー到達**: アプリ起動→EventSelectionで seed イベントをタップ→PlanReviewへ遷移（`uiautomator dump`で"Your plan"・ステップ一覧・"Start"ボタンを確認、`build/agent-logs/p11c6-notifdenied-dump2-afterTap.xml`）→"Start"タップ→F79のPOST_NOTIFICATIONS要求ダイアログ（`com.android.permissioncontroller:id/permission_deny_button`、"Don't allow"）が実際に表示されたため**明示的に拒否**（`build/agent-logs/p11c6-notifdenied-dump3-afterStart.xml`）→Executionへ到達。**アプリはクラッシュせず動作継続した**（`pidof com.actionstarter`でプロセス生存確認、`dumpsys activity activities`で`topResumedActivity`がアプリ自身のままであることを確認）。
+3. **バナー表示の実証**: Execution到達直後の`uiautomator dump`（`build/agent-logs/p11c6-notifdenied-dump4-afterDeny.xml`）をgrepし、`ExecutionScreen.kt`の`execution_notification_permission_banner`（testTag）に対応する可視テキスト・`content-desc`の両方を実測確認した——`text="Notifications are off. Keep the app open to see your next action."`・`content-desc="Warning: Notifications are off. Keep the app open to see your next action."`（`R.string.execution_notification_permission_denied_message`と一致、T-P11A-4のWarning:プレフィックス実装どおり）、および同`execution_notification_open_settings_button`に対応する`text="Open app settings"`。**Compose `Modifier.testTag`はこのアプリに`testTagsAsResourceId`設定がなく本番ビルドの`uiautomator dump`には`resource-id`として現れないため（`grep -rn testTagsAsResourceId app/src/main`で0件を確認済み）、testTag自体の文字列一致ではなく、ソース（`ExecutionScreen.kt`のstring resource参照）と1:1対応する可視テキスト／`content-desc`の完全一致によって当該testTagの要素を同定した**（P11-C4の実機ラウンドが採った同種の手法と同じ）。スクリーンショットも取得し目視確認した: `docs/evidence/screenshots/phase5/en/02-notification-denied-banner.png`（1080×2400、"Notifications are off. Keep the app open to see your next action."と"Open app settings"ボタンが実際に画面表示されていることを確認。同時に`isExactAlarmDegraded`バナーも表示されているが、これはexact alarmが本セッションを通じて既定OFFのままであることに由来する既知の並行状態であり本証拠の対象外）。
+4. **クラッシュ／SecurityException不在の確認**: アプリ起動直前に`adb logcat -c`でバッファをクリアした上で全操作を実施し、事後に`adb logcat -d`で全量を回収した（`build/agent-logs/p11c6-notifdenied-logcat.log`、1160行）。`grep -c SecurityException`＝**0件**、`FATAL EXCEPTION`／`AndroidRuntime`（com.actionstarter関連）／`Fatal signal`／`Force finishing activity com.actionstarter`のいずれも**0件**を実測確認した。
+5. **cleanup（実測確認）**: POST_NOTIFICATIONSを`pm grant`で再許可し、`dumpsys package com.actionstarter`で`granted=true`（`flags=[ USER_SET|...]`）を実測確認した。seedカレンダー（`polish@local`、calendar `_id=1`）をsync-adapter URIで削除し、`content query`で`calendars`・`events`（全件、WHERE無し）とも`No result found.`＝空であることを実測確認した。
+
+**制約遵守の確認（本Part）**: 変更許可範囲（`DepartureScreen.kt`系UI・`strings.xml`・`AccessibilitySemanticsTest.kt`・両計画書の記録行）を超える変更は行っていない。`app/src/androidTest`は無変更（新規テストは追加していない、実機操作による証拠収集のみ）。NavHost／Manifest／AppContainerは無変更。git commitは行っていない。APIキー値は出力していない。Recovery画面へは遷移していない（本証拠のスコープ外のため）。Gradleロック競合は発生しなかった。サブエージェント／フォークは起動していない。
+
+---
+
 ## 11. リスク
 
 | # | リスク | 対応 |
