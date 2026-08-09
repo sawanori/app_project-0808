@@ -31,8 +31,11 @@ import java.util.UUID
  * 本ViewModelは[sharedPlanViewModel]が`null`、またはその[SharedPlanViewModel.confirmedPlan]
  * が`null`のときのみ、実行中のPlanを使わずプレースホルダの[ExecutionStep]で
  * [ExecutionUiState.currentStep]を構成する（`title`は空文字とし、Screen側で
- * [R.string.execution_placeholder_step_title]にフォールバック表示する。ハードコードUI文字列を
- * 持ち込まないため）。本番の[com.actionstarter.navigation.ActionStarterNavHost]は
+ * `resolveStepTitle`（`features/common/StepTitle.kt`）経由の`step_title_fallback`へ
+ * フォールバック表示する。ハードコードUI文字列を持ち込まないため。P11-C1（T-P11S-7）で
+ * 旧プレースホルダ専用文字列リソース（`resolveStepTitle`導入以降、Phase 4時点で構造的に
+ * 置換済みだった死蔵リソース。`docs/plans/phase4-basic-engine.md`のP4-C6完了記録参照）の
+ * 削除に伴いKDoc参照を是正した）。本番の[com.actionstarter.navigation.ActionStarterNavHost]は
  * **P5-C6統合ウィンドウ以降、execution routeで本ViewModelを`vmFactory`
  * （[com.actionstarter.di.AppContainer.createViewModelFactory]）経由で取得し、実引数の
  * [sharedPlanViewModel]を渡す**（`ActionStarterNavHost`のKDoc「ExecutionViewModelの本番結線」
@@ -124,6 +127,30 @@ class ExecutionViewModel(
 
     private val _uiState = MutableStateFlow(buildInitialState())
     val uiState: StateFlow<ExecutionUiState> = _uiState.asStateFlow()
+
+    /**
+     * P11-C1 scaffold（F80、§7.1「PermissionGateの2値契約とONResume再評価」・T-P11N-7/8）:
+     * `currentStep`／`currentStepIndex`／`onDone`／`onPostpone`は変更せず、劣化フラグのうち
+     * [permissionGate]／[notificationService]から都度再照会可能な2種
+     * （[ExecutionUiState.isNotificationPermissionDenied]・[ExecutionUiState.isExactAlarmDegraded]）
+     * のみを再計算する。[ExecutionUiState.isForegroundServiceDegraded]は本ViewModel内に
+     * 独立した照会元を持たない既存のdead field（grep実測: 生成箇所0件、既定`false`のまま）で
+     * あるため、再評価対象に含めず現在値のまま維持する（`copy()`の対象外フィールドは
+     * 自動的に不変。P11計画書§7.1参照）。呼び出し元（`ActionStarterNavHost`のExecution route）
+     * はSettingsから戻ったON_RESUME（`DisposableEffect`＋`LifecycleEventObserver`、
+     * EventSelection/Departure routeと同型）でこれを呼ぶ（F80）。
+     *
+     * P11-C1時点ではpermissionGate/notificationServiceへの委譲のみで新規ロジックを持たない
+     * ため単体では既に正しく動作する（T-P11N-7はborn-green想定）が、本番での呼び出し元
+     * （`ActionStarterNavHost`のExecution route ON_RESUME）はP11-C3まで存在せず本番未到達
+     * のまま。P11-C3でNavHost側のON_RESUME結線を追加し、実際にユーザー操作から到達可能にする。
+     */
+    fun refreshDegradationState() {
+        _uiState.value = _uiState.value.copy(
+            isNotificationPermissionDenied = isNotificationPermissionDenied(),
+            isExactAlarmDegraded = isExactAlarmDegraded()
+        )
+    }
 
     private fun restoredIndex(): Int = savedStateHandle.get<Int>(KEY_CURRENT_STEP_INDEX) ?: 0
 

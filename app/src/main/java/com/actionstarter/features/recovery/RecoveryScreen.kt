@@ -1,11 +1,15 @@
 package com.actionstarter.features.recovery
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -15,9 +19,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.actionstarter.R
@@ -56,6 +63,16 @@ import java.util.UUID
  *
  * [onUseThisPlan]は「Use this plan」タップ時に選択中の`selectedId`を渡して呼び出す
  * （`RecoveryPlanApplier`経由の適用、`RecoveryViewModel.useThisPlan`、T-RECVM-6/7）。
+ *
+ * **F81実装（P11-C3、T-P11A-6/7/8、§7.2）**: 各候補行の既存の空`semantics(mergeDescendants
+ * = true) {}`へ、案の内容（title/explanation）＋ETA（`estimatedArrival`が非nullの場合のみ、
+ * 偽情報を読み上げない・T-RECUI-8と同種の設計）＋選択状態（[R.string.recovery_option_selected_state_description]、
+ * 選択中の行にのみ付加）を統合した`contentDescription`を実装した。
+ *
+ * **S-5裁定実装（P11-C3、T-P11A-11）**: 選択中の候補行に視覚的インジケータ
+ * （`Modifier.background(color = primaryContainer)`）を追加した。TalkBack向けには標準の
+ * `SemanticsProperties.Selected`（`Modifier.semantics { selected = ... }`）を全行へ付与し、
+ * 色のみに依存しない（§63 color-only禁止）二重の伝達手段とする。
  */
 @Composable
 fun RecoveryScreen(
@@ -72,6 +89,13 @@ fun RecoveryScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // F82実装（P11-C3、T-P11F-5）: fontScale=1.5x実測で、候補3件表示時に「Use this
+            // plan」ボタンがビューポート外へ押し出され非表示になることが判明した（root
+            // Columnがscroll不可のfillMaxSizeのみだったため）。DepartureScreenの既存パターン
+            // （verticalScroll(rememberScrollState())）を踏襲し、内容が画面高を超える場合に
+            // スクロールで到達可能にする（レイアウト自体の再設計ではない軽微な調整、
+            // 計画書§12 S-6裁定の許容範囲内）。
+            .verticalScroll(rememberScrollState())
             .padding(24.dp)
     ) {
         Text(
@@ -93,27 +117,57 @@ fun RecoveryScreen(
         } else {
             Column {
                 uiState.options.forEach { option ->
+                    val isSelected = option.id == selectedId
+                    val resolvedTitle = resolveRecoveryOptionTitle(option.semanticAction)
+                    val resolvedExplanation = resolveRecoveryOptionExplanation(option.semanticAction, option.estimatedArrival)
+                    val eta = option.estimatedArrival
+                    // T-RECUI-8/T-P11A-8: estimatedArrival == nullの候補はETA情報を一切
+                    // 組み立てない（表示・contentDescription双方で偽情報を出さない）。
+                    val formattedEta = eta?.let {
+                        stringResource(R.string.recovery_option_eta_label) + " " +
+                            etaTimeFormatter.format(ZonedDateTime.ofInstant(it, ZoneId.systemDefault()))
+                    }
+                    val selectedStateDescription = if (isSelected) {
+                        stringResource(R.string.recovery_option_selected_state_description)
+                    } else {
+                        null
+                    }
+                    val optionContentDescription = listOfNotNull(
+                        resolvedTitle,
+                        resolvedExplanation,
+                        formattedEta,
+                        selectedStateDescription
+                    ).joinToString(", ")
+
                     Row(
                         modifier = Modifier
                             .testTag("recovery_option_item_${option.id}")
-                            .semantics(mergeDescendants = true) {}
+                            .fillMaxWidth()
+                            // S-5裁定（T-P11A-11）: 選択中の候補行の視覚的インジケータ。
+                            // 色のみに依存しないよう、下記semanticsのselected/contentDescription
+                            // と併用する（§63）。
+                            .background(
+                                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                            )
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = optionContentDescription
+                                selected = isSelected
+                            }
                             .clickable { selectedId = option.id }
                             .padding(vertical = 8.dp)
                     ) {
                         Column {
                             Text(
-                                text = resolveRecoveryOptionTitle(option.semanticAction),
+                                text = resolvedTitle,
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
-                                text = resolveRecoveryOptionExplanation(option.semanticAction, option.estimatedArrival),
+                                text = resolvedExplanation,
                                 style = MaterialTheme.typography.bodyMedium
                             )
-                            val eta = option.estimatedArrival
-                            if (eta != null) {
+                            if (eta != null && formattedEta != null) {
                                 Text(
-                                    text = stringResource(R.string.recovery_option_eta_label) + " " +
-                                        etaTimeFormatter.format(ZonedDateTime.ofInstant(eta, ZoneId.systemDefault())),
+                                    text = formattedEta,
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.testTag("recovery_option_eta_${option.id}")
                                 )

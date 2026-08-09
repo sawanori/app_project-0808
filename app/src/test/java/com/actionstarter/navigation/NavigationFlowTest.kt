@@ -25,6 +25,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
 import java.time.Duration
 
 /**
@@ -115,6 +116,15 @@ class NavigationFlowTest {
     // （BasicPlanningDefaults.TRANSITION=5分・PREPARATION=15分がいずれも0分超のため生成され、
     // TRAVELはtravelEstimate=nullのため生成されない。ADR-0016のstep構築順）。したがって
     // departureへ到達するにはステップ数と同数の3回「Done」をタップする必要がある。
+    //
+    // **P11-C3追補（F79、計画書§7.1）**: PlanReviewの「Start」タップがAPI 33+で
+    // POST_NOTIFICATIONS実行時権限launcher（`ActivityResultContracts.RequestPermission()`）を
+    // 経由するようになり、遷移がlauncherの非同期コールバック内へ移った（[ActionStarterNavHost]
+    // 参照）。本テストはナビゲーション構造の検証が目的であり権限フロー自体の検証対象では
+    // ないため（権限フロー自体は`NotificationPermissionRequestTest`が担当）、`@Config(sdk =
+    // [26])`でPOST_NOTIFICATIONSが概念上存在しないAPIへ固定し、launcherを介さない直接遷移
+    // 分岐（§7.1）を通すことで、Phase 11以前と同じ同期的な遷移挙動を維持する。
+    @Config(sdk = [26])
     @Test
     fun tNav1_selectionToReviewToExecutionToDeparture_fullFlowSucceeds() {
         val context = RuntimeEnvironment.getApplication()
@@ -148,6 +158,10 @@ class NavigationFlowTest {
     }
 
     // T-NAV-3: 正常系 - recoveryから「Use this plan」でexecutionへ戻る
+    //
+    // **P11-C3追補（F79）**: tNav1と同じ理由で`@Config(sdk = [26])`を付与する（本テストも
+    // PlanReviewの「Start」タップを経由してExecutionへ到達するため）。
+    @Config(sdk = [26])
     @Test
     fun tNav3_recoveryUseThisPlan_returnsToExecution() {
         val context = RuntimeEnvironment.getApplication()

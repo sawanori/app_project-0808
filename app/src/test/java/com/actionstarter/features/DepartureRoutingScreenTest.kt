@@ -185,6 +185,9 @@ class DepartureRoutingScreenTest {
         assertEquals(TransportMode.WALKING, lastSelected)
     }
 
+    // P11-C1（T-P11S-5、TEAMS§2承認済み・Fable 5指示書が承認記録）: phase11-i18n-a11y.md§7.4の
+    // 死蔵リソース処置によりtravel_time_manual_apply_buttonが削除されたため、本リストから除外した
+    // （location_permission_denied_messageは配線対象のため存置。他12キーは無変更）。
     // T-DEP2-5: エッジケース - ja/en双方で新規文言が非空かつ相互に異なる（§7）。
     // StringResourceParityTest（全キー横断）とは別に、Phase 3で追加された文言キーへ
     // 絞ったピンポイント検証として用意する。RobolectricのRuntimeEnvironment.setQualifiers
@@ -200,7 +203,6 @@ class DepartureRoutingScreenTest {
             "location_open_settings_button",
             "location_permission_coarse_only_notice",
             "travel_time_manual_label",
-            "travel_time_manual_apply_button",
             "transport_mode_walking",
             "transport_mode_driving",
             "transport_mode_transit",
@@ -305,6 +307,21 @@ class DepartureRoutingScreenTest {
 
         composeTestRule.onNodeWithText(context.getString(R.string.travel_time_manual_label)).assertIsDisplayed()
         composeTestRule.onNodeWithText(context.getString(R.string.location_open_settings_button))
+            .assertIsDisplayed()
+    }
+
+    // T-P11S-3（Phase 11, F83, 計画書§7.4）: 正常系 - location_permission_denied_messageが
+    // DENIED状態で実際に描画される（showManualFallbackブロック内、TravelTimeInput直前）。
+    // 従来はDENIED状態の説明として定義済みだが描画箇所を持たない死蔵リソース（UnusedResources
+    // 警告対象）だった。文言自体・位置はS-2裁定どおり据え置き（既存文言をそのまま使用）。
+    @Test
+    fun tP11s3_deniedState_rendersLocationPermissionDeniedMessage() {
+        composeTestRule.setContent {
+            DepartureScreen(uiState = DepartureUiState(permissionState = LocationPermissionState.DENIED))
+        }
+        val context = RuntimeEnvironment.getApplication()
+
+        composeTestRule.onNodeWithText(context.getString(R.string.location_permission_denied_message))
             .assertIsDisplayed()
     }
 

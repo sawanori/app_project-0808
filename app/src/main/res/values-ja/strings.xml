@@ -52,8 +52,6 @@
     <string name="execution_five_min_later_button">5分後にする</string>
     <string name="execution_simulate_delay_debug_button">遅延をシミュレート（デバッグ）</string>
     <string name="execution_restored_snackbar_message">進行状況を復元できませんでした。もう一度予定を選び直してください。</string>
-    <!-- C4（ui-implementer）: Plan注入（C5）までの間の暫定ステップタイトルのフォールバック文言。 -->
-    <string name="execution_placeholder_step_title">次のステップ</string>
     <!-- P5-C8（ui-implementer/test-writer）: 劣化状態の可視化バナー（仕様§95「精度低下の明示」）。
          ExecutionUiState.isExactAlarmDegraded／isNotificationPermissionDenied／
          isForegroundServiceDegradedはExecutionViewModel側（P5-C2b/C3）で算出済みだったが、
@@ -62,6 +60,15 @@
     <string name="execution_exact_alarm_degraded_message">正確なアラームが許可されていないため、通知が数分遅れることがあります。</string>
     <string name="execution_notification_permission_denied_message">通知がオフになっています。次のアクションを確認するにはアプリを開いたままにしてください。</string>
     <string name="execution_foreground_service_degraded_message">バックグラウンドでの継続動作が制限されているため、アプリがバックグラウンドの間は通知が遅れることがあります。</string>
+    <!-- P11-C1/C3（F80、仕様§95.6エラー＆レスキューマップ「通知」行）: 通知権限拒否の劣化バナーに
+         添える設定導線ボタン。calendar_open_settings_button／location_open_settings_buttonと
+         同じ「アプリ設定を開く」文言を踏襲しつつ、機能ごとに独立したキーとして追加する
+         （既存2キーと同じ命名慣習）。 -->
+    <string name="notification_open_settings_button">アプリ設定を開く</string>
+    <!-- P11-C1/C3（F81、仕様§63「color-only情報禁止」）: 劣化バナー3種の可視テキストは変更せず、
+         contentDescription側にのみ「警告」であることを伝える接頭辞を付与する。%1$sは
+         既存の各バナー文言。 -->
+    <string name="accessibility_warning_announcement">警告: %1$s</string>
 
     <!-- Departure (Screen 4, 仕様§29/§35)。C3bでT-DEP-1..4向けに追加。 -->
     <string name="departure_title">今すぐ出発</string>
@@ -82,6 +89,10 @@
     <string name="recovery_see_alternatives_button">他の案を見る</string>
     <string name="recovery_no_options_message">代替案はありません。手動で対応してください。</string>
     <string name="recovery_option_eta_label">到着予定</string>
+    <!-- P11-C1/C3（F81、S-5裁定）: 仮選択中のRecovery候補行のTalkBack向け通知
+         （視覚的インジケータ＝背景色/ボーダーと併用し、色のみに依存しない。仕様§63）。
+         RecoveryUiState.selectedOptionIdと一致する行のcontentDescriptionにのみ付加する。 -->
+    <string name="recovery_option_selected_state_description">選択中</string>
 
     <!-- Recovery Basic（Phase 6、仕様§31-33/§70）。P6-C5（統合ウィンドウ、計画書§6.4行3）で
          追加：BasicRecoveryEngineの4つの決定的semanticActionキーに対応するtitle/explanation。
@@ -119,7 +130,6 @@
 
     <!-- 手動Travel Time入力フォールバック（F28、仕様§95.4/§95.6、S-2裁定）。P3-C1で追加。 -->
     <string name="travel_time_manual_label">移動時間（分）</string>
-    <string name="travel_time_manual_apply_button">適用</string>
 
     <!-- Transport modeセレクタ（F26、仕様§9/§67、S-3裁定：4値）。P3-C1で追加。 -->
     <string name="transport_mode_walking">徒歩</string>

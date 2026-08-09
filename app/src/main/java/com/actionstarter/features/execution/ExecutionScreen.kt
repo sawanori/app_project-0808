@@ -8,11 +8,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.actionstarter.BuildConfig
@@ -55,7 +57,8 @@ fun ExecutionScreen(
     uiState: ExecutionUiState,
     onNavigateToDeparture: () -> Unit,
     onNavigateToRecovery: () -> Unit,
-    onNavigateToEventSelection: () -> Unit
+    onNavigateToEventSelection: () -> Unit,
+    onOpenNotificationSettings: () -> Unit = {}
 ) {
     val currentStep = uiState.currentStep
 
@@ -80,13 +83,16 @@ fun ExecutionScreen(
             style = MaterialTheme.typography.labelLarge
         )
 
+        val currentStepTitle = currentStep.title.ifBlank { resolveStepTitle(currentStep.semanticId) }
         Column(
             modifier = Modifier
                 .testTag("step_item_${currentStep.id}")
-                .semantics(mergeDescendants = true) {}
+                // F81実装（P11-C3、T-P11A-3）: P5-C8時点でscaffoldされていた空ブロックへ
+                // contentDescriptionを実装した（挙動・testTagは不変）。
+                .semantics(mergeDescendants = true) { contentDescription = currentStepTitle }
         ) {
             Text(
-                text = currentStep.title.ifBlank { resolveStepTitle(currentStep.semanticId) },
+                text = currentStepTitle,
                 style = MaterialTheme.typography.headlineMedium
             )
         }
@@ -107,7 +113,7 @@ fun ExecutionScreen(
             }
         }
 
-        ExecutionDegradationBanners(uiState = uiState)
+        ExecutionDegradationBanners(uiState = uiState, onOpenNotificationSettings = onOpenNotificationSettings)
 
         if (BuildConfig.DEBUG) {
             Button(onClick = onNavigateToRecovery) {
@@ -127,31 +133,60 @@ fun ExecutionScreen(
  * "execution_exact_alarm_degraded_banner" に実装側を合わせた（E2E側は変更しない）。
  * 他2種（"execution_notification_permission_banner"／"execution_fgs_degraded_banner"）は
  * 同一の命名規約を踏襲した。
+ *
+ * **F81実装（P11-C3、T-P11A-4、§63「color-only情報禁止」）**: 3バナーいずれも可視テキストは
+ * 従来どおり（既存の`assertTextEquals`アサーションを壊さない）だが、
+ * `Modifier.semantics { contentDescription = ... }`で[R.string.accessibility_warning_announcement]
+ * （`"Warning: %1$s"`／`"警告: %1$s"`）による非視覚的な「警告」シグナルを追加する。色のみに
+ * 依存せず、TalkBackが「これは警告である」ことを伝えられるようにするため。
+ *
+ * **F80実装（P11-C3、T-P11N-4、§95.6エラー＆レスキューマップ「通知」行）**: 通知権限拒否
+ * バナーへ設定導線ボタン（testTag "execution_notification_open_settings_button"）を追加した。
+ * タップで[onOpenNotificationSettings]を呼ぶ（実際のSettings Intent起動はNavHost側の責務、
+ * §10.6疎結合規約）。
  */
 @Composable
-private fun ExecutionDegradationBanners(uiState: ExecutionUiState) {
+private fun ExecutionDegradationBanners(uiState: ExecutionUiState, onOpenNotificationSettings: () -> Unit) {
     if (uiState.isExactAlarmDegraded) {
+        val message = stringResource(R.string.execution_exact_alarm_degraded_message)
+        val warningDescription = stringResource(R.string.accessibility_warning_announcement, message)
         Text(
-            text = stringResource(R.string.execution_exact_alarm_degraded_message),
+            text = message,
             color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.testTag("execution_exact_alarm_degraded_banner")
+            modifier = Modifier
+                .testTag("execution_exact_alarm_degraded_banner")
+                .semantics { contentDescription = warningDescription }
         )
     }
     if (uiState.isNotificationPermissionDenied) {
+        val message = stringResource(R.string.execution_notification_permission_denied_message)
+        val warningDescription = stringResource(R.string.accessibility_warning_announcement, message)
         Text(
-            text = stringResource(R.string.execution_notification_permission_denied_message),
+            text = message,
             color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.testTag("execution_notification_permission_banner")
+            modifier = Modifier
+                .testTag("execution_notification_permission_banner")
+                .semantics { contentDescription = warningDescription }
         )
+        TextButton(
+            onClick = onOpenNotificationSettings,
+            modifier = Modifier.testTag("execution_notification_open_settings_button")
+        ) {
+            Text(text = stringResource(R.string.notification_open_settings_button))
+        }
     }
     if (uiState.isForegroundServiceDegraded) {
+        val message = stringResource(R.string.execution_foreground_service_degraded_message)
+        val warningDescription = stringResource(R.string.accessibility_warning_announcement, message)
         Text(
-            text = stringResource(R.string.execution_foreground_service_degraded_message),
+            text = message,
             color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.testTag("execution_fgs_degraded_banner")
+            modifier = Modifier
+                .testTag("execution_fgs_degraded_banner")
+                .semantics { contentDescription = warningDescription }
         )
     }
 }

@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.actionstarter.R
@@ -117,26 +118,36 @@ fun PlanReviewScreen(
  * P4-C6）: [PlanReviewScreen]のステップ行描画（C4でF47の時刻表示・title解決を追加した箇所）を
  * 単一責務の private Composable へ抽出したもの（`EventSelectionScreen.kt`の`EventRow`と同じ
  * 抽出パターン、P2-C6先例踏襲）。挙動・testTag・文字列リソースは抽出前と不変。
+ *
+ * **F81実装（P11-C3、T-P11A-2）**: P4-C6時点でscaffoldされていた空`semantics(mergeDescendants
+ * = true) {}`ブロックへcontentDescription（時刻＋タイトル）を実装した。行を1つの読み上げ単位
+ * として文脈のある文（例:「09:15 準備を始める」）に統合する（§7.2）。
  */
 @Composable
 private fun PlanReviewStepRow(step: ExecutionStep, timeFormatter: DateTimeFormatter) {
+    val scheduledStart = step.scheduledStart
+    val formattedTime = scheduledStart?.let {
+        timeFormatter.format(ZonedDateTime.ofInstant(it, ZoneId.systemDefault()))
+    }
+    val title = step.title.ifBlank { resolveStepTitle(step.semanticId) }
+    val rowContentDescription = listOfNotNull(formattedTime, title).joinToString(" ")
+
     Row(
         modifier = Modifier
             .testTag("plan_review_step_item")
-            .semantics(mergeDescendants = true) {}
+            .semantics(mergeDescendants = true) { contentDescription = rowContentDescription }
             .padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        val scheduledStart = step.scheduledStart
-        if (scheduledStart != null) {
+        if (formattedTime != null) {
             Text(
-                text = timeFormatter.format(ZonedDateTime.ofInstant(scheduledStart, ZoneId.systemDefault())),
+                text = formattedTime,
                 modifier = Modifier.testTag("plan_review_step_time_text"),
                 style = MaterialTheme.typography.bodyLarge
             )
         }
         Text(
-            text = step.title.ifBlank { resolveStepTitle(step.semanticId) },
+            text = title,
             style = MaterialTheme.typography.bodyLarge
         )
     }

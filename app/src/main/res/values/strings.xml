@@ -52,8 +52,6 @@
     <string name="execution_five_min_later_button">5 min later</string>
     <string name="execution_simulate_delay_debug_button">Simulate delay (debug)</string>
     <string name="execution_restored_snackbar_message">We couldn\'t restore your progress. Pick your next event again.</string>
-    <!-- C4 (ui-implementer): placeholder step title fallback while Plan injection (C5) is pending. -->
-    <string name="execution_placeholder_step_title">Next step</string>
     <!-- P5-C8 (ui-implementer/test-writer): degradation banners (spec §95 "precision degradation
          must be surfaced"). ExecutionUiState.isExactAlarmDegraded / isNotificationPermissionDenied /
          isForegroundServiceDegraded were already computed by ExecutionViewModel (P5-C2b/C3) but
@@ -62,6 +60,21 @@
     <string name="execution_exact_alarm_degraded_message">Precise alarms aren\'t allowed, so reminders may arrive a few minutes late.</string>
     <string name="execution_notification_permission_denied_message">Notifications are off. Keep the app open to see your next action.</string>
     <string name="execution_foreground_service_degraded_message">Background tracking is limited, so reminders may be delayed while the app is in the background.</string>
+    <!-- P11-C1/C3 (F80, spec §95.6 error/rescue map "notification" row): settings deep-link
+         shown on the notification-permission-denied degradation banner so the user can grant
+         POST_NOTIFICATIONS without leaving the app entirely. Reuses the same generic wording
+         pattern as calendar_open_settings_button / location_open_settings_button (both already
+         say "Open app settings" verbatim); kept as its own key rather than reused because it is
+         a distinct per-feature settings affordance (same convention as those two keys). -->
+    <string name="notification_open_settings_button">Open app settings</string>
+    <!-- P11-C1/C3 (F81, spec §63 "color-only information禁止"): non-visual "this is a warning"
+         announcement wrapped around the 3 existing degradation banner messages
+         (execution_exact_alarm_degraded_message / execution_notification_permission_denied_message /
+         execution_foreground_service_degraded_message). Applied via Modifier.semantics{
+         contentDescription = ... } so the banners' visible Text (and existing assertTextEquals
+         checks in ExecutionScreenTest) is unchanged; only the accessibility-tree announcement
+         gains the "Warning:" prefix. %1$s is the existing message. -->
+    <string name="accessibility_warning_announcement">Warning: %1$s</string>
 
     <!-- Departure (Screen 4, spec §29/§35). Added in C3b for T-DEP-1..4. -->
     <string name="departure_title">Leave now</string>
@@ -82,6 +95,11 @@
     <string name="recovery_see_alternatives_button">See alternatives</string>
     <string name="recovery_no_options_message">No alternatives available. Please proceed manually.</string>
     <string name="recovery_option_eta_label">ETA</string>
+    <!-- P11-C1/C3 (F81, S-5 ruling): TalkBack-only announcement of the tentatively-selected
+         Recovery candidate row (paired with a visual background/border indicator so the state
+         is never color-only, spec §63). Appended into the row's grouped contentDescription only
+         for the row matching RecoveryUiState.selectedOptionId. -->
+    <string name="recovery_option_selected_state_description">Selected</string>
 
     <!-- Recovery Basic (Phase 6, spec §31-33/§70). Added in P6-C5 (integration window, plan
          §6.4 row 3): title/explanation for BasicRecoveryEngine's 4 deterministic semanticAction
@@ -119,7 +137,6 @@
 
     <!-- Manual travel time input fallback (F28, spec §95.4/§95.6, S-2 ruling). Added in P3-C1. -->
     <string name="travel_time_manual_label">Travel time (minutes)</string>
-    <string name="travel_time_manual_apply_button">Apply</string>
 
     <!-- Transport mode selector (F26, spec §9/§67, S-3 ruling: 4 values). Added in P3-C1. -->
     <string name="transport_mode_walking">Walking</string>

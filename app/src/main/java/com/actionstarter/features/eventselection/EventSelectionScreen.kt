@@ -25,6 +25,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -268,6 +269,14 @@ private fun EventSelectionErrorContent(onRetry: () -> Unit) {
  * 明示した`semantics{onClick=...}`を組み合わせ、クリック可能でありながら子のtestTagを
  * 吸収しない行を構成する。バッジを持たない2件目以降（`!isNext`）は素の`Modifier.clickable`
  * のままでよい（マージされても検出すべき子testTagが存在しないため影響がない）。
+ *
+ * **F81実装（P11-C3、T-P11A-1、計画書§7.2）**: 行全体を1つの読み上げ単位として、日時・
+ * タイトル・場所を含む`contentDescription`を付与する。[isNext]行は上記の理由で
+ * `mergeDescendants = false`を維持したまま（バッジの個別可視性を最優先）既存の
+ * `semantics{onClick=...}`ブロックへ`contentDescription`を追加するに留め、2件目以降
+ * （`!isNext`）は`clickable`が既に`mergeDescendants = true`を確立しているため
+ * `.semantics { contentDescription = ... }`を追加するだけで「1行1停止点＋文脈のある
+ * 読み上げ文」（§7.2）が成立する。
  */
 @Composable
 private fun EventRow(
@@ -279,6 +288,12 @@ private fun EventRow(
     val isNext = index == 0
     val formattedTime = timeFormatter.format(ZonedDateTime.ofInstant(event.startDate, ZoneId.systemDefault()))
     val displayTitle = event.title.ifBlank { stringResource(R.string.event_untitled) }
+    // F81（T-P11A-1）: 日時・タイトル・場所を含む1行分の読み上げ文。
+    val rowContentDescription = listOfNotNull(
+        displayTitle,
+        formattedTime,
+        event.locationName
+    ).joinToString(", ")
 
     val rowModifier = Modifier
         .testTag("event_selection_row_$index")
@@ -292,9 +307,12 @@ private fun EventRow(
                     }
                     .semantics(mergeDescendants = false) {
                         onClick(action = { onNavigateToPlanReview(); true })
+                        contentDescription = rowContentDescription
                     }
             } else {
-                Modifier.clickable(onClick = onNavigateToPlanReview)
+                Modifier
+                    .clickable(onClick = onNavigateToPlanReview)
+                    .semantics { contentDescription = rowContentDescription }
             }
         )
 

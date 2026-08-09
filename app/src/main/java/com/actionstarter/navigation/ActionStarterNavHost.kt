@@ -3,6 +3,7 @@ package com.actionstarter.navigation
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -204,6 +205,22 @@ fun ActionStarterNavHost(
                 val viewModel: PlanReviewViewModel = viewModel(factory = vmFactory)
                 val uiState by viewModel.uiState.collectAsState()
 
+                // F79実配線（P11-C3、計画書§7.1、Gemini G1 CRITICAL #1反映）:
+                // POST_NOTIFICATIONS実行時権限リクエスト。EventSelectionRoute/DepartureRouteと
+                // 同型のActivityResultContracts.RequestPermission()単一権限launcherを、
+                // PlanReview route自身が保持する。旧設計案（launch()直後に同期的にnavigate()）は
+                // 権限ダイアログの表示・消滅と画面遷移アニメーションが競合しうるライフサイクル
+                // リスクがあるため採用せず、遷移をlauncherのコールバック内へ移した
+                // （§7.1「非同期タイミングを再設計」）。結果（許可・拒否いずれも）は分岐しない
+                // ——ExecutionViewModel側がisNotificationPermissionDenied()で都度isGranted()を
+                // 再照会するため、ここでは遷移のみを行う（DepartureRouteのrequestLocationPermissionLauncher
+                // と同じ設計判断）。
+                val requestNotificationPermissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission()
+                ) {
+                    navController.navigate(Destinations.Execution.route)
+                }
+
                 PlanReviewScreen(
                     uiState = uiState,
                     onNavigateToExecution = {
@@ -214,8 +231,19 @@ fun ActionStarterNavHost(
                         // へ渡すのと同一のPlanインスタンス（PlanReviewViewModel.confirmAndStart
                         // 参照）。PlanReviewScreenのStartボタンはplanがnullの間は描画されない
                         // ため通常nullにはならないが、信頼境界として?.letで防御する。
+                        // アラームは権限の有無と無関係に登録する（schedule()自体はPOST_NOTIFICATIONS
+                        // が対象とする「通知の表示」とは独立して成功する、Phase 5既存の設計を踏襲）。
                         uiState.plan?.let { plan -> appContainer.notificationService.schedule(plan) }
-                        navController.navigate(Destinations.Execution.route)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            // API 33+のみ実行時リクエストが必要。遷移はlauncherのコールバック内
+                            // （上記）で行う。
+                            requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        } else {
+                            // API 33未満はPOST_NOTIFICATIONSが概念上存在しないため、launcherを
+                            // 介さず直接遷移する（§7.1「ライフサイクルの安全性の観点で不要な
+                            // 非同期コールバックへの依存を増やさない」）。
+                            navController.navigate(Destinations.Execution.route)
+                        }
                     }
                 )
             }
@@ -246,6 +274,23 @@ fun ActionStarterNavHost(
                     // 本番結線される。
                     val viewModel: ExecutionViewModel = viewModel(factory = vmFactory)
                     val executionUiState by viewModel.uiState.collectAsState()
+
+                    // F80実配線（P11-C3、計画書§7.1「PermissionGateの2値契約とONResume再評価」・
+                    // §95.6「後から許可された場合は自動的に通知を再開する」）: Settingsから
+                    // 戻った際に劣化フラグ（isNotificationPermissionDenied／isExactAlarmDegraded）
+                    // を再照会するON_RESUME結線。EventSelectionRoute（onPermissionRequested系）・
+                    // DepartureRoute（onResume系）と同型のDisposableEffect＋LifecycleEventObserver
+                    // （lifecycle-runtime-compose追加依存不要、同KDoc参照）。
+                    val executionLifecycleOwner = LocalLifecycleOwner.current
+                    DisposableEffect(executionLifecycleOwner, viewModel) {
+                        val observer = LifecycleEventObserver { _, event ->
+                            if (event == Lifecycle.Event.ON_RESUME) {
+                                viewModel.refreshDegradationState()
+                            }
+                        }
+                        executionLifecycleOwner.lifecycle.addObserver(observer)
+                        onDispose { executionLifecycleOwner.lifecycle.removeObserver(observer) }
+                    }
 
                     // F56/F57実配線: Execution画面表示開始時（フォアグラウンド）にForeground
                     // Serviceを起動する。Recovery割込からの復帰でも本composableは再入場する
@@ -317,6 +362,14 @@ fun ActionStarterNavHost(
                             navController.navigate(Destinations.EventSelection.route) {
                                 popUpTo(Destinations.EventSelection.route) { inclusive = true }
                             }
+                        },
+                        onOpenNotificationSettings = {
+                            // F80実配線: EventSelectionRoute/DepartureRouteのSettings導線と同じ
+                            // Settings.ACTION_APPLICATION_DETAILS_SETTINGSパターン。
+                            val settingsIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.fromParts("package", context.packageName, null)
+                            }
+                            context.startActivity(settingsIntent)
                         }
                     )
                 }

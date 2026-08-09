@@ -905,3 +905,101 @@ androidComponents {
 **検証方法**: Red実測（`build/agent-logs/p4c8-red.log`、4引数未実装のため`PlanReviewViewModelTest.kt`が「No parameter with name 'geocodingService'/'locationService'/'routingService'/'permissionGate' found」でコンパイル不能）→Green実装後、対象5件個別実行で5/5 Green→全JVMスイート`--rerun`で**373 tests・failures 0・errors 0・skipped 1**（`build/agent-logs/p4c8-full.log`。P4-C6完了時点の368件から新規5件増加、純増のみで既存368件は無改造のままGreen維持）。特に`NavigationFlowTest`5/5・`PlanReviewScreenTest`6/6・`PlanReviewStepDisplayTest`5/5・`ExecutionOneActionTest`8/8・`DepartureRoutingViewModelTest`10/10・`DepartureViewModelTest`5/5・`CalendarNavigationFlowTest`1/1のGreenを個別確認した（`NavigationFlowTest`等が使うRobolectricカレンダーfixtureは`EVENT_LOCATION`を`null`で構成しているため、`event.locationName`が常に空となり新規フェッチ経路が構造的に起動せず、Phase 4までの3ステップPlan挙動と1タップ数まで一致することを確認）。`:app:lintDebug`は**error 0**・warning **22件**（`build/agent-logs/p6c5-lint.log`時点から不変）、UnusedResources**3件**（同じく不変、`strings.xml`を変更していないことの構造的裏付け）を実測（`build/agent-logs/p4c8-lint.log`）。T-P4C8-1では、サービス未配線のベースラインPlan（`travelEstimate`常に`null`）との`transitionStart`差分が実測した移動時間（25分）と厳密一致することを直接アサーションしている。
 
 **再検討トリガー**: Personal Execution Profile（Phase 10）または設定画面が`transportMode`のユーザー選択・永続化を提供するようになった場合、`DEFAULT_TRANSPORT_MODE = TransportMode.TRANSIT`固定をその値に差し替える必要がある。将来`PlanReviewViewModel`のスコープ規則が変わり、単一インスタンスが複数の異なる非null`selectedEvent`を順に観測しうるようになった場合（現行のCompose Navigationのbackstack-entryスコープでは発生しない）、stale-write防止チェック（フェッチ直前の`event.id`一致確認）の強度を再評価すること。
+
+---
+
+### ADR-0039: POST_NOTIFICATIONS実行時権限は事前説明カードを挟まずPlanReview「Start」タップで直接システムダイアログを表示し、遷移はlauncherのコールバック内で行う（§12 S-1裁定）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（Fable 5裁定・`docs/plans/phase11-i18n-a11y.md`§12 S-1・Gemini G1 CRITICAL #1反映） ／ 決定者: Fable 5 ／ 起案agent: plan-doc-writer（計画書§7.1起筆）→ui-implementer/test-writer（P11-C3実装・正式起票） ／ 関連仕様§: §95.4権限一覧表（POST_NOTIFICATIONS行）・§19原則（記録トリガー②仕様未定義箇所の補完：要求タイミングは規定済みだがUI詳細=事前カード要否は未規定だった）
+- **ADR番号の付番根拠**: 起票直前に`grep -n "^### ADR-" DECISIONS.md`を再実測し、最新確定ADRがADR-0038（本書885行）であることを確認した。`docs/plans/phase11-i18n-a11y.md`が予約していた「ADR-0038以降」の想定と異なりADR-0038はP4-C8（別Phase）に既に使用済みだったため、ADR-0038の次番としてADR-0039を採番した。
+
+**背景**: `AndroidManifest.xml:27-31`のコメントおよび§95.4権限表は、POST_NOTIFICATIONSの要求タイミングを「Execution Plan確定時（PlanReview「Start」）」と規定するのみで、事前説明カードを挟むか直接システムダイアログを出すかは未規定だった。カレンダー（`EventSelectionScreen`のPermissionRequired状態）・位置情報（`DepartureScreen`のLocationPermissionRationaleCard）はいずれも事前カードを挟む設計だが、通知権限はこれらと性質が異なる：カレンダー・位置情報は権限なしでは画面そのものが成立しない（§19原則と同型の「Local AIオフでもBasic Engineが成立する」設計原則の裏返し）のに対し、通知はExecution画面での次アクション提示というコア機能自体は権限なしでも成立する増強系の権限である。
+
+**決定**: PlanReviewの「Start」タップで事前説明カードを挟まず、`ActivityResultContracts.RequestPermission()`のシステムダイアログを直接表示する（API 33+のみ）。低摩擦・OS標準ダイアログの説明文で十分と判断し、拒否後の救済はF80の設定導線（`ExecutionDegradationBanners`内の`execution_notification_open_settings_button`）で担保する。Gemini G1 CRITICAL指摘#1を受け、当初案（`launch()`直後に同期的に`navController.navigate()`する設計）は採用せず、画面遷移をlauncherの**コールバック内**へ移した——`launch()`はActivityResultRegistry経由の非同期ディスパッチであり、直後の同期的`navigate()`と競合すると権限ダイアログの表示・消滅と画面遷移アニメーションが競合し、かつコンポジション破棄タイミングと重なると`rememberLauncherForActivityResult`のコールバックが失われるリスクがあるため。コールバックは許可・拒否いずれの結果も分岐せず遷移のみを行う（実際の許可状態は`ExecutionViewModel.isNotificationPermissionDenied()`が`PermissionGate.isGranted()`で都度再照会するため、launcher結果値そのものは不要）。API 33未満は概念上POST_NOTIFICATIONSが存在しないため、launcherを介さず直接`navigate()`する（不要な非同期依存を増やさない）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| 事前説明カードを挟む（カレンダー・位置情報と統一） | 通知は権限なしでもコア機能（Execution画面）が成立する増強系権限であり、必須系権限（カレンダー・位置情報）と同じ摩擦を課す理由がない。OS標準ダイアログの説明文で足りると判断した |
+| `launch()`直後に同期的に`navigate()`する（当初案） | Gemini G1 CRITICALで指摘された非同期タイミング競合リスク（ダイアログ表示・消滅と画面遷移アニメーションの競合、コンポジション破棄とコールバック解決の競合）を放置することになる |
+| API 33未満でも常に`launch()`を呼ぶ（分岐なしで統一） | API 33未満では`RequestPermission()`は即座に`true`をコールバックする既知の設計のため動作上は成立するが、コールバック自体はなお非同期ディスパッチに委ねられ理論上のライフサイクル競合リスクが残る。API 33未満では権限要求が概念上不要であることを踏まえ、この非同期依存を意図的に排除した |
+
+**影響範囲**: `navigation/ActionStarterNavHost.kt`（PlanReview route composable、`requestNotificationPermissionLauncher`新設）。`features/planreview/PlanReviewViewModel.kt`は変更していない（トリガーはNavHostのCompose層に閉じる、既存の`onRequestCalendarPermission`/`onRequestLocationPermission`と同じ設計）。
+
+**検証方法**: T-P11N-1（`@Config(sdk=[33])`、`Shadows.shadowOf(activity).lastRequestedPermission`でPOST_NOTIFICATIONSが実際にリクエストされたことを実測）・T-P11N-5（`@Config(sdk=[26])`、launcherを介さず直接Executionへ遷移することを実測、`lastRequestedPermission`がnullのままであることも確認）・T-P11N-2/3（許可/拒否環境でExecution到達後の`isNotificationPermissionDenied`反映を確認）で検証。全JVMスイート`--rerun`で**412 tests・failures 0・errors 0・skipped 1**（`build/agent-logs/p11c3-green-final.log`）。既存`NavigationFlowTest`のtNav1/tNav3はPlanReview「Start」を経由するため新規launcherの影響を受けて一時的にRed化した（`Done`/`Simulate delay (debug)`ボタンが見つからず失敗）ことを実測確認し、`@Config(sdk=[26])`を付与してAPI 33未満の直接遷移分岐を通す修正で復旧した（両テストの意図＝ナビゲーション構造検証は無変更、対応の詳細は本ファイルのKDoc参照）。
+
+**再検討トリガー**: 将来、通知権限の拒否率が高いことが判明し事前説明カードの追加が製品判断として必要になった場合、本ADRの「直接リクエスト」方針を再検討すること。
+
+---
+
+### ADR-0040: 通知権限（POST_NOTIFICATIONS）もPermissionGateの2値契約を維持し、「拒否」と「永続拒否」をUI上区別しない設計を踏襲する
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（`docs/plans/phase11-i18n-a11y.md`§7.1、Departure/EventSelectionの既存設計パターンの明示的な踏襲として記録） ／ 決定者: Fable 5（既存パターン踏襲の追認） ／ 起案agent: plan-doc-writer（計画書§7.1起筆）→ui-implementer/test-writer（P11-C3実装・正式起票） ／ 関連仕様§: §95.4・§95.6エラー＆レスキューマップ「通知」行（記録トリガー②仕様未定義箇所の補完：既存Departure/EventSelectionパターンの通知権限への明示適用）
+- **ADR番号の付番根拠**: ADR-0039と同一バッチ起票。起票直前の`grep`再実測（ADR-0039参照）によりADR-0039の次番としてADR-0040を採番した。
+
+**背景**: `PermissionGate.isGranted(permission: String): Boolean`（`services/permission/PermissionGate.kt`）は許可/不許可の2値のみを返す契約であり、「拒否（再度リクエスト可能）」と「拒否（今後表示しない＝永続拒否、`shouldShowRequestPermissionRationale`がfalseになる状態）」を区別しない。Departure（位置情報）・EventSelection（カレンダー）は既にこの2値契約のまま3状態パターン（`NOT_REQUESTED`/`DENIED`/`GRANTED`）で実装済みであり、通知権限だけ4状態（未リクエスト／拒否・再request可／拒否・永続／許可）の区別を導入すると、UIロジック・テストの両方で非対称な複雑性が生じる。
+
+**決定**: 通知権限もDeparture/EventSelectionと同じ2値契約をそのまま踏襲する。UI上は「許可」「未許可（理由を問わず設定導線を提示）」の2状態に集約し、F80の設定導線ボタン（`execution_notification_open_settings_button`）は「拒否（再request可）」「拒否（永続）」のいずれの場合でも同一に表示・同一に機能する（設定画面を開けば理由を問わずユーザーは許可操作ができるため、UI側で区別する実益がない）。エラー＆レスキューマップ（計画書§9、#1〜#4）ではこの2値集約を明示した4行構成とし、状態2（拒否・再request可）と状態3（拒否・永続）を意図的に同一ハンドリングとして記録した。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `shouldShowRequestPermissionRationale`を追加照会し3状態（未request／拒否・再request可／拒否・永続）をUIへ反映する | Departure/EventSelectionが確立した2値集約パターンとの一貫性が崩れ、通知権限だけ特別扱いする合理的理由がない。UI分岐が増える割に、いずれの拒否状態でも設定導線ボタンの挙動は同一であるためユーザー体験上の価値が薄い |
+| `PermissionGate`インターフェース自体を3値（enum）へ拡張する | 既存2箇所（Departure/EventSelection）の呼び出し元・テストへの影響が生じる大規模変更になり、i18n/a11yスコープ（本Phase）を大きく超える。§88「過剰設計を避ける」に反する |
+
+**影響範囲**: `features/execution/ExecutionViewModel.kt`（`isNotificationPermissionDenied()`、Phase 5で既に2値契約のまま実装済み・本Phaseでは変更なし、ADRとしては設計方針の明示的な確認・記録）。
+
+**検証方法**: T-P11N-3（拒否環境でのバナー表示）・T-P11N-4（設定導線ボタンの表示・タップ動作）・T-P11N-10（`ExecutionOneActionTest`のT-P5UI-6契約が本Phase変更後も維持されることの追加確認）。全JVMスイート412 tests・failures 0（ADR-0039と同一実測、`build/agent-logs/p11c3-green-final.log`）。
+
+**再検討トリガー**: なし（Departure/EventSelectionの既存パターンが変更される場合、本ADRも合わせて再検討する）。
+
+---
+
+### ADR-0041: 未配線文字列2件（`execution_placeholder_step_title`／`travel_time_manual_apply_button`）を削除し、`location_permission_denied_message`をDepartureのDENIED状態説明として配線する
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（`docs/plans/phase11-i18n-a11y.md`§7.4・§12 S-2/S-3裁定） ／ 決定者: Fable 5 ／ 起案agent: plan-doc-writer（計画書§7.4起筆、grep/Read実測）→ui-implementer/test-writer（P11-C1でstrings.xml削除・P11-C3で配線実装・正式起票） ／ 関連仕様§: §7「UI文字列の直接ハードコード禁止」（記録トリガー①バグ修正／死蔵コード整理：仕様からの逸脱ではなく既存コードの整合性回復）
+- **ADR番号の付番根拠**: ADR-0040と同一バッチ起票。起票直前の`grep`再実測（ADR-0039参照）によりADR-0040の次番としてADR-0041を採番した。
+
+**背景**: `:app:lintDebug`のUnusedResources警告がPhase 3〜6を通じ一貫して3件（`execution_placeholder_step_title`／`location_permission_denied_message`／`travel_time_manual_apply_button`）報告され続けていた（`docs/plans/phase5-notification-execution.md:712`・`docs/plans/phase6-recovery-basic.md`P6-C5行の2つの独立した実測ログで確認）。個別調査（`ExecutionViewModel.kt`・`TravelTimeInput.kt`・`DepartureScreen.kt`の直接Read）の結果、`execution_placeholder_step_title`は`resolveStepTitle`のelse分岐（`step_title_fallback`）へP4-C6で構造的に置換済みの死蔵リソース、`travel_time_manual_apply_button`はP3-C5で確定した「値変更時に即時反映」設計（`TravelTimeInput`にApplyボタン自体が存在しない）と両立しない死蔵リソースと判明した。`location_permission_denied_message`のみ、DENIED状態の説明文として今も意味を持つ文言だが描画箇所を持たない未配線リソースだった。
+
+**決定**: `execution_placeholder_step_title`・`travel_time_manual_apply_button`をP11-C1で`res/values/strings.xml`・`res/values-ja/strings.xml`両方から削除し、`ExecutionViewModel.kt`のKDocダングリング参照も是正した。`location_permission_denied_message`はP11-C3で`DepartureScreen.kt`の`DeparturePermissionAndRoutingSection`内`showManualFallback`ブロック（`TravelTimeInput`直前）へ説明`Text`として配線した（文言・配置ともS-2裁定どおり据え置き、Apply方式への設計変更は行わない）。`DepartureRoutingScreenTest.kt`の`tDep2_5_phase3StringKeys...`が参照する`phase3Keys`リストから`travel_time_manual_apply_button`を除外した（TEAMS§2承認要請対象、Fable 5指示書に承認記録あり）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `travel_time_manual_apply_button`を残しApplyボタンUXへ設計変更する | i18n/a11yスコープを超えるUX変更であり本Phaseの範囲外（計画書§2.2で明示除外）。P3-C5で確定済みの即時反映設計とも矛盾する |
+| `execution_placeholder_step_title`を残しKDocのみ修正する | UnusedResources警告が解消されないまま残り、G4-JVMゲート（UnusedResources 0件）を満たせない |
+| `location_permission_denied_message`も削除する（3件とも削除） | 文言自体は今も正当（手動入力への案内）であり、既存の`departure_eta_stale_notice`型パターンにそのまま適合する。削除するとDENIED状態のユーザー案内が手薄になる |
+
+**影響範囲**: `res/values/strings.xml`・`res/values-ja/strings.xml`（2キー削除・配線対象1キーは既存のまま）・`features/execution/ExecutionViewModel.kt`（KDoc是正）・`features/departure/DepartureScreen.kt`（`location_permission_denied_message`配線）・`test/.../features/DepartureRoutingScreenTest.kt`（`phase3Keys`リスト更新）・`test/.../i18n/StringResourceParityTest.kt`（T-P11S-1/2/4/7新設、削除確認・グレップ構造ガード）。
+
+**検証方法**: T-P11S-1/2（削除2キーがen/ja両方に存在しないことを確認、born-green）・T-P11S-4（削除2キーへのソースコード参照が`app/src/main`全体で0件、born-green）・T-P11S-7（`ExecutionViewModel.kt`単体のダングリング参照0件、born-green）・T-P11S-3（`location_permission_denied_message`がDENIED状態で実際に描画される、Red→Green）。`:app:lintDebug`実測でUnusedResources**0件**・error **0件**（`build/agent-logs/p11c5-lint.log`、XMLレポート直接パースで確認）。全JVMスイート412 tests・failures 0（`build/agent-logs/p11c3-green-final.log`）。
+
+**再検討トリガー**: なし。
+
+---
+
+### ADR-0042: フォントスケール1.5x耐性テストの技術選定として`DeviceConfigurationOverride`（Compose公式テストAPI）を採用する
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（`docs/plans/phase11-i18n-a11y.md`§7.3、Gemini G1 CRITICAL指摘反映） ／ 決定者: Fable 5 ／ 起案agent: plan-doc-writer（計画書§7.3起筆、Context7でAPI存在を事前確認）→ui-implementer/test-writer（P11-C2でバイトコード実測によりimportパスを確定・正式起票） ／ 関連仕様§: §63 Accessibility「フォントスケール追従（Dynamic Type相当）」（記録トリガー④新規テスト技法の導入：後続Phaseの参照先として記録する価値がある）
+- **ADR番号の付番根拠**: ADR-0041と同一バッチ起票。起票直前の`grep`再実測（ADR-0039参照）によりADR-0041の次番としてADR-0042を採番した。
+
+**背景**: grep実測でfontScale関連コードはJVM/Robolectric/instrumentedいずれのテストにも0件（総ゼロからの新設）だった。Context7で`developer.android.com/develop/ui/compose/testing/common-patterns`を確認し、`androidx.compose.ui.test.DeviceConfigurationOverride.FontScale`（`@ExperimentalTestApi`、`ui-test`アーティファクト）がJetpack Compose公式のテスト専用オーバーライド機構であることを確認したが、正確なimportパスはP11-P1（要検証事項）として保留されていた。
+
+**決定**: `DeviceConfigurationOverride.FontScale(1.5f)`を採用する。P11-C2でのコンパイル実測（`Unresolved reference 'FontScale'`エラー）を受け、`ui-test-api.jar`のバイトコードを直接調査（`javap -p`）した結果、`FontScale`は`DeviceConfigurationOverride.Companion`への拡張関数としてパッケージ直下（`androidx.compose.ui.test.FontScale`）にトップレベル定義されており、`DeviceConfigurationOverride`本体のインポートとは別に明示的な`import androidx.compose.ui.test.FontScale`が必要であることを確定した（同様に`ForcedSize`も`import androidx.compose.ui.test.ForcedSize`が必要）。既存の`androidx-compose-ui-test-junit4`依存（compose BOM `2026.06.01`）で追加のGradle依存なしに利用できることも確認済み（P11-P1は肯定的に解決、`LocalDensity`直接オーバーライドへのフォールバック〔リスクR-3〕は不要だった）。全テストメソッドへ`@OptIn(ExperimentalTestApi::class)`を付与した（Gemini G1 CRITICAL指摘反映）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `CompositionLocalProvider(LocalDensity provides Density(density, fontScale = 1.5f))`直接オーバーライド（R-3フォールバック案） | `DeviceConfigurationOverride.FontScale`がP11-P1実測で問題なく利用可能と判明したため、フォールバックを発動する必要がなかった。`LocalDensity`直接操作は密度以外の設定（フォントウェイト調整等）を伴わないため公式APIより表現力が劣る |
+| fontScaleテストをRobolectricの`RuntimeEnvironment.setQualifiers`（例: `"+fontscale150"`のような擬似qualifier）で代替する | AndroidリソースqualifierにfontScale相当のものは標準で存在せず、この手法自体が成立しない |
+
+**影響範囲**: `test/java/com/actionstarter/features/FontScaleResilienceTest.kt`（新規、T-P11F-1〜8）。副次的発見として、`features/recovery/RecoveryScreen.kt`のルート`Column`がscroll不可の`fillMaxSize()`のみだったため、fontScale=1.5x×候補3件表示時に「Use this plan」ボタンがビューポート外へ押し出され`assertIsDisplayed()`が失敗する実際のレイアウト破綻をT-P11F-5が検出した（§9エラーマップ#7の実例）。`DepartureScreen.kt`の既存`verticalScroll(rememberScrollState())`パターンを踏襲し`RecoveryScreen.kt`へ同modifierを追加する軽微な調整（計画書§12 S-6裁定の許容範囲内）で解消した。
+
+**検証方法**: T-P11F-1〜8（5画面×基本表示＋Done/5min-later非重複＋1.0x/1.5xノード集合一致＋ja×1.5x複合）。全JVMスイート412 tests・failures 0（`build/agent-logs/p11c3-green-final.log`、`--rerun`で2回連続実測・安定）。
+
+**再検討トリガー**: 実機fontScale=1.5目視確認（G4-E、§8.7）で本Robolectricベースの検証が見落とした視覚的破綻が発見された場合、追加のレイアウト調整または本ADRの検証手法自体の見直しを検討すること。

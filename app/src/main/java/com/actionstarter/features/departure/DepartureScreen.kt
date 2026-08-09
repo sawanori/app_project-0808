@@ -146,6 +146,16 @@ private fun DeparturePermissionAndRoutingSection(
         uiState.isDestinationUnresolved ||
         uiState.etaFailureReason != null
     if (showManualFallback) {
+        // F83実配線（P11-C3、計画書§7.4、S-2裁定）: location_permission_denied_messageは
+        // 従来UnusedResources警告対象の死蔵リソースだった。文言自体は自動取得不可全般に
+        // 適用できる汎用文（「自動取得はできないが手動入力で続けられる」）のため、
+        // showManualFallbackの3条件（DENIED／isDestinationUnresolved／etaFailureReason）
+        // いずれの場合もTravelTimeInput直前の説明として据え置きの既存文言をそのまま表示する
+        // （departure_eta_stale_notice等と同じパターン）。
+        Text(
+            text = stringResource(R.string.location_permission_denied_message),
+            style = MaterialTheme.typography.bodySmall
+        )
         TravelTimeInput(
             minutes = uiState.manualTravelMinutes,
             onMinutesChange = onManualTravelMinutesChange
