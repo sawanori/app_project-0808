@@ -52,6 +52,19 @@ interface ModelStorage {
     /** [requiredBytes]×[CAPACITY_SAFETY_FACTOR]の空き容量が確保できるか（§95.6）。 */
     fun hasSufficientSpace(requiredBytes: Long): Boolean
 
+    /**
+     * F97（計画書§12.6 T-SET-5、P7-C6）。現在の空き容量（バイト）。[hasSufficientSpace]と同じ
+     * StatFs基盤を使う。Settings画面の容量表示専用に追加した。
+     *
+     * **デフォルト実装を持つ理由**: P7-C4で作成済みの既存fake実装
+     * （[com.actionstarter.ai.model.ModelDownloaderTest.FakeModelStorage]・
+     * [com.actionstarter.ai.LocalAiGatewayTest]内のfake、いずれも本メソッドを使わない）に
+     * オーバーライドを強制しない（Kotlin interfaceのデフォルト本体）。実際の値は
+     * [ModelStorageImpl]がオーバーライドする。デフォルト値`0L`は「情報なし」を安全側
+     * （容量不足寄り）に倒した値であり、いずれの既存テストからも参照されないため実害はない。
+     */
+    fun availableBytes(): Long = 0L
+
     /** [entry]のDL中一時ファイル（`.litertlm.part`拡張子）。 */
     fun partFile(entry: ModelCatalogEntry): File
 
@@ -100,11 +113,14 @@ class ModelStorageImpl(
 
     override fun installedModelPath(): String? = installedEntry()?.let { finalFile(it).absolutePath }
 
+    // P7-C6 Green: consolidated onto a single StatFs call. hasSufficientSpace now delegates to
+    // availableBytes() (DRY) instead of duplicating the StatFs(...).availableBytes read.
     override fun hasSufficientSpace(requiredBytes: Long): Boolean {
         val required = (requiredBytes * ModelStorage.CAPACITY_SAFETY_FACTOR).toLong()
-        val availableBytes = StatFs(context.noBackupFilesDir.absolutePath).availableBytes
-        return availableBytes >= required
+        return availableBytes() >= required
     }
+
+    override fun availableBytes(): Long = StatFs(context.noBackupFilesDir.absolutePath).availableBytes
 
     override fun partFile(entry: ModelCatalogEntry): File = File(modelsDir(), "${entry.id}$PART_FILE_SUFFIX")
 

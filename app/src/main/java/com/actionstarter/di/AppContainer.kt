@@ -8,9 +8,11 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.actionstarter.ActionStarterApplication
 import com.actionstarter.BuildConfig
+import com.actionstarter.ai.AiPreferences
 import com.actionstarter.ai.AiPreferencesImpl
 import com.actionstarter.ai.LocalAiGateway
 import com.actionstarter.ai.adapter.LiteRtLmLocalLanguageModel
+import com.actionstarter.ai.model.DeviceCapability
 import com.actionstarter.ai.model.DeviceCapabilityImpl
 import com.actionstarter.ai.model.ModelDownloader
 import com.actionstarter.ai.model.ModelStorage
@@ -21,6 +23,7 @@ import com.actionstarter.features.eventselection.EventSelectionViewModel
 import com.actionstarter.features.execution.ExecutionViewModel
 import com.actionstarter.features.planreview.PlanReviewViewModel
 import com.actionstarter.features.recovery.RecoveryViewModel
+import com.actionstarter.features.settings.SettingsViewModel
 import com.actionstarter.navigation.SharedPlanViewModel
 import com.actionstarter.persistence.SharedPreferencesExecutionScheduleStore
 import com.actionstarter.planning.BasicPlanningEngine
@@ -243,6 +246,33 @@ class AppContainer(
     private val modelStorage: ModelStorage by lazy { ModelStorageImpl(context) }
 
     /**
+     * F92実配線（計画書§7.1・§14 P7-C1／P7-C6、ADR-0048）。[localAiGateway]・
+     * [createViewModelFactory]の`SettingsViewModel`初期化子の両方が同一インスタンスを共有する
+     * （Settings画面で書き込んだ`aiEnabled`／`selectedModelId`が、同一プロセス内であれば
+     * 追加のSharedPreferences再読込を要さず`localAiGateway`側にも一貫して見える設計。
+     * `SharedPreferences`自体は変更をディスクへ永続化する層のため、複数インスタンスを作っても
+     * 最終的な整合性は保たれるが、単一共有インスタンスの方が本コンテナの既存規約
+     * （[modelStorage]・[routingService]等の「1インスタンスを複数消費者で共有する」パターン）と
+     * 一貫する）。**eager初期化（`by lazy`ではない）**: `AiPreferencesImpl`の構築は
+     * `context.getSharedPreferences(...)`の参照取得のみでI/Oを伴わず軽量なため、R-7
+     * （LLMランタイムの重い初期化を避ける目的）の対象外——[localAiGateway]／[modelDownloader]の
+     * `by lazy`とは理由が異なる（[notificationService]が使う
+     * `SharedPreferencesExecutionScheduleStore`と同型のeager構築判断）。
+     */
+    private val aiPreferences: AiPreferences = AiPreferencesImpl(
+        context.getSharedPreferences(AiPreferencesImpl.PREFS_NAME, Context.MODE_PRIVATE)
+    )
+
+    /**
+     * F91実配線（計画書§7.1・§14 P7-C1／P7-C6、ADR-0048）。[localAiGateway]・
+     * [createViewModelFactory]の`SettingsViewModel`初期化子が共有する。[aiPreferences]と同じ
+     * 理由でeager構築（`DeviceCapabilityImpl`のコンストラクタは`context`参照を保持するのみで
+     * 副作用を持たない。実際の`ActivityManager`照会は`classify()`／`hasAvailableMemory()`呼び出し
+     * 時に都度行われる遅延評価のため、ここでeagerに構築しても起動を重くしない）。
+     */
+    private val deviceCapability: DeviceCapability = DeviceCapabilityImpl(context)
+
+    /**
      * F96実配線の入口（計画書§7.2・§14 P7-C1／P7-C4）。Phase 7完成条件（`ai/`が単体で完結して動く、
      * 仕様§71・計画書§0）を満たすための新規プロパティ。[planningEngine]／
      * [recoveryEngine]の右辺は本サイクルでは無変更（計画書§2.2「Phase 7はAI配線をしない」・
@@ -271,6 +301,11 @@ class AppContainer(
      * [LocalAiGateway]・[modelDownloader]それぞれが独立したインスタンスを持つ（状態は
      * 「プロセス内SHA-256キャッシュ」が[LocalAiGateway]側にあるため、`ModelVerifierImpl`自体は
      * 状態を持たず共有の必要がない）。
+     *
+     * **P7-C6での変更**: `AiPreferencesImpl(...)`／`DeviceCapabilityImpl(context)`の
+     * インライン構築を、[modelStorage]と同じ理由で[aiPreferences]／[deviceCapability]
+     * プロパティ（上記）へ昇格した（`SettingsViewModel`との共有のため。[createViewModelFactory]
+     * 参照）。生成される実インスタンス自体・[LocalAiGateway]への渡し方は無変更。
      */
     val localAiGateway: LocalAiGateway by lazy {
         LocalAiGateway(
@@ -284,19 +319,17 @@ class AppContainer(
             ),
             modelStorage = modelStorage,
             modelVerifier = ModelVerifierImpl(),
-            deviceCapability = DeviceCapabilityImpl(context),
-            preferences = AiPreferencesImpl(
-                context.getSharedPreferences(AiPreferencesImpl.PREFS_NAME, Context.MODE_PRIVATE)
-            )
+            deviceCapability = deviceCapability,
+            preferences = aiPreferences
         )
     }
 
     /**
      * F88実配線（計画書§7.1・§14 P7-C4、ADR-0053）。[modelStorage]を共有し、DL完了直後の
      * 検証（§8.6 #5）に使う`ModelVerifierImpl()`を独立に持つ（状態レスのため共有不要、
-     * [localAiGateway]のKDoc参照）。**呼び出し元は未配線**（Settings画面はF97・P7-C6の
-     * スコープであり本サイクルでは作らない）。`by lazy`は他のAI関連プロパティと同じくR-7を
-     * 理由とする。
+     * [localAiGateway]のKDoc参照）。**P7-C6で呼び出し元を配線した**: [createViewModelFactory]の
+     * `SettingsViewModel`初期化子（F97）が本プロパティを注入される。`by lazy`は他のAI関連
+     * プロパティと同じくR-7を理由とする。
      */
     val modelDownloader: ModelDownloader by lazy {
         ModelDownloader(modelStorage = modelStorage, modelVerifier = ModelVerifierImpl())
@@ -374,6 +407,18 @@ class AppContainer(
                     sharedPlanViewModel = sharedPlanViewModel,
                     notificationService = notificationService,
                     permissionGate = permissionGate
+                )
+            }
+            // F97実配線（計画書§7.1・§14 P7-C6）: SettingsViewModelは他画面と異なり
+            // sharedPlanViewModelを一切参照しない（Settings画面は選択済みイベント／確定Planの
+            // どちらにも関心を持たない独立した設定画面のため）。selectedModelはコンストラクタの
+            // 既定値（ModelCatalog.GEMMA_4_E2B_IT）をそのまま使う。
+            initializer {
+                SettingsViewModel(
+                    aiPreferences = aiPreferences,
+                    modelDownloader = modelDownloader,
+                    modelStorage = modelStorage,
+                    deviceCapability = deviceCapability
                 )
             }
         }

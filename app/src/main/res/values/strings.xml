@@ -205,4 +205,32 @@
     <string name="notification_departure_buffer_minutes_format">%1$d min</string>
     <string name="notification_recovery_title">Plan updated</string>
     <string name="notification_recovery_text">You\'re running behind. Open the app to see your updated plan.</string>
+
+    <!-- Settings screen (F97, spec §18/§19/S-6, plan §12.6 T-SET-*). Added in P7-C6
+         (ui-implementer/domain-implementer). S-6 arbitration scopes this screen to exactly 4
+         items: AI on/off toggle, model status, download/delete, and capacity display (a
+         full-featured Settings screen is out of scope). settings_open_button_label is used by
+         ActionStarterNavHost's EventSelectionRoute entry point (a plain text button, not an
+         icon, to match this app's existing convention of never using Material icon glyphs). -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_back_button_label">Back</string>
+    <string name="settings_ai_toggle_label">Enable Private AI</string>
+    <string name="settings_ai_toggle_description">Generates plan suggestions entirely on this device. Off by default — the app works fully without it.</string>
+    <string name="settings_ai_unsupported_ram_reason">This device doesn\'t have enough memory for Private AI (6 GB or more required).</string>
+    <string name="settings_ai_unsupported_abi_reason">This device\'s processor isn\'t supported by Private AI.</string>
+    <string name="settings_model_section_title">On-device model</string>
+    <string name="settings_model_name_label">Model</string>
+    <string name="settings_model_status_not_installed">Not downloaded</string>
+    <string name="settings_model_status_downloading_format">Downloading… %1$d%%</string>
+    <string name="settings_model_status_installed">Downloaded and verified</string>
+    <string name="settings_model_status_failed_insufficient_storage">Not enough free storage space</string>
+    <string name="settings_model_status_failed_verification">The downloaded file failed verification and was removed</string>
+    <string name="settings_model_status_failed_generic">Download failed</string>
+    <string name="settings_download_button">Download</string>
+    <string name="settings_retry_button">Retry</string>
+    <string name="settings_delete_button">Delete</string>
+    <string name="settings_capacity_required_format">Required: %1$.2f GB</string>
+    <string name="settings_capacity_available_format">Available: %1$.2f GB</string>
+    <string name="settings_capacity_insufficient_warning">Not enough free space to download this model.</string>
+    <string name="settings_open_button_label">Settings</string>
 </resources>

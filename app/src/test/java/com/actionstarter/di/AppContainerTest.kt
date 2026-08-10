@@ -2,6 +2,7 @@ package com.actionstarter.di
 
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.actionstarter.ai.LocalAiGateway
 import com.actionstarter.planning.BasicPlanningEngine
 import com.actionstarter.recovery.BasicRecoveryEngine
 import com.actionstarter.services.calendar.CalendarService
@@ -160,6 +161,46 @@ class AppContainerTest {
             "mock/MockRecoveryFactory.ktがsrc/mainに存在しています（P6-C5統合ウィンドウ未履行の" +
                 "ため現時点ではRedが正しい）: " + target.absolutePath,
             target.isFile
+        )
+    }
+
+    // T-P7DI-1（計画書§12.6、P7-C6・F97）: 正常系 - AppContainer.planningEngineの型が
+    // 引き続きBasicPlanningEngineである（Phase 7はAI配線をしない、計画書§2.2）。
+    // T-P4DI-1と同一アサーションだが、P7-C6でSettings画面の配線（createViewModelFactoryへの
+    // SettingsViewModel initializer追加・aiPreferences/deviceCapabilityの共有プロパティ昇格）を
+    // 行った後もこの不変条件が壊れていないことを確認する、Phase 7サイクル固有の回帰ピンとして
+    // 独立して追加する（T-P4DI-1／T-P6DI-1が各フェーズで同型のピンを重ねてきた既存の踏襲）。
+    @Test
+    fun tP7Di1_planningEngine_isBasicPlanningEngineType_afterSettingsWiring() {
+        val container = AppContainer(ApplicationProvider.getApplicationContext())
+
+        val engine = container.planningEngine
+
+        assertTrue(
+            "P7-C6のSettings配線後もAppContainer.planningEngineの型はBasicPlanningEngineの" +
+                "ままであるべきです（実際: ${engine::class.qualifiedName}）。Phase 7はAI配線をしません。",
+            engine is BasicPlanningEngine
+        )
+    }
+
+    // T-P7DI-2（計画書§12.6、P7-C6、R-7）: 正常系 - AppContainer生成時点でlocalAiGatewayが
+    // まだ初期化されていない（`by lazy`の検証）。Kotlinの`by lazy`プロパティは
+    // `<プロパティ名>$delegate`という名前のバッキングフィールド（型`kotlin.Lazy<T>`）へ
+    // コンパイルされるため、リフレクションでその`Lazy`を取得し`isInitialized()`
+    // （`kotlin.LazyKt`のトップレベル拡張関数）で初期化済みか判定する。
+    @Test
+    fun tP7Di2_localAiGateway_isNotInitializedAtConstructionTime() {
+        val container = AppContainer(ApplicationProvider.getApplicationContext())
+
+        val delegateField = AppContainer::class.java.getDeclaredField("localAiGateway\$delegate")
+        delegateField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val lazyDelegate = delegateField.get(container) as Lazy<LocalAiGateway>
+
+        assertFalse(
+            "AppContainer生成直後の時点でlocalAiGatewayは未初期化であるべきです" +
+                "（by lazy、R-7「起動を重くしない」、T-P7DI-2）",
+            lazyDelegate.isInitialized()
         )
     }
 

@@ -21,8 +21,10 @@ import javax.xml.parsers.DocumentBuilderFactory
  * 言及する記述のまま陳腐化していた。実際には画面実装の進行に伴いキー数は増え続けており、
  * P11-C1時点（`execution_placeholder_step_title`／`travel_time_manual_apply_button`の削除、
  * `notification_open_settings_button`／`accessibility_warning_announcement`／
- * `recovery_option_selected_state_description`の追加後）でen/jaとも105キーである
+ * `recovery_option_selected_state_description`の追加後）でen/jaとも105キーだった
  * （`grep -c '<string name=' app/src/main/res/values{,-ja}/strings.xml`で実測確認可能）。
+ * **P7-C6（F97 Settings画面）でさらに21キー追加し、en/jaとも126キーとなった**（T-SET-7、
+ * [tSet7_settingsNewKeys_existInBothLocales]参照）。
  * T-I18N-1〜3は元々キー数に依存しない汎用アサーション（差分/フォーマット引数/空文字の
  * いずれもキー集合全体を走査する設計）であり、キー数の増減そのものによってはRedにならない。
  *
@@ -256,10 +258,48 @@ class StringResourceParityTest {
     // (T-I18N-1)自体はセット照合のみで絶対数を固定しないため、本テストはキー総数を明示的に
     // ピン留めする独立の回帰ガードとして追加する（片方のロケールだけキー追加を忘れる、
     // 削除を二重に行う等のミスを検出する）。
+    //
+    // **P7-C6追補（T-SET-7、F97 Settings画面）**: 105 + 21（Settings画面新規21キー、
+    // [tSet7_settingsNewKeys_existInBothLocales]の一覧と対応）= 126へ更新した。
     @Test
     fun tP11p1_keyCount_reflectsPhase11NetChange_andBothLocalesStayInSync() {
-        assertEquals("en key count after Phase 11 (105 = 104 - 2 + 3)", 105, enStrings.size)
-        assertEquals("ja key count after Phase 11 (105 = 104 - 2 + 3)", 105, jaStrings.size)
+        assertEquals("en key count after P7-C6 (126 = 105 + 21 Settings keys)", 126, enStrings.size)
+        assertEquals("ja key count after P7-C6 (126 = 105 + 21 Settings keys)", 126, jaStrings.size)
+    }
+
+    // T-SET-7（計画書§12.6、P7-C6・F97）: 正常系 - Settings画面の新規21キーがen/ja両方に存在する
+    // （既存tP11p2と同型のパリティ回帰ガード）。
+    @Test
+    fun tSet7_settingsNewKeys_existInBothLocales() {
+        val settingsNewKeys = listOf(
+            "settings_title",
+            "settings_back_button_label",
+            "settings_ai_toggle_label",
+            "settings_ai_toggle_description",
+            "settings_ai_unsupported_ram_reason",
+            "settings_ai_unsupported_abi_reason",
+            "settings_model_section_title",
+            "settings_model_name_label",
+            "settings_model_status_not_installed",
+            "settings_model_status_downloading_format",
+            "settings_model_status_installed",
+            "settings_model_status_failed_insufficient_storage",
+            "settings_model_status_failed_verification",
+            "settings_model_status_failed_generic",
+            "settings_download_button",
+            "settings_retry_button",
+            "settings_delete_button",
+            "settings_capacity_required_format",
+            "settings_capacity_available_format",
+            "settings_capacity_insufficient_warning",
+            "settings_open_button_label"
+        )
+
+        assertEquals("P7-C6 Settings screen must add exactly 21 new keys", 21, settingsNewKeys.size)
+        for (key in settingsNewKeys) {
+            assertTrue("P7-C6 new key '$key' missing from en strings.xml", key in enStrings)
+            assertTrue("P7-C6 new key '$key' missing from ja strings.xml", key in jaStrings)
+        }
     }
 
     // T-P11P-2: 正常系 - 本Phaseで新規追加した全キー（設定ボタン・contentDescription用文言）が

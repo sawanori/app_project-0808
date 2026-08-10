@@ -120,6 +120,38 @@ class ModelStorageTest {
     }
 
     // ------------------------------------------------------------------
+    // P7-C6・T-SET-5: availableBytes()（Settings画面の容量表示）
+    // ------------------------------------------------------------------
+
+    // T-SET-5相当: 正常系 - availableBytes()がStatFsの空き容量をそのまま返す。
+    @Test
+    fun availableBytes_returnsStatFsAvailableBytes() {
+        val availableBlocks = 12_345
+        registerAvailableBlocks(availableBlocks)
+
+        val result = ModelStorageImpl(context()).availableBytes()
+
+        assertEquals(
+            "availableBytes()はStatFsの空き容量(ブロック数×ブロックサイズ)と一致するべきです(T-SET-5)",
+            availableBlocks * BLOCK_SIZE_BYTES,
+            result
+        )
+    }
+
+    // T-SET-5相当（回帰）: 正常系 - hasSufficientSpace()はavailableBytes()と矛盾しない
+    // （同一StatFs基盤への統合後もT-MDL-4/5の境界判定が壊れていないことの追加確認）。
+    @Test
+    fun availableBytes_and_hasSufficientSpace_agreeAtExactThreshold() {
+        val requiredBytes = 500L * BLOCK_SIZE_BYTES
+        val thresholdBytes = (requiredBytes * ModelStorage.CAPACITY_SAFETY_FACTOR).toLong()
+        registerAvailableBlocks((thresholdBytes / BLOCK_SIZE_BYTES).toInt())
+        val storage = ModelStorageImpl(context())
+
+        assertEquals(thresholdBytes, storage.availableBytes())
+        assertTrue(storage.hasSufficientSpace(requiredBytes))
+    }
+
+    // ------------------------------------------------------------------
     // 未導入のベースライン（installedEntry/installedModelPathがnullを返す）
     // ------------------------------------------------------------------
 

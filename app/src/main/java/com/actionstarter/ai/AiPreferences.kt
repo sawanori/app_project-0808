@@ -1,6 +1,7 @@
 package com.actionstarter.ai
 
 import android.content.SharedPreferences
+import com.actionstarter.ai.model.ModelCatalog
 
 /**
  * F92契約（計画書§6・§7.1、仕様§19「AI OFFが既定」、§14 P7-C1／P7契約確定）。AI ON/OFF
@@ -25,13 +26,30 @@ interface AiPreferences {
     var aiEnabled: Boolean
 
     /**
-     * 選択中のモデルID（[com.actionstarter.ai.model.ModelCatalogEntry.id]）。未選択時は`null`。
+     * 選択中のモデルID（[com.actionstarter.ai.model.ModelCatalogEntry.id]）。未書き込み時
+     * （初回起動）は[DEFAULT_SELECTED_MODEL_ID]を返す契約とする。
+     *
+     * **既定値変更（P7-C6、ユーザー確定「既定モデル=Gemma 4 E2B」）**: 当初のP7-C1/C3契約
+     * scaffoldでは未選択時`null`だったが、Settings画面（F97）がDL対象モデルを常に
+     * [DEFAULT_SELECTED_MODEL_ID]（[com.actionstarter.ai.model.ModelCatalog.GEMMA_4_E2B_IT]の
+     * id）に固定するP7-C6の要件に伴い、`null`ではなくこの既定値を返す契約へ変更した。
+     * ただしAI有効化には別途DL済み＋検証済みが前提であり（[com.actionstarter.ai.model.
+     * ModelStorage.installedEntry]が非nullであること）、本プロパティの既定値だけでは
+     * AIが即座に使えるようにはならない（[com.actionstarter.ai.LocalAiGateway]の§8.6 #11
+     * `MODEL_NOT_INSTALLED`ガードが引き続き働く）。
      */
     var selectedModelId: String?
 
     companion object {
         /** §19「AI OFFが既定」。実装に依らずinterface契約として維持する。 */
         const val DEFAULT_AI_ENABLED: Boolean = false
+
+        /**
+         * P7-C6（ユーザー確定、2026-08-10）。[selectedModelId]の既定値
+         * ＝[ModelCatalog.GEMMA_4_E2B_IT]のid。`const val`にできない理由: プロパティアクセスは
+         * コンパイル時定数ではないため`val`とする（実行時には1回だけ解決される）。
+         */
+        val DEFAULT_SELECTED_MODEL_ID: String = ModelCatalog.GEMMA_4_E2B_IT.id
     }
 }
 
@@ -61,7 +79,9 @@ class AiPreferencesImpl(private val preferences: SharedPreferences) : AiPreferen
         }
 
     override var selectedModelId: String?
-        get() = preferences.getString(KEY_SELECTED_MODEL_ID, null)
+        // P7-C6: 未書き込み時はAiPreferences.DEFAULT_SELECTED_MODEL_ID（Gemma 4 E2Bのid）を返す
+        // （interfaceのKDoc「既定値変更」参照、ユーザー確定の既定モデル）。
+        get() = preferences.getString(KEY_SELECTED_MODEL_ID, AiPreferences.DEFAULT_SELECTED_MODEL_ID)
         set(value) {
             preferences.edit().putString(KEY_SELECTED_MODEL_ID, value).apply()
         }

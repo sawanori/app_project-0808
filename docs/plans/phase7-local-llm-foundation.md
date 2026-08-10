@@ -724,7 +724,7 @@ AVD `actionstarter_test`（**実測: x86_64 / API 35 / RAM 4096MB**）。目的�
 | **P7-C4** Green: model管理 | F87〜F91 を実装（Catalog/Downloader/Verifier/Storage/DeviceCapability）。**C3と並列可** | sonnet | G3（部分） |
 | **P7-C5** Green: adapter/gateway | F86・F96 を実装。C3・C4の完了後に直列 | sonnet | G3（部分） |
 | **P7-C5b** 品質ハーネス強化（Fable 5指示・P7-C5実測への対応） | ADR-0057（`maxNumTokens`計算式化・OOM事前ガードのプロファイル依存是正）・ADR-0058（few-shot拡張・systemInstruction強化）。実機で改善前後比較・shotCount比較を実測 | sonnet | JVM回帰542件0失敗・lint error 0・実機E2E実測完了（§14.9） |
-| **P7-C6** Green: settings | F92・F97 を実装。Settings route追加・ja/en文言追加 | sonnet | G3（部分） |
+| **P7-C6** Green: settings | F92・F97 を実装。Settings route追加・ja/en文言追加 | sonnet | **完了（§14.12）**。G3（部分）達成。新規49件Green・既存564件回帰0・lint error 0 |
 | **P7-C7** 統合 | 全体結線・§9のガード改修と新設・E3テストの実行（G4-E）。既存245件規模の回帰確認。**→ 本サイクルはタスク発注時の制約（「エミュ・adb不要」）により§9のガード改修＋新設（T-AIISO-4〜9・T-AIISO-8）のJVM部分のみを実施（§14.11）。E3テスト実行（G4-E）・「全体結線」（Settings/UI配線）は未実施のままPhase 8への申し送りとした** | sonnet | **G4-JVM達成（§14.11）。G4-E未達——Phase 8前にユーザーと実施要否を確認すること** |
 | **P7-C8** 実機プローブ＋Refactor | ~~§11.3 の Galaxy A実機ベンチ（Qwen3-0.6B / Qwen3-1.7B / Gemma3-1B の3者比較）~~ → **実施内容はAVDエミュレータ上でのQwen3-0.6B(既存) / Qwen3-1.7B / Gemma4-E2Bの3者比較**（Gemma3-1BはHFゲート付きのためGemma4-E2Bで代替、ADR-0059・§14.10）。Galaxy A実機（P7-P2）でのベンチはアクセスなく未実施のまま残っている（§14.10申し送り3）。測定値で §8.6 のタイムアウト閾値と §5.3 の段境界を確定する作業、およびリファクタは本サイクルのスコープ外（次サイクルへ申し送り） | sonnet | 完了（§14.10）。**G4-D（実機Galaxy Aでの最終確定）・リファクタは未達のまま残置——Phase 8へ進む前に対応要否をユーザーと確認すること** |
 
@@ -1315,6 +1315,80 @@ HFモデルカード（`litert-community/gemma-4-E2B-it-litert-lm`）を実際�
 4. **T-AIISO-6／T-AIISO-9の許可リスト運用はADR-0044の方針を維持**（`ModelDownloader.kt`の単一ファイル名完全一致のみ）。Phase 8以降でネットワークアクセスが必要な機能が`ai/`に追加される場合も、許可リストへの安易な追加ではなく`ModelDownloader`への機能集約を優先的に検討すること（ADR-0044再検討トリガー）。
 
 **証拠ファイル**: `build/agent-logs/p7c7-baseline.log`（着手時ベースライン再確認、tests=549/failures=0/errors=0/skipped=1）・`p7c7-compile.log`（`:app:compileDebugUnitTestKotlin`成功）・`p7c7-red.log`（新規/拡張8クラス個別実行、全15件born-green）・`p7c7-full.log`（`:app:testDebugUnitTest --rerun`全体、tests=564/failures=0/errors=0/skipped=1）・`p7c7-lint.log`（`:app:lintDebug --rerun-tasks`、BUILD SUCCESSFUL・error 0・warning 22）。
+
+---
+
+### 14.12 P7-C6完了記録（2026-08-10確定・ui-implementer兼domain-implementer）
+
+**結論**: F97（最小Settings画面: AIトグル・モデル状態・DL/削除・容量表示、S-6範囲裁定どおり）とF92の残作業（`AiPreferencesImpl.selectedModelId`の既定値をユーザー確定のGemma 4 E2Bへ変更）を実装し、NavHostへSettings routeを配線した。AI ON/OFFの安全性は二重に成立している: ①構造面——`SettingsViewModel`は`LocalAiGateway`を一切注入されず`generatePlan`を呼び出す経路自体を持たない（Settings画面がAI推論を起動しようがない設計）、②実配線面——新設`SettingsAiSafetyTest`が実`AiPreferencesImpl`・実`ModelStorageImpl`・既存`LocalAiGateway`（P7-C4/C5実装、無変更）を組み合わせ、AI OFF（既定）は`AI_DISABLED`へ、AI ON＋モデル未DLは例外を投げず`MODEL_NOT_INSTALLED`へフォールバックすることを回帰ロックした（いずれもborn-green——Gateway側の安全網は既に正しく、Settings実配線がそれを壊していないことの確認）。TDD（Red→Green）を実施し、新規49件（内訳は下表）はRedで意図どおり失敗した後、Green化した。既存564件の回帰は0件（`tests=613`＝`564`＋新規49）。`:app:testDebugUnitTest --rerun`でtests=613／failures=0／errors=0／skipped=1（skipped件数は不変）、`:app:lintDebug --rerun-tasks`でerror 0（warning 22、既存分と完全一致・新規warning 0）・MissingTranslation 0。Manifest変更は不要だった（`INTERNET`権限はP7-C1で追加済み、Settings画面自身が新たに要求する権限はない）。
+
+#### 実装した画面・機能
+
+| 対象 | 内容 |
+|---|---|
+| `features/settings/SettingsUiState.kt`（新設） | `aiEnabled`・`isDeviceSupported`・`deviceUnsupportedReason`・`selectedModel`・`modelStatus`（`ModelDownloadStatus`: NotInstalled/Downloading/Installed/Failed）・`requiredBytesForDownload`（§95.6の×1.5込み）・`availableBytes`を持つフラットdata class（`DepartureUiState`/`ExecutionUiState`と同型。`EventSelectionUiState`のようなsealed階層にしなかった理由はKDoc参照） |
+| `features/settings/SettingsViewModel.kt`（新設） | `AiPreferences`・`ModelDownloader`・`ModelStorage`・`DeviceCapability`の4型のみ注入（`LocalAiGateway`は注入しない＝AI安全性の構造的根拠）。`refresh()`・`onAiEnabledToggled()`（非対応端末は無視、エラー＆レスキューマップ#19二重防御）・`onDownloadRequested()`（`Job`を返しテストの決定的同期に使う。in-flightガードで二重起動しない）・`onDeleteRequested()`（`ModelStorage.delete`が非suspend契約のため同期処理） |
+| `features/settings/SettingsScreen.kt`（新設） | AIトグル区画（Switch・非対応理由文言）・モデル区画（状態文言・DL進捗バー・DL/Retry/Deleteボタン・容量表示）の2Card構成。刷新済みティールテーマに準拠、二重padding無し |
+| `ai/AiPreferences.kt` | `DEFAULT_SELECTED_MODEL_ID`（`ModelCatalog.GEMMA_4_E2B_IT.id`）追加。`AiPreferencesImpl.selectedModelId`の未書き込み時デフォルトを`null`からこの値へ変更（ユーザー確定「既定モデル=Gemma 4 E2B」） |
+| `ai/model/ModelStorage.kt` | `availableBytes(): Long`をinterfaceへ追加（デフォルト実装`0L`。既存fake実装2件〔`ModelDownloaderTest`・`LocalAiGatewayTest`〕がオーバーライド不要のまま無変更でコンパイル可能）。`ModelStorageImpl`が`StatFs`実装をオーバーライドし、`hasSufficientSpace`もこれへ委譲するようDRYリファクタ（既存挙動は無変更、既存`ModelStorageTest`全件で回帰確認済み） |
+| `di/AppContainer.kt` | `aiPreferences`／`deviceCapability`をインライン構築から共有プロパティへ昇格（`modelStorage`と同型パターン、`SettingsViewModel`と`localAiGateway`が共有）。`createViewModelFactory`へ`SettingsViewModel`のinitializerを追加。`planningEngine`／`recoveryEngine`の右辺は無変更（T-P7DI-1が回帰ロック） |
+| `navigation/Destinations.kt` | `Settings`route（`"settings"`）追加 |
+| `navigation/ActionStarterNavHost.kt` | `composable(Destinations.Settings.route)`追加。**導線の配置**: `EventSelectionScreen`自体は無改変のまま、`EventSelectionRoute`（NavHost側）が`Box`で設定ボタン（テキストボタン、アイコン未使用は既存方針を踏襲）を重ねる設計とした（§10.6疎結合規約を維持し、`EventSelectionScreenTest`等の既存テスト群への回帰リスクをゼロにするため。詳細判断根拠はファイル内KDoc参照） |
+
+#### 既定モデル＝Gemma 4 E2Bの配線
+
+`AiPreferences.DEFAULT_SELECTED_MODEL_ID`＝`ModelCatalog.GEMMA_4_E2B_IT.id`（`"gemma-4-e2b-it"`）。`SettingsViewModel`の`selectedModel`既定値も同一エントリ。ダウンロード成功時は`aiPreferences.selectedModelId = selectedModel.id`を明示的に書き込む（既定値と同じ値だが、将来複数モデル選択UIが入った場合の意図明示として残す）。**AI有効化とDL済みは独立**: `aiEnabled`をONにしても、モデル未DLなら`LocalAiGateway`の§8.6 #11ガード（無変更・P7-C4実装）が`MODEL_NOT_INSTALLED`で確実にBasicへフォールバックする（クラッシュしない。`SettingsAiSafetyTest`で回帰ロック）。
+
+**`ModelStorage.installedEntry()`のcatalog順序ヒューリスティックについて（P7-C4完了記録のADR-0053再検討トリガーへの回答）**: 変更していない。理由と代替案の却下理由は`SettingsViewModel.kt`のクラスKDoc「`installedEntry()`のcatalog順序ヒューリスティックについて」に記載——本サイクルのSettingsはGemma4-E2Bの1モデルのみをDL対象とし（S-6裁定）、実機ストレージに他catalogエントリのファイルが同時に存在することは運用上あり得ないため、走査順序による誤判定リスクは実質ゼロ。複数モデル選択UIを追加する将来サイクルで`selectedModelId`ベースへの切替を改めて検討すべき（Phase 8以降への申し送り）。
+
+#### strings（ja/en同時追加）
+
+21キー×2ロケール＝42エントリ追加（`settings_title`から`settings_open_button_label`まで、一覧は`StringResourceParityTest.tSet7_settingsNewKeys_existInBothLocales`参照）。`grep -c '<string name=' app/src/main/res/values{,-ja}/strings.xml`実測で両ロケールとも126（P11-C1時点105 + 本サイクル21）に一致。`StringResourceParityTest`の`tP11p1_keyCount_...`（105→126へ更新）・`tP11p3`（en/ja値の非同一性）・T-I18N-1〜3（キー集合・フォーマット引数・非空文字列）は全件Green、MissingTranslation 0（lint実測）。
+
+#### AI OFF/未DL時のBasicフォールバック保証（タスク指示「AI ON/OFFトグルの安全性」への回答）
+
+1. **構造的保証**: `SettingsViewModel`のコンストラクタは`AiPreferences`・`ModelDownloader`・`ModelStorage`・`DeviceCapability`の4型のみで、`LocalAiGateway`を持たない。Settings画面のどのコールバックも推論を起動する経路を持たない（`generatePlan`を呼び出すコードがSettings配下に存在しない）。
+2. **実配線での回帰ロック**（`SettingsAiSafetyTest`、2件、いずれもborn-green）:
+   - `aiDisabled_default_generatePlan_neverInvokesModel_returnsAiDisabledFallback`: 実`AiPreferencesImpl`（aiEnabled未書き込み＝既定false）＋実`ModelStorageImpl`＋既存`LocalAiGateway`で、`generatePlan`が`Fallback(AI_DISABLED)`を返し、`generatePlan`を呼べば即座に`error()`で失敗する監視用`LocalLanguageModel`が一度も呼ばれないことを確認。
+   - `aiEnabled_modelNotInstalled_generatePlan_neverInvokesModel_returnsModelNotInstalledFallback_noCrash`: 実`AiPreferencesImpl`（`aiEnabled = true`、Settings画面のトグルON操作を再現）＋モデル未DLの実`ModelStorageImpl`で、例外を投げず`Fallback(MODEL_NOT_INSTALLED)`が返ることを確認（クラッシュしない）。
+3. **`SettingsViewModelTest`側**（`onAiEnabledToggled_whenDeviceUnsupported_isIgnored_doesNotPersist`等）: 非対応端末ではONにできないこと（エラー＆レスキューマップ#19）、DL失敗（容量不足・検証失敗・ネットワーク障害の3種）がクラッシュせず`Failed`状態として表面化し`aiEnabled`等の無関係な状態を変えないこと（T-SET-6「Basic機能には影響がない」）を個別に検証。
+
+#### TDD実測（Red→Green）
+
+**Red**（`build/agent-logs/p7c6-red.log`、対象9クラスの個別実行）: 86テスト中40件が意図どおり失敗（`SettingsViewModel`/`SettingsScreen`の`TODO()`・空実装、`ModelStorage.availableBytes()`のTODO、`AiPreferencesImpl.selectedModelId`の旧デフォルト値、NavHost未配線に起因）。残り46件（既存の回帰確認対象＋新設`SettingsAiSafetyTest`2件＋新設`AppContainerTest`2件＋新設`StringResourceParityTest`1件）はborn-green（既存P7-C4/C5実装が既に正しい、または純データ追加のため）。
+
+**Green**: 実装後、同じ9クラスの初回実行で4件が追加で失敗し是正した（自己診断・実装バグではなく主にテスト側の不備）:
+- `SettingsScreenTest`の容量表示2件・`FontScaleResilienceTest`のT-SET-8: Robolectric既定ビューポート（320×470dp）をSettings画面の2Card構成が超え、容量表示（Card末尾）が最初のcomposeでは可視領域外だった。`performScrollTo()`を追加（`ExecutionScreen`/`RecoveryScreen`のfontScale=1.5xテストが既に確立していた対処と同型、本番コードの不備ではない）。
+- `SettingsViewModelTest`の検証失敗テスト1件: テストフィクスチャの不備（破損データのバイト長を正規データと変えてしまい、`SIZE_EXCEEDED`分岐が先に発火し検証パイプラインへ到達しなかった）。同一バイト長・異なる内容へ修正（T-MDL-11と同型のfixture設計）。
+
+いずれも本番コード（`SettingsViewModel`/`SettingsScreen`/`ModelStorageImpl`）の修正は不要だった。
+
+#### 3分類集計（`:app:testDebugUnitTest --rerun`実測、`build/agent-logs/p7c6-full.log`、JUnit XML集計で裏取り済み）
+
+| 分類 | 件数 | 内訳 |
+|---|---|---|
+| (a) 新規Red→Green（意図した失敗→是正） | **40** | `SettingsViewModelTest`18・`SettingsScreenTest`15・`ModelStorageTest`新規2・`FontScaleResilienceTest`新規2・`AiPreferencesImplTest`1（`selectedModelId`既定値変更分）・`SettingsNavigationTest`2 |
+| (b) 新規born-green（既存実装の正しさを新角度から回帰ロック） | **9** | `SettingsAiSafetyTest`2・`AppContainerTest`新規2（T-P7DI-1/2）・`AiPreferencesImplTest`4（`aiEnabled`系3＋`selectedModelId`明示設定1）・`StringResourceParityTest`新規1（tSet7） |
+| (c) 既存564件（`--rerun`実測で再確認済み、P7-C7完了時点ベースライン）の回帰 | **0** | `tests=613`＝`564`＋`49`（(a)40+(b)9）と完全一致。JUnit XML集計（76クラス）で失敗クラスは0件、skipped=1（不変） |
+
+#### lint
+
+`:app:lintDebug --rerun-tasks`＝**BUILD SUCCESSFUL・error 0**（`build/agent-logs/p7c6-lint.log`）。warning 22件はP7-C7ベースラインと完全一致（新規warning 0件、新設ファイル`features/settings/*.kt`はwarning対象外。`AiPreferences.kt`に既存2件のUseKtx警告があるが、これはP7-C3から存在するsetter本体〔本サイクルでは触っていない行〕由来であり新規ではない）。MissingTranslation 0。
+
+#### 制約の遵守確認
+
+- 実行画面へのAI実配線（Phase 8スコープ）はしていない: `planning/`・`recovery/`・`features/{planreview,execution,recovery}`は無変更（`git diff --stat`で確認）。`LocalAiGateway.generatePlan`を呼び出すのは新設`SettingsAiSafetyTest`（テストのみ、production配線ではない）に限る。
+- Manifest変更なし: `AndroidManifest.xml`は無変更（`INTERNET`は既存、Settings画面自体は新規権限を要求しない）。
+- `app/src/test/java/com/actionstarter/ai/`配下の隔離ガードテスト（`AiRuntimeIsolationTest`・`IsolationGuardSupportTest`・`IsolationGuardSupport`）は無変更（触れていない）。`DomainRuntimeIsolationTest`（`domain/`配下）も同様。
+
+#### Phase 8への申し送り
+
+1. **実行画面へのAI実配線の接続点**: `AppContainer.localAiGateway`（既存、無変更）が唯一の入口。Phase 8で`planning/`側にAI版Planningエンジンを追加する際は、R-10（§15）の申し送りどおり配置方針（`ai/`側に置き`planning/`からは参照しない構成を推奨）を最初に決めること。`AiPreferences.aiEnabled`（Settings画面でユーザーがON/OFF可能・既定OFF）と`ModelStorage.installedEntry()`（Settings画面でDL可能）の状態を実行画面側が尊重する設計に既になっている——Phase 8はこれらを読むだけでよく、Settings側のロジックを変更する必要はない。
+2. **`ModelStorage.installedEntry()`のcatalog順序ヒューリスティック**（上記「既定モデル＝Gemma 4 E2Bの配線」参照）: 複数モデル選択UIを追加する場合、`selectedModelId`ベースの解決へ切り替えることを検討する（`LocalAiGateway`・`ModelStorageImpl`の変更を伴う、P7-C4/C6双方の既存テストへの影響評価が必要）。
+3. **G4-E（エミュレータ実行）は依然対象外のまま**（P7-C7からの既存申し送り、本サイクルでも変更なし）。
+4. **Settingsのモデル削除時のUX**: 現在の`onDeleteRequested()`はファイル削除のみを行い、DL中の削除操作は考慮していない（DL中は削除ボタン自体を表示しない設計のため到達不能パス）。将来Settingsを拡張する場合、DLキャンセル導線の要否を検討すること（S-6裁定によりcancelボタンは本サイクルの範囲外とした）。
+
+**証拠ファイル**: `build/agent-logs/p7c6-red-compile.log`／`p7c6-red-compile2.log`（テストコンパイル）・`p7c6-red.log`（Red実測、86テスト中40失敗）・`p7c6-green-compile1.log`／`p7c6-green-compile2.log`（Green実装後コンパイル）・`p7c6-green-iter1.log`（Green初回、4件残存失敗）・`p7c6-green-iter2.log`（是正後、全Green）・`p7c6-full.log`（`:app:testDebugUnitTest --rerun`全体、tests=613/failures=0/errors=0/skipped=1）・`p7c6-lint.log`（`:app:lintDebug --rerun-tasks`、BUILD SUCCESSFUL・error 0・warning 22・MissingTranslation 0）。
 
 ---
 

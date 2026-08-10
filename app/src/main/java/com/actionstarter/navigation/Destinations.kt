@@ -31,4 +31,9 @@ sealed interface Destinations {
     data object Recovery : Destinations {
         override val route: String = "recovery"
     }
+
+    /** F97（計画書§7.1・§12.6・P7-C6）。最小Settings画面（AIトグル・モデル状態・DL/削除・容量表示）。 */
+    data object Settings : Destinations {
+        override val route: String = "settings"
+    }
 }

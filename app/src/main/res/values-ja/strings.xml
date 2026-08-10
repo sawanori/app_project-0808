@@ -198,4 +198,32 @@
     <string name="notification_departure_buffer_minutes_format">%1$d分</string>
     <string name="notification_recovery_title">プランを更新しました</string>
     <string name="notification_recovery_text">予定より遅れています。アプリを開いて更新されたプランを確認してください。</string>
+
+    <!-- Settings画面（F97、仕様§18/§19/S-6、計画書§12.6 T-SET-*）。P7-C6（ui-implementer兼
+         domain-implementer）で追加。S-6裁定により本画面はAIトグル・モデル状態・DL/削除・
+         容量表示の4項目のみに限定する（フル機能Settingsは対象外）。
+         settings_open_button_labelはActionStarterNavHostのEventSelectionRouteが持つ導線
+         （アイコンではなくテキストボタン。本アプリがMaterial Iconグリフを一切使わない既存の
+         方針に合わせた）で使う。 -->
+    <string name="settings_title">設定</string>
+    <string name="settings_back_button_label">戻る</string>
+    <string name="settings_ai_toggle_label">プライベートAIを有効にする</string>
+    <string name="settings_ai_toggle_description">端末内だけでプラン提案を生成します。既定はOFFで、OFFのままでもアプリは問題なく使えます。</string>
+    <string name="settings_ai_unsupported_ram_reason">この端末はプライベートAIに必要なメモリ（6GB以上）を満たしていません。</string>
+    <string name="settings_ai_unsupported_abi_reason">この端末のプロセッサはプライベートAIに対応していません。</string>
+    <string name="settings_model_section_title">端末内モデル</string>
+    <string name="settings_model_name_label">モデル</string>
+    <string name="settings_model_status_not_installed">未ダウンロード</string>
+    <string name="settings_model_status_downloading_format">ダウンロード中… %1$d%%</string>
+    <string name="settings_model_status_installed">ダウンロード済み・検証済み</string>
+    <string name="settings_model_status_failed_insufficient_storage">空き容量が不足しています</string>
+    <string name="settings_model_status_failed_verification">ダウンロードしたファイルの検証に失敗したため削除しました</string>
+    <string name="settings_model_status_failed_generic">ダウンロードに失敗しました</string>
+    <string name="settings_download_button">ダウンロード</string>
+    <string name="settings_retry_button">再試行</string>
+    <string name="settings_delete_button">削除</string>
+    <string name="settings_capacity_required_format">必要容量: %1$.2f GB</string>
+    <string name="settings_capacity_available_format">空き容量: %1$.2f GB</string>
+    <string name="settings_capacity_insufficient_warning">このモデルをダウンロードするための空き容量が不足しています。</string>
+    <string name="settings_open_button_label">設定</string>
 </resources>

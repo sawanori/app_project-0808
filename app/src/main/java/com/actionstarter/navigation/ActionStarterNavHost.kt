@@ -7,10 +7,14 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -21,8 +25,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -47,6 +53,8 @@ import com.actionstarter.features.planreview.PlanReviewScreen
 import com.actionstarter.features.planreview.PlanReviewViewModel
 import com.actionstarter.features.recovery.RecoveryScreen
 import com.actionstarter.features.recovery.RecoveryViewModel
+import com.actionstarter.features.settings.SettingsScreen
+import com.actionstarter.features.settings.SettingsViewModel
 import com.actionstarter.recovery.LatenessDetector
 import com.actionstarter.recovery.LatenessVerdict
 import kotlinx.coroutines.launch
@@ -392,6 +400,20 @@ fun ActionStarterNavHost(
                     }
                 )
             }
+
+            // F97実配線（計画書§7.2フットプリント「Settings route 1本追加」、P7-C6）。
+            composable(Destinations.Settings.route) {
+                val viewModel: SettingsViewModel = viewModel(factory = vmFactory)
+                val uiState by viewModel.uiState.collectAsState()
+
+                SettingsScreen(
+                    uiState = uiState,
+                    onNavigateBack = { navController.popBackStack() },
+                    onAiEnabledToggled = viewModel::onAiEnabledToggled,
+                    onDownloadRequested = { viewModel.onDownloadRequested() },
+                    onDeleteRequested = viewModel::onDeleteRequested
+                )
+            }
         }
     }
 }
@@ -441,40 +463,61 @@ private fun EventSelectionRoute(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    EventSelectionScreen(
-        uiState = uiState,
-        onNavigateToPlanReview = {
-            val content = uiState as? EventSelectionUiState.Content
-            if (content != null) {
-                // P2-C3前段scaffold：EventSelectionUiState.ContentはnextEvent単一保持
-                // からevents: List<ExecutionEvent>保持へ変更された（計画書§7）。
-                // 複数選択UIの結線はP2-C4/C5以降のため、ここでは従来どおり
-                // 先頭（次の）イベントのみを選択する最小適応とする。
-                sharedPlanViewModel.selectEvent(content.events.first())
+    // F97導線（計画書§7.2フットプリント「既存画面からの導線＝EventSelection等からの設定
+    // アイコン/メニュー」、P7-C6）: Settingsへの入口は`EventSelectionScreen`自身のパラメータ
+    // ではなく、本Route（NavHost側）がBoxで重ねるボタンとして持たせる。理由:
+    // `EventSelectionScreen`は§10.6疎結合規約により画面遷移をラムダで受け取るのみで
+    // NavController等のナビゲーション関心を一切持たない設計であり、この既存契約
+    // （`EventSelectionScreenTest`／`EventSelectionListTest`／`FontScaleResilienceTest`
+    // T-P11F-1・`AccessibilitySemanticsTest`が広く依存する既存シグネチャ・内部構造）へ手を
+    // 加えず、既存の広範なテスト群への回帰リスクをゼロにするため（`DepartureRoute`の
+    // KDoc「§10.6疎結合規約」と同じ設計方針をNavHost側でも徹底する）。アイコンではなく
+    // テキストボタンにしているのは、本プロジェクトがMaterial Iconグリフを一切使わない
+    // （既存画面は全てテキストラベル付きボタンのみ）既存方針に合わせるため。
+    Box(modifier = Modifier.fillMaxSize()) {
+        EventSelectionScreen(
+            uiState = uiState,
+            onNavigateToPlanReview = {
+                val content = uiState as? EventSelectionUiState.Content
+                if (content != null) {
+                    // P2-C3前段scaffold：EventSelectionUiState.ContentはnextEvent単一保持
+                    // からevents: List<ExecutionEvent>保持へ変更された（計画書§7）。
+                    // 複数選択UIの結線はP2-C4/C5以降のため、ここでは従来どおり
+                    // 先頭（次の）イベントのみを選択する最小適応とする。
+                    sharedPlanViewModel.selectEvent(content.events.first())
+                    navController.navigate(Destinations.PlanReview.route)
+                }
+            },
+            onRequestCalendarPermission = {
+                // §7.4改訂（Fable 5裁定2026-08-09）：launcher起動前に「要求済み」を記録する。
+                // これにより起動前からの拒否（PermissionRequired）とlauncher経由の拒否
+                // （PermissionDenied）をEventSelectionViewModel側で一意に判別できる。
+                viewModel.onPermissionRequested()
+                requestPermissionLauncher.launch(Manifest.permission.READ_CALENDAR)
+            },
+            onOpenAppSettings = {
+                val settingsIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                }
+                context.startActivity(settingsIntent)
+            },
+            onRetry = viewModel::onRetry,
+            onManualEventConfirmed = { event ->
+                // F17（手動入力フォールバック、裁定B1）：選択イベントとしてSharedPlanViewModel
+                // へ反映し、通常の選択導線（onNavigateToPlanReview）と同じ遷移先へ進む。
+                sharedPlanViewModel.selectEvent(event)
                 navController.navigate(Destinations.PlanReview.route)
             }
-        },
-        onRequestCalendarPermission = {
-            // §7.4改訂（Fable 5裁定2026-08-09）：launcher起動前に「要求済み」を記録する。
-            // これにより起動前からの拒否（PermissionRequired）とlauncher経由の拒否
-            // （PermissionDenied）をEventSelectionViewModel側で一意に判別できる。
-            viewModel.onPermissionRequested()
-            requestPermissionLauncher.launch(Manifest.permission.READ_CALENDAR)
-        },
-        onOpenAppSettings = {
-            val settingsIntent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = Uri.fromParts("package", context.packageName, null)
-            }
-            context.startActivity(settingsIntent)
-        },
-        onRetry = viewModel::onRetry,
-        onManualEventConfirmed = { event ->
-            // F17（手動入力フォールバック、裁定B1）：選択イベントとしてSharedPlanViewModel
-            // へ反映し、通常の選択導線（onNavigateToPlanReview）と同じ遷移先へ進む。
-            sharedPlanViewModel.selectEvent(event)
-            navController.navigate(Destinations.PlanReview.route)
+        )
+        TextButton(
+            onClick = { navController.navigate(Destinations.Settings.route) },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .testTag("event_selection_open_settings_button")
+        ) {
+            Text(stringResource(R.string.settings_open_button_label))
         }
-    )
+    }
 }
 
 /**

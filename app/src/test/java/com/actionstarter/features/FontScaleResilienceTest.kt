@@ -40,6 +40,9 @@ import com.actionstarter.features.planreview.PlanReviewScreen
 import com.actionstarter.features.planreview.PlanReviewUiState
 import com.actionstarter.features.recovery.RecoveryScreen
 import com.actionstarter.features.recovery.RecoveryUiState
+import com.actionstarter.features.settings.ModelDownloadStatus
+import com.actionstarter.features.settings.SettingsScreen
+import com.actionstarter.features.settings.SettingsUiState
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -353,5 +356,41 @@ class FontScaleResilienceTest {
 
         composeTestRule.onNodeWithText(context.getString(R.string.execution_done_button)).assertIsDisplayed()
         composeTestRule.onNodeWithText(context.getString(R.string.execution_five_min_later_button)).assertIsDisplayed()
+    }
+
+    // T-SET-8（計画書§12.6、P7-C6・F97）: 正常系 - SettingsScreenがfontScale=1.5でもAIトグル・
+    // モデル状態・ダウンロードボタン・容量表示がクリップせず表示される（未DL状態、要素密度が
+    // 最も高い分岐）。
+    @Test
+    fun tSet8_settingsScreen_fontScale1_5x_mainElementsStayDisplayed() {
+        composeTestRule.setContent {
+            DeviceConfigurationOverride(DeviceConfigurationOverride.FontScale(1.5f)) {
+                SettingsScreen(uiState = SettingsUiState(modelStatus = ModelDownloadStatus.NotInstalled))
+            }
+        }
+
+        composeTestRule.onNodeWithTag("settings_ai_toggle").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_model_status_text").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_download_button").assertIsDisplayed()
+        // Robolectric既定ビューポート（320×470dp）をfontScale=1.5x×2枚のCardが超えるため、
+        // 容量表示はperformScrollTo()が必要（本ファイルの既存T-P11F-3/5と同型の対応）。
+        composeTestRule.onNodeWithTag("settings_capacity_required_text").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_capacity_available_text").performScrollTo().assertIsDisplayed()
+    }
+
+    // T-SET-8エッジ: ja（長め文言）×fontScale=1.5でも主要要素が表示される
+    // （T-P11F-8と同型のen/ja×fontScaleダブルチェック）。
+    @Config(qualifiers = "ja")
+    @Test
+    fun tSet8_settingsScreen_japaneseLocaleWithFontScale1_5x_mainElementsStayDisplayed() {
+        composeTestRule.setContent {
+            DeviceConfigurationOverride(DeviceConfigurationOverride.FontScale(1.5f)) {
+                SettingsScreen(uiState = SettingsUiState(modelStatus = ModelDownloadStatus.Installed))
+            }
+        }
+
+        composeTestRule.onNodeWithTag("settings_ai_toggle").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_model_status_text").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_delete_button").assertIsDisplayed()
     }
 }
