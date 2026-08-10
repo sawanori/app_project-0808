@@ -725,7 +725,7 @@ AVD `actionstarter_test`（**実測: x86_64 / API 35 / RAM 4096MB**）。目的�
 | **P7-C5** Green: adapter/gateway | F86・F96 を実装。C3・C4の完了後に直列 | sonnet | G3（部分） |
 | **P7-C5b** 品質ハーネス強化（Fable 5指示・P7-C5実測への対応） | ADR-0057（`maxNumTokens`計算式化・OOM事前ガードのプロファイル依存是正）・ADR-0058（few-shot拡張・systemInstruction強化）。実機で改善前後比較・shotCount比較を実測 | sonnet | JVM回帰542件0失敗・lint error 0・実機E2E実測完了（§14.9） |
 | **P7-C6** Green: settings | F92・F97 を実装。Settings route追加・ja/en文言追加 | sonnet | G3（部分） |
-| **P7-C7** 統合 | 全体結線・§9のガード改修と新設・E3テストの実行（G4-E）。既存245件規模の回帰確認 | sonnet | **G4-JVM ＋ G4-E** |
+| **P7-C7** 統合 | 全体結線・§9のガード改修と新設・E3テストの実行（G4-E）。既存245件規模の回帰確認。**→ 本サイクルはタスク発注時の制約（「エミュ・adb不要」）により§9のガード改修＋新設（T-AIISO-4〜9・T-AIISO-8）のJVM部分のみを実施（§14.11）。E3テスト実行（G4-E）・「全体結線」（Settings/UI配線）は未実施のままPhase 8への申し送りとした** | sonnet | **G4-JVM達成（§14.11）。G4-E未達——Phase 8前にユーザーと実施要否を確認すること** |
 | **P7-C8** 実機プローブ＋Refactor | ~~§11.3 の Galaxy A実機ベンチ（Qwen3-0.6B / Qwen3-1.7B / Gemma3-1B の3者比較）~~ → **実施内容はAVDエミュレータ上でのQwen3-0.6B(既存) / Qwen3-1.7B / Gemma4-E2Bの3者比較**（Gemma3-1BはHFゲート付きのためGemma4-E2Bで代替、ADR-0059・§14.10）。Galaxy A実機（P7-P2）でのベンチはアクセスなく未実施のまま残っている（§14.10申し送り3）。測定値で §8.6 のタイムアウト閾値と §5.3 の段境界を確定する作業、およびリファクタは本サイクルのスコープ外（次サイクルへ申し送り） | sonnet | 完了（§14.10）。**G4-D（実機Galaxy Aでの最終確定）・リファクタは未達のまま残置——Phase 8へ進む前に対応要否をユーザーと確認すること** |
 
 **並列可否**: P7-C3 と P7-C4 は独立（共有ファイルなし）。P7-C5 は両者に依存するため直列。P7-C6 は C5 の `LocalAiGateway` シグネチャ確定後に開始。
@@ -1257,6 +1257,64 @@ HFモデルカード（`litert-community/gemma-4-E2B-it-litert-lm`）を実際�
 4. 本サイクルで発見したテスト運用上の罠（`ModelComparisonProbeTest`クラスKDoc「再実行時の注意」参照）: AndroidJUnitRunnerはクラスレベル`@Ignore`が付いた状態で`-Pandroid.testInstrumentationRunnerArguments.class=...#メソッド名`による個別メソッド指定をしても、discoveryの時点でクラスごと除外され「Starting 0 tests」になる。再実行時は`@Ignore`を一時的にコメントアウトする必要がある。
 
 **証拠ファイル**: `build/agent-logs/p7c8-jvm.log`（JVM回帰）・`p7c8-lint.log`（lint）・`p7c8-e2e.log`（実機E2E統合ログ）・`p7c8-qwen17b-e2e-gradle.log`／`p7c8-qwen17b-e2e-logcat.log`・`p7c8-gemma4e2b-reduced-gradle.log`／`p7c8-gemma4e2b-reduced-logcat.log`・`p7c8-gemma4e2b-prod-gradle.log`／`p7c8-gemma4e2b-prod-logcat.log`。ダウンロード済みモデルファイルは`build/models/`（gitignore圏内、ホスト側、削除要否は本体タスク最終報告参照）。
+
+### 14.11 P7-C7完了記録（2026-08-10確定・domain-implementer兼test-writer、AI隔離ガード拡張）
+
+**結論**: AI隔離ガードの拡張が完了し、Phase 8で実行画面へAIを本番配線する前提となるプライバシーの構造保証（§10・§34・§58〜60）は、既存の`ai/`実装が既にこれを満たしていることを機械的に確認・回帰ロックした。既存3ガード（T-BPE-28／T-BRE-32／T-NOTIF-9）を穴A（禁止語拡張）・穴B（再帰化）・穴C（禁止語統一）に沿って強化し、計画書§9.3が定義する新設5ガード（T-AIISO-4／T-AIISO-5／T-AIISO-6／T-AIISO-7／T-AIISO-9）とメタテスト（T-AIISO-8）を新規作成した。**新規/拡張した全15件のテストケースはborn-green**（既存コードが構造規律を既に満たしていたため、違反検出→是正のサイクルは発生しなかった）。着手時ベースライン549件の回帰は0件。`:app:testDebugUnitTest --rerun`でtests=564／failures=0／errors=0／skipped=1、`:app:lintDebug --rerun-tasks`でerror 0（warning 22、既存分と同数）。本サイクルはJVM構造ガードのみを対象とし（タスク制約「エミュ・adb不要」）、計画書原案のE3テスト実行（G4-E）は対象外のまま残した。
+
+#### 作成/拡張したガードテスト一覧
+
+| ID | ファイル | 内容 | 結果 |
+|---|---|---|---|
+| T-BPE-28（拡張） | `planning/PlanningLlmIsolationTest.kt` | 再帰化（`walkTopDown()`）＋禁止語4種（`com.actionstarter.ai`／`LocalLanguageModel`／`com.google.ai.edge.litertlm`／`com.actionstarter.llm`）へ統一 | born-green |
+| T-BRE-32（拡張） | `recovery/RecoveryLlmIsolationTest.kt` | 再帰化＋禁止語4種へ統一（従来`com.actionstarter.ai`の1種のみだった非対称を解消） | born-green |
+| T-NOTIF-9（拡張） | `services/notification/NotificationLlmIsolationTest.kt` | 再帰化＋禁止語4種へ統一 | born-green |
+| T-AIISO-4（新設） | `domain/DomainRuntimeIsolationTest.kt` | `domain/`（再帰）が`com.actionstarter.ai`／`com.actionstarter.llm`／`LocalLanguageModel`を参照しない | born-green |
+| T-AIISO-5（新設） | `ai/AiRuntimeIsolationTest.kt` | `ai/`（再帰）が`com.actionstarter.features`を参照しない | born-green |
+| T-AIISO-6（新設） | `ai/AiRuntimeIsolationTest.kt` | ネットワークAPI（`java.net.`／`HttpURLConnection`／`URL(`）・`com.actionstarter.services.routing`の参照は`ai/model/ModelDownloader.kt`の1ファイルのみ（ADR-0044許可リスト） | born-green |
+| T-AIISO-7（新設） | `domain/DomainRuntimeIsolationTest.kt` | `domain/`・`services/`（再帰、双方）が`com.google.ai.edge.litertlm`を参照しない | born-green |
+| T-AIISO-9（新設） | `ai/AiRuntimeIsolationTest.kt` | `com.google.ai.edge.litertlm`の参照は`ai/adapter/`配下と`features/`除外で判定、`ai/adapter/`のみ許可 | born-green |
+| T-AIISO-8（新設） | `ai/IsolationGuardSupportTest.kt` | 共有走査ユーティリティ`IsolationGuardSupport`の再帰性メタ検証（一時ディレクトリ＋サブディレクトリ付きダミーファイル） | Green（新規実装の直接検証） |
+| 自己診断（計画書非規定・追加実施） | `ai/IsolationGuardSupportTest.kt` | コメント除去方式の精度検証4件（KDoc/行コメント内言及は非検出、実import/許可リストは正しく機能） | Green |
+| PII最小化3件（追加実施） | `ai/prompt/PlanPromptBuilderTest.kt` | `event.notes`／`event.coordinates`／`context.profile`がプロンプトに漏れないことの回帰ロック | born-green |
+| QH-4e（追加実施） | `ai/schema/ContentSanityCheckerTest.kt` | `containsFabricatedContent`の`@`分岐（既存テスト未カバー）の回帰ロック | born-green |
+
+#### 検出した違反と是正
+
+**なし。全ガードがborn-greenだった。** ただし実装過程で1件、設計判断を要する事象を検出した（違反ではなく検出方式そのものの設計課題）: T-AIISO-6／T-AIISO-9を既存3ガードと同じ「全文単純一致」方式で素朴に実装すると、`ai/`パッケージ自身の**正当な既存KDoc**——`AIRecoveryResponse.kt`の`RoutingService`への設計根拠言及、`BenchmarkMetricsSource.kt`／`PlanPromptBuilder.kt`／`LocalAiGateway.kt`の`com.google.ai.edge.litertlm`依存規律の説明（いずれもP7-C1〜C8で作成済み）——を誤検出することが判明した。これらは実importではなくコメント内の文字列に過ぎず、実際のプライバシー・アーキテクチャ違反ではない。「テストを甘くして通す」のではなく「ai/側の是正で通す」という指示に従い、まず`ai/`のKDocを書き換える案を検討したが、実際の依存関係を何も変えない書き換え（誤検出を避けるための言い換えのみ）は本質的な是正にならず、将来同種の衝突が再発するリスクを残すと判断した。代わりに検出方式自体を「コメント除去付き部分文字列マッチ」へ改良（新設共有ユーティリティ`app/src/test/java/com/actionstarter/ai/IsolationGuardSupport.kt`の`stripComments`）し、既存KDocは無改変のまま構造保証を成立させた（設計根拠・代替案の却下理由はADR-0060）。既存3ガード（T-BPE-28等）は§9.2「強化方向のみ」の指示に従い検出方式を変更せず、禁止語拡張と再帰化のみを適用した。
+
+#### PlanPromptBuilderのPII最小化確認結果
+
+`PlanPromptBuilder.build()`のソース（`app/src/main/java/com/actionstarter/ai/prompt/PlanPromptBuilder.kt`）を確認したところ、参照しているのは`context.event.title`（200字上限で切詰め）・`context.event.locationName`（同上）・`context.event.startDate`・`context.zoneId`・`context.locale`のみであり、`ExecutionEvent.notes`（カレンダー本文）・`ExecutionEvent.coordinates`（GPS正確位置の緯度経度）・`PlanningContext.profile`（`PersonalExecutionProfile`、行動履歴）はいずれも一切参照していないことをソース確認で特定した。この事実を3件の新規テスト（`PlanPromptBuilderTest`の`piiMinimization_*`）で回帰ロックした: ①`notes`に識別可能なマーカー文字列を入れてもプロンプトに現れない、②`coordinates`に識別可能な緯度経度を入れてもプロンプトに現れない、③`profile`の有無で`build()`の出力が完全に同一（文字列として一致）。**3件とも追加の是正は不要でborn-greenだった**——本実装は既に最小コンテキスト原則（§10・§34）を満たしていた。なお`locationName`（場所の名称、例:「渋谷オフィス」）自体は既存設計どおりプロンプトへ渡るが、これは§15が禁止する「GPS位置」（`coordinates`、Kotlin側のみが扱う）とは別物であり、意図的な最小コンテキスト設計と判断した。
+
+#### ContentSanityCheckerの捏造検出・§34回帰ロック
+
+既存15件（QH-4a〜d・QH-10・QH-11・QH-5a〜b・QH-15a〜b・QH-6a〜b・QH-7・長さ再確認・Semantic Contextualization模範例）を確認したところ、`ContentSanityChecker.containsFabricatedContent`が検出する3分岐（数字・URL・`@`）のうち`@`分岐のみ既存テストで単独検証されていないことを発見した（QH-4dのURL検出テストとは異なる分岐）。QH-4e（メールアドレス様の捏造検出、数字・URLパターンを含まない入力で`@`分岐のみを単独検証）を新規追加し、既存実装が既に正しく`@`を検出することを確認した（born-green）。これにより`containsFabricatedContent`の3分岐すべてが個別に検証済みとなり、§34「AIが予定に無い情報を作らない」の機械的回帰ロックが完成した。
+
+#### 3分類集計（`:app:testDebugUnitTest --rerun`実測、`build/agent-logs/p7c7-full.log`、JUnit XML集計で裏取り済み）
+
+| 分類 | 件数 | 内訳 |
+|---|---|---|
+| (a) 新規Red（意図した失敗） | **0** | 該当なし。全件born-green（構造ガードのため、既存実装が規律を満たしていれば実装時からGreenになるのが正常。§0点4・T-AIISO-8関連の既存先例と同じ性質） |
+| (b) 新規テストメソッド（born-green・回帰ロック） | **15** | 新設3ファイル（`AiRuntimeIsolationTest`3・`DomainRuntimeIsolationTest`2・`IsolationGuardSupportTest`6）＝11件＋既存ファイルへの追加4件（`PlanPromptBuilderTest`3・`ContentSanityCheckerTest`1）。既存3ガード（T-BPE-28等）は同一テストメソッドの内部実装を強化しただけでメソッド数は不変（新規カウントに含めない） |
+| (c) 既存549件（着手時ベースライン、本サイクル冒頭で`--rerun`実測して再確認済み）の回帰 | **0** | `tests=564`＝`549`＋`15`（新規、内訳は上記）と完全一致。JUnit XML集計（71クラス）で失敗クラスは0件 |
+
+#### lint
+
+`:app:lintDebug --rerun-tasks`＝**BUILD SUCCESSFUL・error 0**（`build/agent-logs/p7c7-lint.log`）。warning 22件はP7-C8ベースラインと完全一致（本サイクルの新規・変更ファイル由来の新規warningは0件）。
+
+#### 新ADR
+
+**ADR-0060**: 新設5ガード（T-AIISO-4/5/6/7/9）がコメント除去付き部分文字列マッチを採用する設計根拠、既存3ガードとの意図的な差異、代替案の却下理由を記録した。
+
+#### P7-C6／Phase 8への申し送り
+
+1. **G4-E（エミュレータ実行）は本サイクルの対象外のまま残っている**。計画書§14 P7-C7原案は「E3テストの実行（G4-E）」も含むが、本タスクの制約（「エミュ・adb不要（JVM構造ガード）」）により、T-P7E2E-1〜5・§10 L2（StrictMode `detectNetwork().penaltyDeath()`）の実機/エミュレータ実行は未実施のまま。Phase 8で実行画面へAIを本番配線する前に、G4-Eの実施要否をユーザーと確認すること。
+2. **F97（Settings画面）・T-SET-*・T-P7DI-*は計画書上P7-C6のスコープのまま未着手**（本サイクルの対象外。`AiPreferencesImpl`の`aiEnabled`／`selectedModelId`本体のみADR-0052でP7-C3に前倒し実装済み）。
+3. **`IsolationGuardSupport.stripComments`は文字列リテラルを認識しない簡易実装**である（ADR-0060「既知の簡略化」）。将来`ai/`・`domain/`・`services/`・`features/`にURLを含む文字列リテラル等、行コメント／ブロックコメントの開始記号と同じ文字並びを含む行が追加された場合は、誤判定（見逃し）が起きないことを個別に確認すること（`IsolationGuardSupportTest`が検証パターンの雛形になる）。
+4. **T-AIISO-6／T-AIISO-9の許可リスト運用はADR-0044の方針を維持**（`ModelDownloader.kt`の単一ファイル名完全一致のみ）。Phase 8以降でネットワークアクセスが必要な機能が`ai/`に追加される場合も、許可リストへの安易な追加ではなく`ModelDownloader`への機能集約を優先的に検討すること（ADR-0044再検討トリガー）。
+
+**証拠ファイル**: `build/agent-logs/p7c7-baseline.log`（着手時ベースライン再確認、tests=549/failures=0/errors=0/skipped=1）・`p7c7-compile.log`（`:app:compileDebugUnitTestKotlin`成功）・`p7c7-red.log`（新規/拡張8クラス個別実行、全15件born-green）・`p7c7-full.log`（`:app:testDebugUnitTest --rerun`全体、tests=564/failures=0/errors=0/skipped=1）・`p7c7-lint.log`（`:app:lintDebug --rerun-tasks`、BUILD SUCCESSFUL・error 0・warning 22）。
 
 ---
 

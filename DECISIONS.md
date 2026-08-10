@@ -1536,3 +1536,32 @@ P7-C2c（品質ハーネス由来の新設部品へのRed補完サイクル）�
 2. **フルコンテキスト（Qwen3-1.7B: ctx4096、Gemma4-E2B: ctx32768）の`peakRamBytes`独立測定は未実施**。§5.3の段階推奨を厳密に確定する場合は追加実測が必要。
 3. **最終的な既定モデルの選択はユーザー判断**（U-4の既存裁定どおり）。本ADRは比較用データの整備・実測方法論の記録に留め、Gemma4-E2Bを新既定にするかどうかの決定はしていない（本体タスク最終報告の推奨を参照のうえユーザーが確定すること）。
 4. Gemma3-1B自体（HFゲート解除後）との比較は本ADRの対象外のまま残る。ゲートが将来解除された場合、または別ルートでアクセス可能になった場合は追加比較を検討する余地がある。
+
+---
+
+### ADR-0060: P7-C7 AI隔離ガード拡張 — 既存3ガードは全文単純一致のまま再帰化・禁止語統一のみ行い、新設5ガード（T-AIISO-4/5/6/7/9）はコメント除去付き部分文字列マッチを採用する
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（`docs/plans/phase7-local-llm-foundation.md`§9.2・§9.3・§14 P7-C7、本体タスク指示「違反を検出した場合...ai/側の是正で通す」の範囲内での実装時判断） ／ 決定者: domain-implementer（P7-C7、Fable 5への報告を前提とした実装時判断） ／ 起案agent: domain-implementer ／ 関連仕様§: §10「外部LLMへ送らない」・§16「モデルは技術検証で交換可能にする」、ADR-0044（T-AIISO-6許可リスト方針）（記録トリガー②仕様未定義箇所の補完〔検出アルゴリズムの正確な仕様は計画書に明記されていない〕・③既存規約からの意図的逸脱〔既存3ガードの「全文単純一致・KDoc言及でも失敗」というestablished styleから新設5ガードのみ離れるため〕に該当）
+
+- **ADR番号の付番根拠**: 起票直前に`grep -n "^### ADR-" DECISIONS.md`を再実測し、最新確定ADRがADR-0059（本書1500行）であることを確認した。P7-C7の実装時判断としてADR-0059の次番のADR-0060から起票する。
+
+**背景**: 計画書§9.3のT-AIISO-6（ネットワークAPI・`services.routing`参照禁止）・T-AIISO-9（`litertlm`参照は`ai/adapter/`限定）を実装するにあたり、既存3ガード（T-BPE-28等）と同じ「ファイル全文に対する単純部分文字列マッチ」方式をそのまま適用した場合の影響を実測したところ、`ai/`パッケージ自身の**正当な既存KDoc**が誤検出されることが判明した: `AIRecoveryResponse.kt`（`com.actionstarter.services.routing.RoutingService`への設計根拠の言及）、`BenchmarkMetricsSource.kt`・`PlanPromptBuilder.kt`・`LocalAiGateway.kt`（いずれも`com.google.ai.edge.litertlm`をT-AIISO-9の依存規律の説明のためKDocで言及、P7-C1〜C8で作成済み）。これらはいずれも実importではなくコメント内の文字列に過ぎず、実際のプライバシー・アーキテクチャ違反ではない。
+
+**決定**:
+1. 既存3ガード（T-BPE-28／T-BRE-32／T-NOTIF-9）は検出方式（全文単純一致）を変更しない。§9.2の指示「強化方向のみ」に従い、`walkTopDown()`化（穴B）・禁止語統一（穴A・穴C）のみを適用する。
+2. P7-C7が新設する5ガード（T-AIISO-4／T-AIISO-5／T-AIISO-6／T-AIISO-7／T-AIISO-9）は、共有ユーティリティ`app/src/test/java/com/actionstarter/ai/IsolationGuardSupport.kt`の`stripComments`により行コメント・ブロックコメント（KDoc含む）を除去した後のコード実体に対して部分文字列マッチを行う。
+3. この検出方式の採用により、`ai/`側の既存KDocを書き換える「是正」は不要と判断した（誤検出であり実違反ではないため）。コメント除去後は既存コードベース全体が新設5ガードすべてに対しborn-greenであることを実測で確認した（本ADR「検証方法」参照）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| 新設5ガードも既存3ガードと同じ全文単純一致にし、衝突するKDoc4ファイルを書き換えて通す | KDocは実際のimport/参照ではなく誤検出。書き換えは実際のプライバシー保証を何も強化せず、`ai/`パッケージが将来「なぜ自分自身のアーキテクチャ規律を文書化できないのか」という不合理な制約を負う。今後`ai/`に新規ファイルを追加するたびに同種の衝突が再発しうる |
+| import文の行のみを対象にする（`^import `で始まる行だけ判定し、コメントも文字列リテラルも無視） | 計画書のT-AIISO-6定義は`URL(`というインラインの呼び出しサイトパターンを明示しており、これは本質的にimport行の外に現れる。import限定では計画書が明示する検出対象を狭めてしまう |
+| 全文単純一致を維持しつつ、禁止語をより特殊化する（例: `com.actionstarter.services.routing.UrlConnectionHttpPostClient`と完全クラス名まで絞る） | `AIRecoveryResponse.kt`は`RoutingService`のみを言及しており現状は衝突しないが、将来`ai/`のKDocが`UrlConnectionHttpPostClient`という具体クラス名を正当な理由（「なぜ経由してはいけないか」の説明等）で言及した場合に同じ問題が再発する。コメント除去の方が根本的な解決になる |
+
+**影響範囲**: `app/src/test/java/com/actionstarter/ai/IsolationGuardSupport.kt`（新設）・`AiRuntimeIsolationTest.kt`（新設）・`IsolationGuardSupportTest.kt`（新設）・`app/src/test/java/com/actionstarter/domain/DomainRuntimeIsolationTest.kt`（新設）。既存3ガード（`PlanningLlmIsolationTest.kt`／`RecoveryLlmIsolationTest.kt`／`NotificationLlmIsolationTest.kt`）は検出方式を変更せず、禁止語リストと再帰化のみ変更。`app/src/main/java/com/actionstarter/ai/**`・`domain/**`・`services/**`・`features/**`（本番コード）は一切変更していない（本ADRの決定3のとおり、是正不要と判断したため）。
+
+**検証方法**: `IsolationGuardSupportTest`（自己診断: コメント内言及は非検出・実import/インライン参照は検出・許可リストは除外されることを個別に検証、T-AIISO-8）。T-AIISO-4／T-AIISO-5／T-AIISO-6／T-AIISO-7／T-AIISO-9は全件born-green（個別実行`build/agent-logs/p7c7-red.log`、全体`:app:testDebugUnitTest --rerun`でtests=564/failures=0/errors=0/skipped=1、`build/agent-logs/p7c7-full.log`）。`:app:lintDebug --rerun-tasks`でerror 0・warning 22（既存分と同数、`build/agent-logs/p7c7-lint.log`）。
+
+**再検討トリガー**: 将来、コメント除去ロジック（`IsolationGuardSupport.stripComments`）が文字列リテラル内の行コメント・ブロックコメント開始記号相当の文字並びを誤って解釈し見逃しを起こした実例が見つかった場合、文字列リテラルを認識する簡易lexerへの改修を検討すること（現状は本プロジェクトの対象ファイルにそのようなリテラルを含む行が存在しないことを確認済みのため据え置き）。

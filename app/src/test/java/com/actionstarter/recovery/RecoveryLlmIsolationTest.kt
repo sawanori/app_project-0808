@@ -24,24 +24,33 @@ import java.io.File
  */
 class RecoveryLlmIsolationTest {
 
-    // T-BRE-32: 正常系 - recovery/配下のソースがcom.actionstarter.aiを一切参照しない（構造ガード）
+    // T-BRE-32: recovery/配下のソース（再帰）がcom.actionstarter.ai / LocalLanguageModel /
+    // com.google.ai.edge.litertlm / com.actionstarter.llmのいずれも参照しない（構造ガード、
+    // P7-C7で再帰化＋禁止語拡張・他2ガードとの統一。計画書§9.2穴A・穴B・穴C対処）
     @Test
     fun tBre32_recoveryPackageSources_doNotReferenceAiPackage() {
         val recoveryDir = resolveRecoveryPackageDir()
-        val kotlinFiles = recoveryDir.listFiles { file -> file.isFile && file.extension == "kt" }
+        val kotlinFiles = recoveryDir.walkTopDown().filter { file -> file.isFile && file.extension == "kt" }.toList()
 
         assertTrue(
             "recovery/パッケージディレクトリにKotlinソースファイルが見つかりません: ${recoveryDir.absolutePath}",
-            kotlinFiles != null && kotlinFiles.isNotEmpty()
+            kotlinFiles.isNotEmpty()
         )
 
-        val offendingFiles = kotlinFiles!!.filter { file ->
-            file.readText().contains("com.actionstarter.ai")
+        val bannedReferences = listOf(
+            "com.actionstarter.ai",
+            "LocalLanguageModel",
+            "com.google.ai.edge.litertlm",
+            "com.actionstarter.llm"
+        )
+        val offendingFiles = kotlinFiles.filter { file ->
+            val text = file.readText()
+            bannedReferences.any { text.contains(it) }
         }
 
         assertTrue(
-            "recovery/配下のソースがcom.actionstarter.aiを参照しています（仕様§15の決定的処理原則" +
-                "違反）: ${offendingFiles.map { it.name }}",
+            "recovery/配下のソースが禁止参照($bannedReferences)を含んでいます（仕様§15の決定的処理" +
+                "原則違反、P7-C7で禁止語拡張・穴C対処で他2ガードと統一）: ${offendingFiles.map { it.name }}",
             offendingFiles.isEmpty()
         )
     }

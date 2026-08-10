@@ -198,6 +198,87 @@ class PlanPromptBuilderTest {
     }
 
     // ------------------------------------------------------------------
+    // P7-C7: 最小コンテキスト原則（§10/§34）の検証 - カレンダー本文・GPS正確位置・行動履歴を
+    // 丸ごとプロンプトへ含めていないことの回帰ロック。ローカル推論であっても、LLMへ渡す
+    // コンテキストは必要最小限（イベントtitle・locationName・開始時刻・locale）に限定する
+    // 設計であることを検証する（[ExecutionEvent]は`notes`/`coordinates`を、[PlanningContext]は
+    // `profile`〔PersonalExecutionProfile〕を保持するが、build()はこれらを一切参照しない）。
+    // ------------------------------------------------------------------
+
+    // 異常系の回帰防止 - event.notes（カレンダー本文）はbuild()の出力に一切含まれない
+    // （§10「Calendar...を外部LLMへ送らない」・§58〜60の最小コンテキスト原則）
+    @Test
+    fun piiMinimization_eventNotesBody_neverAppearsInPrompt() {
+        val distinctiveNotes = "PRIVATE_NOTE_MARKER: 持病の薬を忘れずに・鍵は近所に預ける・血液型AB型"
+        val context = planningContext(event = sampleEvent().copy(notes = distinctiveNotes))
+
+        val prompt = PlanPromptBuilder().build(context)
+
+        assertFalse(
+            "build()の出力にevent.notes(カレンダー本文)がそのまま含まれています" +
+                "(§10/§34最小コンテキスト原則違反): $prompt",
+            prompt.contains(distinctiveNotes)
+        )
+        assertFalse(
+            "build()の出力にevent.notesの一部(マーカー文字列)が含まれています: $prompt",
+            prompt.contains("PRIVATE_NOTE_MARKER")
+        )
+    }
+
+    // 異常系の回帰防止 - event.coordinates（GPS正確位置の緯度経度）はbuild()の出力に一切
+    // 含まれない（§15「LLMにGPS位置...を決めさせない」。locationNameという名称のみを渡し、
+    // 緯度経度の生数値は一切渡さない設計であることの回帰ロック）
+    @Test
+    fun piiMinimization_gpsCoordinates_neverAppearInPrompt() {
+        val distinctiveLat = 35.123456
+        val distinctiveLon = 139.987654
+        val context = planningContext(
+            event = sampleEvent(locationName = "Some Office").copy(
+                coordinates = Coordinate(lat = distinctiveLat, lon = distinctiveLon)
+            )
+        )
+
+        val prompt = PlanPromptBuilder().build(context)
+
+        assertFalse(
+            "build()の出力に緯度の生数値が含まれています(§15 GPS位置をLLMに渡さない原則違反): $prompt",
+            prompt.contains(distinctiveLat.toString())
+        )
+        assertFalse(
+            "build()の出力に経度の生数値が含まれています(§15 GPS位置をLLMに渡さない原則違反): $prompt",
+            prompt.contains(distinctiveLon.toString())
+        )
+    }
+
+    // 正常系の回帰防止 - context.profile（PersonalExecutionProfile、行動履歴）の有無で
+    // build()の出力が変化しない＝行動履歴データがプロンプトに一切反映されない
+    // （§10「Behavioral Historyを外部LLMへ送らない」の回帰ロック）
+    @Test
+    fun piiMinimization_behavioralHistoryProfile_doesNotAffectPromptOutput() {
+        val event = sampleEvent()
+        val withoutProfile = planningContext(event = event).copy(profile = null)
+        val richProfile = PersonalExecutionProfile(
+            eventCategory = "business_meeting",
+            averageTransitionDuration = Duration.ofMinutes(37),
+            averagePreparationDuration = Duration.ofMinutes(22),
+            averageResponseDelay = Duration.ofMinutes(5),
+            averageDepartureDelay = Duration.ofMinutes(9),
+            preferredArrivalBuffer = Duration.ofMinutes(15)
+        )
+        val withProfile = planningContext(event = event).copy(profile = richProfile)
+
+        val promptWithoutProfile = PlanPromptBuilder().build(withoutProfile)
+        val promptWithProfile = PlanPromptBuilder().build(withProfile)
+
+        assertEquals(
+            "行動履歴(PersonalExecutionProfile)の有無でbuild()の出力が変化しています" +
+                "（プロンプトに行動履歴が漏れている可能性、§10最小コンテキスト原則違反）",
+            promptWithoutProfile,
+            promptWithProfile
+        )
+    }
+
+    // ------------------------------------------------------------------
     // QH-8: buildSystemInstruction(locale)
     // ------------------------------------------------------------------
 

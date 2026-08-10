@@ -137,6 +137,22 @@ class ContentSanityCheckerTest {
         )
     }
 
+    // QH-4e: 異常系 - display_textに"@"を含む（メールアドレス様の捏造）→ 不合格
+    // （P7-C7・§34捏造検出の回帰ロック。containsFabricatedContentの"@"分岐が既存テストでは
+    // 未検証だったため追加。数字もURLパターンも含まない入力で"@"分岐のみを単独検証する）
+    @Test
+    fun qh4e_displayTextContainsAtSign_isInvalid() {
+        val response = singleStepResponse(displayText = "sales@company.jpへ連絡する")
+        val context = planningContext(title = "定例ミーティング")
+
+        val result = ContentSanityChecker().check(response, context)
+
+        assertTrue(
+            "「@」を含むdisplay_textは捏造検出で不合格になるべきです(QH-4e・§34): $result",
+            result is ContentSanityResult.Invalid
+        )
+    }
+
     // ------------------------------------------------------------------
     // QH-10: 禁止語・プレースホルダ検出
     // ------------------------------------------------------------------

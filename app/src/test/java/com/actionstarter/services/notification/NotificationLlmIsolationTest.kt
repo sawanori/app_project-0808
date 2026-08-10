@@ -26,26 +26,33 @@ import java.io.File
  */
 class NotificationLlmIsolationTest {
 
-    // T-NOTIF-9: 回帰ガード - services/notification/配下のソースがcom.actionstarter.ai /
-    // LocalLanguageModelを一切参照しない（構造ガード、§15）
+    // T-NOTIF-9: 回帰ガード - services/notification/配下のソース（再帰）がcom.actionstarter.ai /
+    // LocalLanguageModel / com.google.ai.edge.litertlm / com.actionstarter.llmのいずれも参照
+    // しない（構造ガード、§15。P7-C7で再帰化＋禁止語拡張、計画書§9.2穴A・穴B対処）
     @Test
     fun tNotif9_notificationPackageSources_doNotReferenceAiPackageOrLocalLanguageModel() {
         val notificationDir = resolveNotificationPackageDir()
-        val kotlinFiles = notificationDir.listFiles { file -> file.isFile && file.extension == "kt" }
+        val kotlinFiles = notificationDir.walkTopDown().filter { file -> file.isFile && file.extension == "kt" }.toList()
 
         assertTrue(
             "services/notification/パッケージディレクトリにKotlinソースファイルが見つかりません: ${notificationDir.absolutePath}",
-            kotlinFiles != null && kotlinFiles.isNotEmpty()
+            kotlinFiles.isNotEmpty()
         )
 
-        val offendingFiles = kotlinFiles!!.filter { file ->
+        val bannedReferences = listOf(
+            "com.actionstarter.ai",
+            "LocalLanguageModel",
+            "com.google.ai.edge.litertlm",
+            "com.actionstarter.llm"
+        )
+        val offendingFiles = kotlinFiles.filter { file ->
             val text = file.readText()
-            text.contains("com.actionstarter.ai") || text.contains("LocalLanguageModel")
+            bannedReferences.any { text.contains(it) }
         }
 
         assertTrue(
-            "services/notification/配下のソースがcom.actionstarter.aiまたはLocalLanguageModelを参照しています" +
-                "（仕様§15の決定的処理原則違反）: ${offendingFiles.map { it.name }}",
+            "services/notification/配下のソースが禁止参照($bannedReferences)を含んでいます" +
+                "（仕様§15の決定的処理原則違反、P7-C7で禁止語拡張）: ${offendingFiles.map { it.name }}",
             offendingFiles.isEmpty()
         )
     }

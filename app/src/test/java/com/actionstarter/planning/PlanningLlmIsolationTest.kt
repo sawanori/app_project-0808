@@ -24,29 +24,49 @@ import java.io.File
  * なる）とは異なり、本ケースは実装前から既にGreenの見込みが高い。これは仕様不備ではなく、
  * 本ケースの目的が「現状の非参照を証明すること」ではなく「将来の変更で誤って参照を
  * 混入させてしまうことを防ぐ回帰ガード」であるため（§9エラーマップ#17の記載どおり）。
+ *
+ * **P7-C7拡張（計画書§9.2穴A・穴B、`docs/plans/phase7-local-llm-foundation.md`§14 P7-C7）**:
+ * 元々の実装は非再帰列挙（`listFiles{}`）・禁止語2種（`com.actionstarter.ai`/
+ * `LocalLanguageModel`）のみであった。Phase 7でLiteRT-LMランタイム（`com.google.ai.edge.litertlm`）
+ * と将来の代替ランタイム候補パッケージ（`com.actionstarter.llm`）が導入されたため、以下2点を
+ * **強化方向のみ**で拡張する（TEAMS §2の既存テスト変更条件、assertion強度を下げない）。
+ * 1. **穴B対処**: `listFiles{}`（直下のみ）を`walkTopDown()`（再帰）へ変更し、`planning/`配下に
+ *    将来サブディレクトリが作られても検出漏れが起きないようにする（再帰性のメタ検証は
+ *    [com.actionstarter.ai.IsolationGuardSupportTest]のT-AIISO-8参照。同一のKotlin標準
+ *    ライブラリ関数`File.walkTopDown()`・同一の述語を用いるため、当該メタテストの実証は
+ *    本ガードの穴B対処にもそのまま適用できる）。
+ * 2. **穴A・穴C対処**: 禁止語へ`com.google.ai.edge.litertlm`・`com.actionstarter.llm`を追加し、
+ *    `recovery`/`services.notification`の同種ガードと禁止語リストを完全に統一する。
  */
 class PlanningLlmIsolationTest {
 
-    // T-BPE-28: 正常系 - planning/配下のソースがcom.actionstarter.ai / LocalLanguageModelを
-    // 一切参照しない（構造ガード）
+    // T-BPE-28: 正常系 - planning/配下のソース（再帰）がcom.actionstarter.ai / LocalLanguageModel /
+    // com.google.ai.edge.litertlm / com.actionstarter.llmのいずれも参照しない（構造ガード、
+    // P7-C7で再帰化＋禁止語拡張）
     @Test
     fun tBpe28_planningPackageSources_doNotReferenceAiPackageOrLocalLanguageModel() {
         val planningDir = resolvePlanningPackageDir()
-        val kotlinFiles = planningDir.listFiles { file -> file.isFile && file.extension == "kt" }
+        val kotlinFiles = planningDir.walkTopDown().filter { file -> file.isFile && file.extension == "kt" }.toList()
 
         assertTrue(
             "planning/パッケージディレクトリにKotlinソースファイルが見つかりません: ${planningDir.absolutePath}",
-            kotlinFiles != null && kotlinFiles.isNotEmpty()
+            kotlinFiles.isNotEmpty()
         )
 
-        val offendingFiles = kotlinFiles!!.filter { file ->
+        val bannedReferences = listOf(
+            "com.actionstarter.ai",
+            "LocalLanguageModel",
+            "com.google.ai.edge.litertlm",
+            "com.actionstarter.llm"
+        )
+        val offendingFiles = kotlinFiles.filter { file ->
             val text = file.readText()
-            text.contains("com.actionstarter.ai") || text.contains("LocalLanguageModel")
+            bannedReferences.any { text.contains(it) }
         }
 
         assertTrue(
-            "planning/配下のソースがcom.actionstarter.aiまたはLocalLanguageModelを参照しています" +
-                "（仕様§15の決定的処理原則違反）: ${offendingFiles.map { it.name }}",
+            "planning/配下のソースが禁止参照($bannedReferences)を含んでいます" +
+                "（仕様§15の決定的処理原則違反、P7-C7で禁止語拡張）: ${offendingFiles.map { it.name }}",
             offendingFiles.isEmpty()
         )
     }
