@@ -1494,3 +1494,45 @@ P7-C2c（品質ハーネス由来の新設部品へのRed補完サイクル）�
 **検証方法**: ADR-0057と同一の`:app:testDebugUnitTest --rerun`（tests=542/failures=0）・`:app:lintDebug`（error 0）・実機E2E（`build/agent-logs/p7c5b-e2e.log`）で検証した。
 
 **再検討トリガー**: P7-C8でのモデル比較（Qwen3-0.6B／1.7B／Gemma3-1B）実測後、「0.6Bモデルは周辺設計（few-shot/systemInstruction強化）だけでは深いSemantic Contextualizationに到達しない」という本ADRの結論が他モデルでも成り立つか確認すること。成り立たない場合（より大きいモデルなら同じfew-shotで具体性が出る場合）、0.6B自体の能力限界が主因という結論を補強する追加証拠になる。
+
+---
+
+### ADR-0059: `ModelCatalog`へQwen3-1.7B・Gemma4-E2Bを追加し、`ActivityManager`ベースのPSSピークサンプリングで`defaultProfilePeakRamBytes`を実機実測する（P7-C8モデル比較。計画書原案のGemma3-1BはHFゲート付きのためGemma4-E2Bで代替）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（本体タスク指示に基づく実装時判断・報告事項） ／ 決定者: domain-implementer（P7-C8、実機実測を前提とした実装時判断） ／ 起案agent: domain-implementer ／ 関連仕様§: 計画書§11.3・§14 P7-C8・§17 V-7・V-8、ADR-0057（`defaultProfilePeakRamBytes`新設）・ADR-0058（P7-C8への申し送り1〜4）（記録トリガー②仕様未定義箇所の補完〔計画書原案のGemma3-1B→Gemma4-E2Bへの代替〕・③新事実発覚〔PSSとnative heapの乖離〕。`ModelCatalog.ALL`へエントリを追加するため①契約変更にも該当するが、`ModelStorageImpl.installedEntry()`の解決順序を保つ設計〔決定4〕により既定モデル選択への実害はない）
+
+- **ADR番号の付番根拠**: `grep -n "^### ADR-00" DECISIONS.md`を起票直前に再実行し、実測最新確定ADRがADR-0058であることを確認した。本タスク指示書自身も「ADR-0059〜」を明示的に指定しているため、これと整合する形で0059を採番した。
+
+**背景**: 計画書§14のP7-C8原案は「Qwen3-0.6B / Qwen3-1.7B / Gemma3-1B の3者比較」だったが、本体タスク（Fable 5指示）が発注前の調査でGemma3-1BはHuggingFaceゲート付き（利用にHF側の承認申請が必要）であることを確認し、代わりにゲートなし・Apache-2.0の`litert-community/gemma-4-E2B-it-litert-lm`を比較対象として明示的に指定した。ADR-0058は「0.6Bのまま周辺設計を強化しても深いSemantic Contextualizationには到達しない」ことを実測済みであり、より大きい/新しいモデルで改善するかの検証がP7-C8の主目的だった。あわせて、AVD（RAM 4096MB）でGemma4-E2B（ファイル2.59GB）が実際に動作するか、モデルカードで言及されうる「8GB」級のRAM要求と実測が整合するかも検証課題だった。
+
+**決定**:
+
+1. **`ModelCatalog`へ2エントリ追加**: `QWEN3_1_7B_INT4_BLOCK32`（`litert-community/Qwen3-1.7B`の`Qwen3-1.7B_dynamic_wi4b32_afp32.litertlm`、977,184,032バイト、SHA-256は開発者自身がダウンロード後`sha256sum`で計算し`2eeffef7b51bc3e1225ea69fe7aa5f417397934b56a5b6c20cc068d6fd2c918b`と確認、HF側`x-linked-etag`とも一致・U-6方針）・`GEMMA_4_E2B_IT`（`litert-community/gemma-4-E2B-it-litert-lm`の`gemma-4-E2B-it.litertlm`、2,588,147,712バイト、SHA-256=`181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c`、同じくHF側`x-linked-etag`と一致）。いずれもApache-2.0（HFモデルカードで確認）。
+2. **測定方法の拡張（`PssPeakSampler`新設、`app/src/androidTest/java/com/actionstarter/probe/ModelComparisonProbeTest.kt`）**: 本番`LiteRtLmLocalLanguageModel`が内蔵する`peakNativeHeapBytes`実測（`Debug.getNativeHeapAllocatedSize()`＝bionic mallocアリーナの割当量ベース）に加えて、`ActivityManager.getProcessMemoryInfo().totalPss`をバックグラウンドスレッドで定期サンプリングするピークPSS計測を新設した。**実機実測でこの2指標に大きな乖離があることが判明した**——Qwen3-1.7Bで`peakNativeHeapBytes`は712〜750MBだが`PssPeakSampler`実測ピークPSSは1,945,677,824バイト（約1.81GiB、約1.2GBの乖離）。LiteRT-LMがモデル重みをmmapで読み込むため、mallocアリーナ限定の`peakNativeHeapBytes`は真の物理メモリ使用量を大きく過小評価すると判断する（P7-C0/P7-C5/P7-C5bはこの乖離を認識せず`peakNativeHeapBytes`のみで`defaultProfilePeakRamBytes`を検証していた）。
+3. **新2エントリの`defaultProfilePeakRamBytes`はPSS実測値を根拠に確定**: Qwen3-1.7B（production defaults、`shotCount=2`実行時のピークPSS=1,945,677,824バイト）・Gemma4-E2B（production defaults実行時のピークPSS=1,980,168,192バイト、reduced context実行時は1,972,925,440バイトとほぼ同一）とも実測値に安全マージンを載せて**2.0GiB（2,147,483,648バイト）**へ切り上げて採用した。`peakRamBytes`（フルコンテキスト参考値、ADR-0057の意味論）はフルコンテキストctx4096/ctx32768の独立測定を本サイクルでは行っていないため、`defaultProfilePeakRamBytes`と同値を暫定採用する（[ModelCatalog.kt]KDoc「フルコンテキスト値としての独立検証は今後の課題」）。
+4. **`ModelCatalog.ALL`の順序保持**: `QWEN3_0_6B_INT4_BLOCK32`を先頭に維持したまま2エントリを末尾に追加した。`ModelStorageImpl.installedEntry()`は`catalog.firstOrNull { finalFile(entry).isFile }`で解決するため、本番の既定モデル（Settings未実装のため事実上唯一のインストール経路）はQwen3-0.6Bのまま変わらない。
+5. **Gemma4-E2Bは production defaults（`shotCount=2`、他モデルと同一条件）で完走を確認**: 本体タスク指示は「AVD 4096MBでOOMの可能性に注意し、必要なら小コンテキストプロファイル（`shotCount` 0/1）で試行」だったため、まず安全側の`probeGemma4E2B_reducedContext`（`shotCount=1`）を先に実行し、OOM・クラッシュなく完走することを確認した（5シナリオ中2件`Success`・3件`Fallback(SCHEMA_INVALID`、duplicate action_type検出）うえで、他モデルと横並び比較可能な`probeGemma4E2B_productionDefaults`（`shotCount=2`）を追加実行し、**こちらも5シナリオ全件`Success`かつより高品質**（具体的にはADR本文末尾「実測結果」参照）だったため、比較表・カタログの代表値はproduction defaultsを正とした。
+
+**実測結果（正直な評価、詳細な比較表は本体タスク最終報告・計画書§14.10参照）**:
+
+- **Qwen3-1.7B（production defaults）**: 文法は自然だが、`SamplingPolicy.Primary`（`topK=1, temperature=0.0`＝greedy）下でfriend-wedding・team-meetingの2/5シナリオが**全く無関係な同一の`display_text`「歯科検診の準備」**に収束するという、0.6Bにはなかった新規の退化的失敗モードを実測した。decode速度（12.9〜16.6 tok/s）・TTFT（4.4〜5.2秒）とも0.6Bより明確に劣化した。「モデルサイズを上げれば単純に改善する」という仮説は本モデルでは反証された。
+- **Gemma4-E2B（production defaults）**: 5/5 `Success`（Fallback 0件）。dental-checkup→「保険証を持って行く」（few-shot模範「保険証を持って出る」とほぼ同水準の具体性）、friend-wedding→「招待状を確認する」（模範と異なるが独自に妥当）、team-meeting→「資料を準備する」（**0.6B/1.7Bで横断的に観測された無関係文言・誤分類が解消**）、osaka-business-trip→「出張に必要な書類をまとめる」、friend-birthday-party→「手土産を用意する」。全件2〜3ステップの複数ステップ構成（0.6B/1.7Bはほぼ全件1ステップに収束）。decode速度（22.8〜25.5 tok/s）・TTFT（1.57〜2.04秒）とも0.6Bと同水準かそれ以上。ADR-0058の「0.6Bで頭打ちなら、より大きいモデルでの改善幅がモデルサイズ起因の証拠になる」という仮説は、**Qwen系列の拡大では反証されたが、Gemma4-E2Bへのモデル変更では支持された**——「サイズ」ではなく「モデルファミリー／instruction tuningの質」が主要因である可能性が高い。
+- **「公式8GB宣言」は確認できなかった**: HFモデルカード（`litert-community/gemma-4-E2B-it-litert-lm`）を実際に確認したが、8GBという最小RAM要件の記載は見つからなかった。カード自体が公表する実測ピークメモリは607MB（iPhone 17 Pro CPU）〜3,681MB（Jetson Orin Nano CPU）、Samsung S26 Ultra CPUで約1,733MBであり、本プロジェクトのAVD実測（約1.98GB）とも大きくは乖離しない。8GBという数値の出典は本体タスク発注時点の前提以上には特定できず、少なくとも本モデルの実際のメモリ使用量とは整合しない可能性が高い。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| Gemma4-E2Bはモデルカードの「8GB」を字義通り信じ、AVD 4096MBでの実推論を試行せずOOM前提でスキップする | 知的誠実性に反する（未検証の伝聞を事実として扱うことになる）。実際に試行したところ4096MBのAVDで問題なく完走し、この前提が実測と食い違うことが分かった。試行しなければこの重要な発見（PSS実測1.98GB、8GB宣言と実測の乖離）を得られなかった |
+| `defaultProfilePeakRamBytes`を`peakNativeHeapBytes`実測値（Qwen1.7Bなら712〜750MB程度）に安全マージンを載せて確定する（既存Qwen3-0.6Bエントリと同じ方法論） | 本サイクルで`peakNativeHeapBytes`が真のメモリ使用量を約1.2GB過小評価することを発見したため、同じ方法論を踏襲すると新2エントリのOOM事前ガードが実際の要求量に対して過小な閾値になり、§8.6 #7の主防御が機能しなくなるリスクがある。`PssPeakSampler`実測（総プロセスPSS）を正とする決定2の方が安全側である |
+| Qwen3-1.7Bの「歯科検診の準備」への収束を明らかなバグとみなし、`SamplingPolicy.Primary`のtopK/temperatureを変更するなど本番コードを修正する | 本体タスクのスコープ外（「本番domain変更禁止」「比較は専用probe内で完結」の制約）。またGateway/adapterの実装不備という証拠はなく（Conversation/Engineライフサイクルの正しさは既にADR-0056 V-2実測で確認済み）、greedy decodingという既定サンプリング戦略下でのモデル自体の挙動である可能性が高いため、実測事実として正直に報告するにとどめた |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/model/ModelCatalog.kt`（`QWEN3_1_7B_INT4_BLOCK32`・`GEMMA_4_E2B_IT`新設、`ALL`へ追加）。`app/src/test/java/com/actionstarter/ai/model/ModelCatalogTest.kt`（新規7件・`all_containsQwen3Entry`更新）。`app/src/androidTest/java/com/actionstarter/probe/ModelComparisonProbeTest.kt`（新設、`@Ignore`既定）。本番の既定モデル選択・`AiPreferences`既定値・`AppContainer`配線・NavHost/Manifest/UIはいずれも無変更。
+
+**検証方法**: `:app:testDebugUnitTest --rerun`でtests=549/failures=0/errors=0/skipped=1（542+新規7件、`build/agent-logs/p7c8-jvm.log`）。`:app:lintDebug`でBUILD SUCCESSFUL・error 0・warning 22（P7-C5bベースラインと同数、`build/agent-logs/p7c8-lint.log`）。実機E2E（AVD `actionstarter_test` x86_64/API35、RAM 4096MB）: `build/agent-logs/p7c8-e2e.log`（Qwen3-1.7B production defaults・Gemma4-E2B reduced context・Gemma4-E2B production defaultsの3実行の統合ログ）、個別Gradle/Logcatログは`p7c8-qwen17b-e2e-*.log`・`p7c8-gemma4e2b-reduced-*.log`・`p7c8-gemma4e2b-prod-*.log`。
+
+**再検討トリガー**:
+1. **既存`QWEN3_0_6B_INT4_BLOCK32.defaultProfilePeakRamBytes`（1.25GiB、ADR-0057）はPSS実測を経ていない**（P7-C5診断実測は`peakNativeHeapBytes`のみを見ていた）。本ADRの発見（PSSとnative heapの約1.2GB乖離）を踏まえると、Qwen3-0.6B自体も`PssPeakSampler`で再実測し、OOM事前ガードの閾値が実際に安全か確認することを推奨する（本サイクルでは本体タスクの制約「本番既定モデル変更禁止」により据え置いた）。
+2. **フルコンテキスト（Qwen3-1.7B: ctx4096、Gemma4-E2B: ctx32768）の`peakRamBytes`独立測定は未実施**。§5.3の段階推奨を厳密に確定する場合は追加実測が必要。
+3. **最終的な既定モデルの選択はユーザー判断**（U-4の既存裁定どおり）。本ADRは比較用データの整備・実測方法論の記録に留め、Gemma4-E2Bを新既定にするかどうかの決定はしていない（本体タスク最終報告の推奨を参照のうえユーザーが確定すること）。
+4. Gemma3-1B自体（HFゲート解除後）との比較は本ADRの対象外のまま残る。ゲートが将来解除された場合、または別ルートでアクセス可能になった場合は追加比較を検討する余地がある。

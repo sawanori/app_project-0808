@@ -47,8 +47,109 @@ object ModelCatalog {
         defaultProfilePeakRamBytes = 1_342_177_280L
     )
 
-    /** カタログ全体。§5.3段2以降・Gemma系等を追加する際はここへ足す（U-4確定後）。 */
-    val ALL: List<ModelCatalogEntry> = listOf(QWEN3_0_6B_INT4_BLOCK32)
+    /**
+     * P7-C8モデル比較用（計画書§11.3・§14 P7-C8、U-4）。`litert-community/Qwen3-1.7B`の
+     * `Qwen3-1.7B_dynamic_wi4b32_afp32.litertlm`。[sha256]／[sizeBytes]はP7-C8実測（実際に
+     * ダウンロードしたファイルへ`sha256sum`を計算し、HF側`x-linked-etag`（補助的傍証）とも
+     * 一致確認済み、U-6方針どおり開発者実測値を正とする）。`contextLength`はHFモデルカード記載の
+     * この量子化バリアント自身の値（4096、[QWEN3_0_6B_INT4_BLOCK32]と同値）。
+     *
+     * [peakRamBytes]／[defaultProfilePeakRamBytes]はP7-C8実機（AVD、RAM 4096MB）プローブ実測値
+     * （`ModelComparisonProbeTest.probeQwen17B_productionDefaults`、production defaults＝
+     * `shotCount=2`・`maxNumTokens`自動算出、5シナリオ全件実行）。**実測の情報源は`ActivityManager.
+     * getProcessMemoryInfo().totalPss`によるプロセス全体のピークPSS（実測1,945,677,824バイト、
+     * `PssPeakSampler`）であり、本番`LiteRtLmLocalLanguageModel`が内蔵する`peakNativeHeapBytes`
+     * （`Debug.getNativeHeapAllocatedSize()`ベース、本モデルでは実測712〜750MB程度）ではない**。
+     * P7-C8で「LiteRT-LMがモデル重みをmmapで読み込むため、mallocアリーナ限定の
+     * `peakNativeHeapBytes`は真の物理メモリ使用量を大きく過小評価する」ことが実機で判明した
+     * （両指標の差が約1.2GB）。[QWEN3_0_6B_INT4_BLOCK32]の`defaultProfilePeakRamBytes`
+     * （P7-C5診断実測）はこのPSS実測を伴わずに確定した値であるため、同じ過小評価リスクを
+     * 抱えている可能性がある（本体タスク最終報告・ADR-0059「申し送り」参照。本サイクルでは
+     * Qwen3-0.6Bの値自体は変更しない）。実測1,945,677,824バイトに安全マージンを載せて
+     * 2.0GiB（2,147,483,648バイト）へ切り上げた値を正式採用する。[QWEN3_0_6B_INT4_BLOCK32]と
+     * 同じく本フィールドは小コンテキスト・本番プロファイルでの実効ピークであり、フルコンテキスト
+     * （ctx4096）を独立測定したものではない（P7-C8のスコープはP7-C5bと同一の小コンテキスト・
+     * 本番プロファイル比較であり、フルコンテキスト実測はスコープ外。したがって[peakRamBytes]は
+     * [defaultProfilePeakRamBytes]と同値を暫定採用する）。
+     */
+    val QWEN3_1_7B_INT4_BLOCK32 = ModelCatalogEntry(
+        id = "qwen3-1.7b-int4-block32",
+        displayName = "Qwen3-1.7B (INT4 block-32)",
+        downloadUrl =
+            "https://huggingface.co/litert-community/Qwen3-1.7B/resolve/main/" +
+                "Qwen3-1.7B_dynamic_wi4b32_afp32.litertlm",
+        sha256 = "2eeffef7b51bc3e1225ea69fe7aa5f417397934b56a5b6c20cc068d6fd2c918b",
+        sizeBytes = 977_184_032L,
+        peakRamBytes = 2_147_483_648L,
+        contextLength = 4096,
+        quantization = "dynamic-int4-block32",
+        license = ModelLicense.APACHE_2_0,
+        requiresNoticeFile = false,
+        // P7-C8実測（PSSピーク1,945,677,824バイト）+安全マージンで2.0GiBへ切り上げ。
+        // build/agent-logs/p7c8-qwen17b-e2e.log参照。
+        defaultProfilePeakRamBytes = 2_147_483_648L
+    )
+
+    /**
+     * P7-C8モデル比較用（計画書§11.3・§14 P7-C8、U-4）。`litert-community/gemma-4-E2B-it-litert-lm`の
+     * `gemma-4-E2B-it.litertlm`。[sha256]／[sizeBytes]はP7-C8実測（U-6方針、HF側`x-linked-etag`とも
+     * 一致確認済み）。`contextLength`はHFモデルカード記載値（「up to 32k」を採用。実行時に
+     * 実際へ渡す`maxNumTokens`は[PlanPromptBuilder.CONTEXT_LENGTH_CEILING]＝4096で別途clampされる
+     * ため、本フィールドはモデル自身の公称上限の記録用であり、Phase 7の実行時コンテキスト長を
+     * 拡張するものではない）。`quantization`はHFモデルカード記載の「2bit/4bit/8bit混在」構成
+     * （Gemma 3n系のPer-Layer Embeddings類似の設計と見られ、ファイルサイズ2.59GBがそのまま
+     * 常駐RAMになるとは限らない。[peakRamBytes]のKDoc参照）。
+     *
+     * [peakRamBytes]／[defaultProfilePeakRamBytes]はP7-C8実機（AVD、RAM 4096MB、`MemAvailable`
+     * 実測約2.6〜2.9GB）プローブ実測値。**AVD 4096MBでの実推論に成功した**（本体タスク指示の
+     * 懸念「4GBでOOMの可能性」は本モデルでは的中しなかった）——production defaults
+     * （`shotCount=2`）・reduced context（`shotCount=1`）のいずれも5シナリオ中Fallback/成功の
+     * 差はあれどOOMやプロセスクラッシュは一切発生せず、`PssPeakSampler`実測ピークPSSは
+     * production defaultsで1,980,168,192バイト、reduced contextで1,972,925,440バイトと
+     * 両条件でほぼ同一（約1.84GiB。KV-cache/プロンプト長の差より常駐重みページの方が支配的で
+     * あることを示唆）。HFモデルカードが公表するCPUバックエンド実測（Samsung S26 Ultra、
+     * ピークメモリ約1,733MB）はAVDと異なる条件下の値だが、いずれも「ファイルサイズ2.59GBが
+     * そのまま常駐RAMにはならない」というquantization（KDoc「quantization」参照）の性質と
+     * 整合する結果になった。**「公式8GB宣言」は本体タスク調査時点の前提だったが、HFモデルカード
+     * （`litert-community/gemma-4-E2B-it-litert-lm`）自体には8GBという最小RAM要件の記載は
+     * 見つからなかった**（本体タスク最終報告「Gemma4-E2Bの8GB言及可否」参照。カード記載の実測
+     * ピークメモリは607MB〜3,681MB〔デバイス依存〕であり、8GBはむしろ乖離が大きい側の主張と
+     * なる）。値はproduction defaults実測1,980,168,192バイトに安全マージンを載せて2.0GiB
+     * （2,147,483,648バイト）へ切り上げて採用する。[QWEN3_1_7B_INT4_BLOCK32]と同じくフル
+     * コンテキスト（ctx32768、本モデルの公称上限）の独立測定はスコープ外であり、
+     * [peakRamBytes]は[defaultProfilePeakRamBytes]と同値を暫定採用する。
+     */
+    val GEMMA_4_E2B_IT = ModelCatalogEntry(
+        id = "gemma-4-e2b-it",
+        displayName = "Gemma 4 E2B-it (mixed 2/4/8-bit)",
+        downloadUrl =
+            "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/" +
+                "gemma-4-E2B-it.litertlm",
+        sha256 = "181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c",
+        sizeBytes = 2_588_147_712L,
+        peakRamBytes = 2_147_483_648L,
+        contextLength = 32_768,
+        quantization = "mixed-2_4_8bit",
+        license = ModelLicense.APACHE_2_0,
+        requiresNoticeFile = false,
+        // P7-C8実測（production defaultsのPSSピーク1,980,168,192バイト）+安全マージンで
+        // 2.0GiBへ切り上げ。build/agent-logs/p7c8-gemma4e2b-e2e.log参照。
+        defaultProfilePeakRamBytes = 2_147_483_648L
+    )
+
+    /**
+     * カタログ全体。§5.3段2以降・Gemma系等を追加する際はここへ足す（U-4確定後）。
+     *
+     * **順序の意図（P7-C8で2件追加）**: [QWEN3_0_6B_INT4_BLOCK32]を必ず先頭に置く。
+     * [ModelStorageImpl.installedEntry]は`catalog.firstOrNull { finalFile(entry).isFile }`で
+     * 「導入済み」を決めるため、本番の既定モデル（Qwen3-0.6B）が先頭である限り、[ALL]へ比較用
+     * エントリを追加しても本番の既定選択（Settings未実装のため事実上唯一のインストール経路）は
+     * 変わらない。[QWEN3_1_7B_INT4_BLOCK32]／[GEMMA_4_E2B_IT]はP7-C8比較probe
+     * （`ModelComparisonProbeTest`）が`ModelStorageImpl(context, catalog = listOf(entry))`で
+     * 単一エントリのcatalogへ差し替えて使うため、[ALL]内の並び自体が比較probeの動作に影響することは
+     * ない。
+     */
+    val ALL: List<ModelCatalogEntry> = listOf(QWEN3_0_6B_INT4_BLOCK32, QWEN3_1_7B_INT4_BLOCK32, GEMMA_4_E2B_IT)
 
     /** [id]に一致する[ModelCatalogEntry]を返す。存在しなければ`null`。 */
     fun findById(id: String): ModelCatalogEntry? = ALL.firstOrNull { it.id == id }
@@ -94,7 +195,8 @@ data class ModelCatalogEntry(
 )
 
 /**
- * §13 #24。Phase 7は[APACHE_2_0]のみを扱う（唯一のカタログエントリがQwen3、Apache-2.0）。
+ * §13 #24。Phase 7は[APACHE_2_0]のみを扱う（P7-C8時点のカタログ3エントリ〔Qwen3-0.6B・
+ * Qwen3-1.7B・Gemma4-E2B〕はいずれもApache-2.0ライセンス、HFモデルカードで確認済み）。
  * Gemma 3／3n等Gemma Terms下のモデルを将来追加する場合はここへ値を追加する（計画書§5.2
  * 「Gemmaへ切り替える場合の差分」の追加義務を実装に伴わせること）。
  */

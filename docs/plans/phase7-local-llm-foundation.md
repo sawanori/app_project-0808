@@ -726,7 +726,7 @@ AVD `actionstarter_test`（**実測: x86_64 / API 35 / RAM 4096MB**）。目的�
 | **P7-C5b** 品質ハーネス強化（Fable 5指示・P7-C5実測への対応） | ADR-0057（`maxNumTokens`計算式化・OOM事前ガードのプロファイル依存是正）・ADR-0058（few-shot拡張・systemInstruction強化）。実機で改善前後比較・shotCount比較を実測 | sonnet | JVM回帰542件0失敗・lint error 0・実機E2E実測完了（§14.9） |
 | **P7-C6** Green: settings | F92・F97 を実装。Settings route追加・ja/en文言追加 | sonnet | G3（部分） |
 | **P7-C7** 統合 | 全体結線・§9のガード改修と新設・E3テストの実行（G4-E）。既存245件規模の回帰確認 | sonnet | **G4-JVM ＋ G4-E** |
-| **P7-C8** 実機プローブ＋Refactor | §11.3 の Galaxy A実機ベンチ（Qwen3-0.6B / Qwen3-1.7B / Gemma3-1B の3者比較）。測定値で §8.6 のタイムアウト閾値と §5.3 の段境界を確定。リファクタ後に再度全テスト通過を確認 | sonnet → opus | **G4-D**。**未達のままPhase 8へ進むことを禁止** |
+| **P7-C8** 実機プローブ＋Refactor | ~~§11.3 の Galaxy A実機ベンチ（Qwen3-0.6B / Qwen3-1.7B / Gemma3-1B の3者比較）~~ → **実施内容はAVDエミュレータ上でのQwen3-0.6B(既存) / Qwen3-1.7B / Gemma4-E2Bの3者比較**（Gemma3-1BはHFゲート付きのためGemma4-E2Bで代替、ADR-0059・§14.10）。Galaxy A実機（P7-P2）でのベンチはアクセスなく未実施のまま残っている（§14.10申し送り3）。測定値で §8.6 のタイムアウト閾値と §5.3 の段境界を確定する作業、およびリファクタは本サイクルのスコープ外（次サイクルへ申し送り） | sonnet | 完了（§14.10）。**G4-D（実機Galaxy Aでの最終確定）・リファクタは未達のまま残置——Phase 8へ進む前に対応要否をユーザーと確認すること** |
 
 **並列可否**: P7-C3 と P7-C4 は独立（共有ファイルなし）。P7-C5 は両者に依存するため直列。P7-C6 は C5 の `LocalAiGateway` シグネチャ確定後に開始。
 
@@ -1180,6 +1180,84 @@ shotCountを上げるほど遅く・重くなるトレードオフは実測ど�
 
 **証拠ファイル**: `build/agent-logs/p7c5b-jvm.log`（JVM回帰）・`p7c5b-lint.log`（lint）・`p7c5b-e2e.log`（実機E2E統合ログ）・`p7c5b-e2e-gradle-run1.log`／`p7c5b-e2e-gradle-probeAdapterThroughGateway_shotCount{0,2,3}.log`（Gradle実行ログ）・`p7c5b-e2e-logcat-run1.log`／`p7c5b-e2e-logcat-shotcount-split.log`（Logcat）。
 
+### 14.10 P7-C8完了記録（2026-08-10確定・domain-implementer、モデル比較 Qwen3-0.6B vs Qwen3-1.7B vs Gemma4-E2B）
+
+**結論**: 0.6B・1.7Bは「モデルサイズを上げれば改善する」という単純な仮説を支持しなかった（1.7Bはむしろ`SamplingPolicy.Primary`のgreedy下で2/5シナリオが無関係な同一出力へ収束する新規の退化的失敗モードを見せた）が、**Gemma4-E2Bはfew-shot模範とほぼ同水準の具体性（保険証・招待状・資料・手土産）を達成し、0.6B/1.7Bで横断的に見られたチームMTG混乱を解消し、AVD RAM 4096MBでもOOM・クラッシュなく完走した**（実測ピークPSS約1.98GB、公式「8GB」相当の言及はHFモデルカードに見当たらず、モデルカード自身の実測ピークメモリ607MB〜3,681MBとも整合する）。速度も0.6Bと同水準（decode 22.8〜25.5 tok/s、TTFT 1.57〜2.04秒）で1.7Bより明確に高速。**実用ラインに達しているのはGemma4-E2Bのみ**というのが本サイクルの実測に基づく結論（最終確定はユーザー判断、§16 U-4）。
+
+**注記**: 計画書原案（本節冒頭§14サイクル表）は「Qwen3-0.6B / Qwen3-1.7B / Gemma3-1B の3者比較」だが、本体タスクの発注時点調査でGemma3-1BがHuggingFaceゲート付き（要承認申請）であることが判明したため、ゲートなし・Apache-2.0の**Gemma4-E2B**（`litert-community/gemma-4-E2B-it-litert-lm`）で代替した（ADR-0059に記録）。Qwen3-0.6Bは本サイクルで再実測せず、P7-C5b実測結果（§14.9 SECTION 1、`build/agent-logs/p7c5b-e2e.log`）をそのまま比較の基準点として使う。
+
+#### A. ダウンロード・SHA-256照合結果
+
+| モデル | URL | サイズ実測 | 期待SHA-256との一致 |
+|---|---|---|---|
+| Qwen3-1.7B (INT4 block-32) | `litert-community/Qwen3-1.7B/.../Qwen3-1.7B_dynamic_wi4b32_afp32.litertlm` | 977,184,032バイト（期待932MiB=977,184,032と一致） | **一致**（`2eeffef7b51bc3e1225ea69fe7aa5f417397934b56a5b6c20cc068d6fd2c918b`、HF側`x-linked-etag`とも一致） |
+| Gemma4-E2B (mixed 2/4/8-bit) | `litert-community/gemma-4-E2B-it-litert-lm/.../gemma-4-E2B-it.litertlm` | 2,588,147,712バイト（期待2.59GBと一致） | **一致**（`181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c`、HF側`x-linked-etag`とも一致） |
+
+いずれもDL失敗・リトライなし（1回目で完了、`curl --retry 5 --retry-delay 5 --retry-all-errors -C -`使用）。
+
+#### B. 3モデル×5シナリオ 実出力比較表（display_text並記）
+
+Qwen3-0.6B列は§14.9 SECTION 1（production defaults、`build/agent-logs/p7c5b-e2e.log`）の実測を再掲。Qwen3-1.7B・Gemma4-E2Bは本サイクルの実測（production defaults、`shotCount=2`・`maxNumTokens`自動算出、他条件は0.6Bと同一）。
+
+| 予定 | Qwen3-0.6B（既存実測） | Qwen3-1.7B（本サイクル実測） | Gemma4-E2B（本サイクル実測） |
+|---|---|---|---|
+| 歯科検診 | `finish_current_task` "歯科検診を受けてください"（1step） | `prepare_items` "歯科検診用のスケールを準備"（1step、「スケール」が不自然） | `finish_current_task`"今の作業を切り上げる"→`prepare_items`**"保険証を持って行く"**→`leave`"歯科医院へ行く"（3step、few-shot模範「保険証を持って出る」とほぼ同水準） |
+| 友人の結婚式 | `get_ready` "友人の結婚式を迎える"（1step） | `prepare_items` **"歯科検診の準備"（無関係・誤生成）**（1step） | `finish_current_task`"今の作業を切り上げる"→`prepare_items`**"招待状を確認する"**→`leave`"出発する"（3step、模範と異なるが独自に妥当） |
+| チームMTG | `get_ready` "歯科検診を受けてください"（無関係・誤生成、1step） | `prepare_items` **"歯科検診の準備"（無関係・誤生成、友人の結婚式と同一出力）**（1step） | `prepare_items`**"資料を準備する"**→`leave`"会議室へ行く"（2step、**混乱解消**） |
+| 大阪出張 | `get_ready` "大阪の出張を予定した"（1step） | `prepare_items` "出張先の資料の準備"（1step、具体的） | `prepare_items`**"出張に必要な書類をまとめる"**→`leave`"出張へ向かう"（2step、retry 1回） |
+| 友人の誕生日会 | `Fallback(SCHEMA_INVALID)`（タイトルコピー検出） | `prepare_items` "友人を歓迎する"（1step、当たり障りない） | `prepare_items`**"手土産を用意する"**→`leave`"会場へ向かう"（2step、retry 1回、文化的に的確） |
+
+参考: Gemma4-E2B reduced context（`shotCount=1`、安全側の先行試行）は5件中2件`Success`（歯科検診="検診に必要な書類を準備する"→"歯科医院へ向かう"、誕生日会="飲み物を準備する"→"会場へ向かう"）・3件`Fallback(SCHEMA_INVALID、duplicate action_type)`（友人の結婚式・チームMTG・大阪出張、いずれも3ステップ中`prepare_items`が2回出現）。production defaultsの方が明確に安定していたため、比較表の代表値はproduction defaultsを採用した。
+
+#### C. 品質評価（具体性・文法・チームMTG混乱・フォールバック率）
+
+| 観点 | Qwen3-0.6B | Qwen3-1.7B | Gemma4-E2B |
+|---|---|---|---|
+| 具体性（保険証・ご祝儀・切符級） | 未到達（タイトルの言い換えに収束、§14.9） | 未到達（1件のみ具体的「出張先の資料」、他は無関係またはタイトル言い換え） | **到達**（保険証・招待状・資料・出張書類・手土産の5/5全件が具体的） |
+| 文法 | 自然（非文法的出力0件、§14.9） | 概ね自然（「歯科検診用のスケール」の語選択のみ不自然） | 自然、かつ複数ステップの構成力あり |
+| チームMTG混乱 | 混乱あり（無関係な「歯科検診を受けてください」） | **混乱あり・悪化**（友人の結婚式と同一の無関係出力「歯科検診の準備」に収束） | **解消**（"資料を準備する"で正しく文脈化） |
+| ステップ数 | ほぼ全件1step | 全件1step | 2〜3step（few-shot模範の3step構成に近い） |
+| Success率（5シナリオ中） | 4/5（1件Fallback、タイトルコピー検出） | 5/5（Fallbackなし、ただし2件が無関係な同一出力という別種の欠陥） | 5/5（production defaults、Fallbackなし） |
+
+**総括**: Qwen3-1.7Bは「Fallback率」だけを見れば0.6Bより良好だが、実際の出力品質（無関係な同一出力への収束）はむしろ悪化しており、単純比較では見えない劣化がある。Gemma4-E2Bのみが目標（few-shot級のSemantic Contextualization）に到達し、かつチームMTG混乱という横断的な弱点を解消した。
+
+#### D. 速度・ピークRAM実測
+
+| 指標 | Qwen3-0.6B（既存実測） | Qwen3-1.7B | Gemma4-E2B（production defaults） |
+|---|---|---|---|
+| modelLoadMs（初回のみ） | 2,337 | 4,620 | 2,649 |
+| firstTokenMs | 1,552〜2,460 | 4,423〜5,249 | 1,567〜2,043 |
+| tokensPerSecond | 24.8〜31.2 | 12.9〜16.6 | 22.8〜25.5 |
+| peakNativeHeapBytes（`Debug.getNativeHeapAllocatedSize()`） | 624〜646MB | 712〜750MB | 641〜642MB |
+| **ピークPSS（`PssPeakSampler`実測、新設）** | 未測定（P7-C5b時点で未実装） | **1,945,677,824B（約1.81GiB）** | **1,980,168,192B（約1.84GiB）** |
+
+**重要な発見**: `peakNativeHeapBytes`と実測ピークPSSの間に約1.2GBの乖離がある（Qwen3-1.7Bで712〜750MB vs 1.81GiB）。LiteRT-LMがモデル重みをmmapで読み込むため、bionic mallocアリーナの割当量のみを見る`peakNativeHeapBytes`は真の物理メモリ使用量を大きく過小評価すると判断する（ADR-0059決定2）。**既存`ModelCatalog.QWEN3_0_6B_INT4_BLOCK32.defaultProfilePeakRamBytes`（1.25GiB、ADR-0057）はこのPSS実測を経ておらず、実際にはより大きい可能性がある**（本体タスクの制約により本サイクルでは変更していない。ADR-0059再検討トリガー1参照）。ファイルサイズとピークPSSは比例しない（Gemma4-E2Bはファイル2.59GBだがピークPSSはQwen3-1.7B・977MBファイルとほぼ同水準）。
+
+#### E. Gemma4-E2Bの「8GB宣言」vs実測
+
+HFモデルカード（`litert-community/gemma-4-E2B-it-litert-lm`）を実際に確認したが、**8GBという最小RAM要件の記載は見つからなかった**。カード自身が公表する実測ピークメモリは607MB（iPhone 17 Pro CPU）〜3,681MB（Jetson Orin Nano CPU）、Samsung S26 Ultra CPUバックエンドで約1,733MBであり、本プロジェクトのAVD実測（約1.98GB）と大きくは乖離しない。「8GB」という数値の出典は本体タスク発注時点の前提以上には特定できておらず、実測データはこれを裏付けなかった（知的誠実性のため、確認できなかった事実をそのまま報告する）。
+
+#### F. A54実機（6GB、テスト専用）での見込み
+
+**実機未測定（今回はエミュレータのみ、A54実機へのアクセスなし）であることを明記した上での推定**: AVD RAM 4096MB・`MemAvailable`実測約2.6〜2.9GBという、A54の6GB（テスト専用・他アプリなしなら実効空きはさらに大きい）よりも厳しい条件下でGemma4-E2Bがピークpss約1.98GBで完走した実測結果から、A54 6GBでは相応の余裕を持って動作する可能性が高いと推定する。ただし、x86_64エミュレータはARM実機のバイナリ変換ではなくホストCPU上でネイティブ実行であるため（§11.2の既存の留保）、**tok/s等の速度絶対値はA54実機を示唆しない**。RAM収まりの可否についてはCPUアーキテクチャに大きく依存しないためエミュレータ実測がある程度の参考になるが、最終確定はP7-P2（§11.3、Galaxy A実機ベンチ）の実施を推奨する。
+
+#### G. JVM回帰・lint
+
+`:app:testDebugUnitTest --rerun`: tests=**549**/failures=0/errors=0/skipped=1（P7-C5bベースライン542＋新規7件〔`ModelCatalogTest`: `all_qwen3_0_6bRemainsFirst_forInstalledEntryResolutionOrder`・`qwen17bEntry_matchesP7C8MeasuredValues`・`findById_qwen17bId_returnsMatchingEntry`・`gemma4E2bEntry_matchesP7C8MeasuredValues`・`findById_gemma4E2bId_returnsMatchingEntry`・`qwen17bEntry_defaultProfilePeakRamBytes_matchesP7C8MeasuredPssPeak`・`gemma4E2bEntry_defaultProfilePeakRamBytes_matchesP7C8MeasuredPssPeak`〕、既存テストは`all_containsQwen3Entry`の期待値更新〔3エントリ化に伴う〕のみで削除なし。`build/agent-logs/p7c8-jvm.log`）。`:app:lintDebug`: BUILD SUCCESSFUL・error 0・warning 22（P7-C5bベースラインと同数、新規warningなし。`build/agent-logs/p7c8-lint.log`）。
+
+#### 推奨（ユーザー提示用、最終確定はU-4どおりユーザー判断）
+
+**Gemma4-E2Bを既定モデル候補として推奨する**。根拠: (1) 品質面でfew-shot模範とほぼ同水準の具体性に唯一到達し、チームMTG型入力の混乱を唯一解消した、(2) 速度がQwen3-0.6Bと同水準でQwen3-1.7Bより明確に高速、(3) AVD 4096MBでOOMなく完走し実測ピークPSSは約1.98GBとQwen3-1.7Bと同水準（ファイルサイズ2.59GBの割に大きくない）、(4) Apache-2.0でNotice同梱義務なし。**留保点**: モデルファイルが2.59GB（Qwen3-0.6Bの344MBの約7.5倍）でDLサイズ・ストレージ負担が大きい、A54実機での実測は未実施（§14.10 F参照）、フルコンテキスト（ctx32768）の独立測定は未実施。Qwen3-1.7Bは本サイクルの実測では推奨しない（速度・品質とも0.6Bを上回らず、無関係な同一出力へ収束する新規の欠陥を確認したため）。
+
+#### 申し送り
+
+1. **Qwen3-0.6Bの`defaultProfilePeakRamBytes`（1.25GiB、ADR-0057）はPSS実測を経ていない再検証対象**（ADR-0059再検討トリガー1）。
+2. **Qwen3-1.7B・Gemma4-E2Bのフルコンテキスト`peakRamBytes`独立測定は未実施**（§5.3の段階推奨を厳密化する場合に必要）。
+3. **Galaxy A実機（P7-P2、§11.3）でのGemma4-E2B実測を推奨**——RAM収まりの最終確認、および速度絶対値の確定に必要。
+4. 本サイクルで発見したテスト運用上の罠（`ModelComparisonProbeTest`クラスKDoc「再実行時の注意」参照）: AndroidJUnitRunnerはクラスレベル`@Ignore`が付いた状態で`-Pandroid.testInstrumentationRunnerArguments.class=...#メソッド名`による個別メソッド指定をしても、discoveryの時点でクラスごと除外され「Starting 0 tests」になる。再実行時は`@Ignore`を一時的にコメントアウトする必要がある。
+
+**証拠ファイル**: `build/agent-logs/p7c8-jvm.log`（JVM回帰）・`p7c8-lint.log`（lint）・`p7c8-e2e.log`（実機E2E統合ログ）・`p7c8-qwen17b-e2e-gradle.log`／`p7c8-qwen17b-e2e-logcat.log`・`p7c8-gemma4e2b-reduced-gradle.log`／`p7c8-gemma4e2b-reduced-logcat.log`・`p7c8-gemma4e2b-prod-gradle.log`／`p7c8-gemma4e2b-prod-logcat.log`。ダウンロード済みモデルファイルは`build/models/`（gitignore圏内、ホスト側、削除要否は本体タスク最終報告参照）。
+
 ---
 
 ## §15. リスク
@@ -1242,7 +1320,7 @@ G1レビュー起源であるのに対し、裁定1〜8は基盤計画＋品質�
 | **V-4** | **Qwen3のthinking無効化の具体的な指定方法**と、無効化時の実出力トークン数 | §13 #23・§8.4のトークン予算・R-3 | **確定**。`ConversationConfig.thinkingConfig = ThinkingConfig(enableThinking = false)`の**API設定のみで十分**（`/no_think`等プロンプト側の追加操作は不要と実測で確認）。2回の独立実行とも生出力に`<think`混入なし。実出力トークン数は`BenchmarkInfo.lastDecodeTokenCount=56`（2回とも同一。簡易スキーマ1件・`maxOutputToken=100`条件下） |
 | **V-5** | Qwen3の「119言語」およびGemmaの「140言語」主張の**公式一次ソースでの日本語の明示**（Qwen3はブログの言語テーブルで確認できたとの調査報告があるが、android-planner自身は未確認） | §5.2 ①の根拠強度 | **未着手（P7-C0スコープ外）**。§14 P7-C0の①〜⑦（Kotlin API実測）に含まれない別系統の一次ソース文献確認事項のため本サイクルでは対応していない |
 | **V-6** | **Gemma 4 が Apache-2.0 へ変更された事実**の一次確認（調査報告は `opensource.googleblog.com` を出典としているが、android-planner自身は未取得）。Gemma 3が遡及的にApache化されていないことも含む | §5.2 ③・Gemma切替時の義務 | **未着手（P7-C0スコープ外）**。同上、別系統の一次ソース文献確認事項のため本サイクルでは対応していない |
-| **V-7** | `litert-community` の Qwen3-1.7B のピークRAMとAndroid実測tok/s（**モデルカードにベンチ表がなく未公開**） | §5.3 段2の成立可否 | **未着手（P7-C0スコープ外）**。本サイクルはQwen3-0.6Bのみ実測。Qwen3-1.7Bの実測はP7-C8実機プローブ（§11.3）側の範囲 |
+| **V-7** | `litert-community` の Qwen3-1.7B のピークRAMとAndroid実測tok/s（**モデルカードにベンチ表がなく未公開**） | §5.3 段2の成立可否 | **AVDエミュレータでは確定（P7-C8、2026-08-10）**: decode 12.9〜16.6 tok/s、TTFT 4.4〜5.2秒、ピークPSS実測1,945,677,824バイト（約1.81GiB、`PssPeakSampler`）。**Galaxy A実機（Android ARM）での値は依然未確定**（x86_64エミュレータのため速度絶対値はGalaxy Aを示唆しない、§14.10 F参照）。品質面は0.6Bより悪化する新規の退化的失敗モードを実測（§14.10 C） |
 | **V-8** | **`EngineConfig.maxNumTokens` を変えたときのピークRAMの変化**。2.9GBをどこまで下げられるか。**128〜256トークンまで絞った小コンテキスト・テストプロファイルでピークが1GB級まで下がるかを含む**（Gemini G1 CRITICAL #4により**P7-C0の必須測定項目へ格上げ**） | §5.3の段境界・S-1・R-4・**R-11・§11.2・§12.8（E3小コンテキストプロファイルの成立可否）** | **「1GB級まで下がるか」はYESで確定・「128→256の増分」は本実測だけでは確定不可（正直な未決着）**。ctx128/ctx256とも`ActivityManager.getProcessMemoryInfo().totalPss`ピークは約700〜775MB（2回の独立実行: 774,245KB/724,384KB）で、§11.2が想定した「1GB級」を下回り小コンテキスト・テストプロファイルがAVD RAM4096MBで安定成立することを確認。ただし**2回とも`ctx256`の方が`ctx128`よりピークRAMが低い**という直感に反する結果が再現し、同一プロセス内で128→256の順に逐次実行する本プローブの設計では実行順序効果（2回目はOSページキャッシュ/メモリアロケータが温まっている）との交絡を排除できていない。**128→256の真の増分を定量化するには実行順序を入れ替えた追加実測が必要**（P7-C1以降への申し送り事項） |
 
 **加えて、本書全体に関わる根本的な未確認事項**: **Galaxy Aクラス（Exynos 1280/1380・Dimensity 1080/6100+級）でのオンデバイスLLM実測値は、公式・非公式を問わず1件も存在しない。** 本書の性能に関する記述はすべてフラッグシップ機または準ミッドレンジ機（TECNO LJ9 / Dimensity 8350）からの外挿であり、**§11.3の実機プローブが完了するまで、Phase 7が主対象デバイスで成立するかどうかは確定していない**。これは計画の欠陥ではなく、この領域の情報が世の中に存在しないことによる。**だからこそ P7-C0 と P7-C8 を必須ゲートに置いている。**

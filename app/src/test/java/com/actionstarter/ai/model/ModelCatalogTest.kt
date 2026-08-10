@@ -49,11 +49,116 @@ class ModelCatalogTest {
     }
 
     // 正常系: ALLがQWEN3_0_6B_INT4_BLOCK32を含む（§17「モデル名を製品仕様として固定しない」の
-    // 交換可能性の前提となる、ALLへのエントリ追加のみで拡張できる構造の回帰ガード）
+    // 交換可能性の前提となる、ALLへのエントリ追加のみで拡張できる構造の回帰ガード）。
+    // P7-C8でQWEN3_1_7B_INT4_BLOCK32・GEMMA_4_E2B_ITの2件を追加したためlistOf 1件比較から
+    // 更新した（ModelCatalog.ktの更新に伴うテスト更新、既存アサーションの意図＝「ALLの中身が
+    // 期待どおりである」自体は変更していない）。
     @Test
     fun all_containsQwen3Entry() {
-        assertEquals(listOf(ModelCatalog.QWEN3_0_6B_INT4_BLOCK32), ModelCatalog.ALL)
+        assertEquals(
+            listOf(
+                ModelCatalog.QWEN3_0_6B_INT4_BLOCK32,
+                ModelCatalog.QWEN3_1_7B_INT4_BLOCK32,
+                ModelCatalog.GEMMA_4_E2B_IT
+            ),
+            ModelCatalog.ALL
+        )
     }
+
+    // 正常系: QWEN3_0_6B_INT4_BLOCK32が引き続きALLの先頭である（ModelStorageImpl.installedEntry
+    // はcatalog.firstOrNullで導入済みを決めるため、本番の既定モデルが先頭でなくなると
+    // Settings未実装のまま複数モデルが端末にインストールされた場合にfirstOrNullの解決結果が
+    // 変わりうる。P7-C8がALLへ2件追加したことで既定モデル選択に影響しないことの回帰ガード）
+    @Test
+    fun all_qwen3_0_6bRemainsFirst_forInstalledEntryResolutionOrder() {
+        assertEquals(ModelCatalog.QWEN3_0_6B_INT4_BLOCK32, ModelCatalog.ALL.first())
+    }
+
+    // ------------------------------------------------------------------
+    // P7-C8: QWEN3_1_7B_INT4_BLOCK32 / GEMMA_4_E2B_IT（モデル比較用エントリ）
+    // ------------------------------------------------------------------
+
+    // 正常系: QWEN3_1_7B_INT4_BLOCK32がP7-C8実測値（開発者自身がsha256sumで計算し、HF側
+    // x-linked-etagとも一致確認済み。U-6方針）と一致する
+    @Test
+    fun qwen17bEntry_matchesP7C8MeasuredValues() {
+        val entry = ModelCatalog.QWEN3_1_7B_INT4_BLOCK32
+
+        assertEquals("qwen3-1.7b-int4-block32", entry.id)
+        assertEquals(977_184_032L, entry.sizeBytes)
+        assertEquals(
+            "2eeffef7b51bc3e1225ea69fe7aa5f417397934b56a5b6c20cc068d6fd2c918b",
+            entry.sha256
+        )
+        assertEquals(ModelLicense.APACHE_2_0, entry.license)
+        assertFalse("Apache-2.0モデルはNoticeファイル同梱不要のはずです(§13 #24)", entry.requiresNoticeFile)
+    }
+
+    // 正常系: findByIdがqwen3-1.7b-int4-block32に対して正しいエントリを返す
+    @Test
+    fun findById_qwen17bId_returnsMatchingEntry() {
+        val found = ModelCatalog.findById("qwen3-1.7b-int4-block32")
+
+        assertEquals(ModelCatalog.QWEN3_1_7B_INT4_BLOCK32, found)
+    }
+
+    // 正常系: GEMMA_4_E2B_ITがP7-C8実測値（開発者自身がsha256sumで計算し、HF側x-linked-etagとも
+    // 一致確認済み。U-6方針）と一致する
+    @Test
+    fun gemma4E2bEntry_matchesP7C8MeasuredValues() {
+        val entry = ModelCatalog.GEMMA_4_E2B_IT
+
+        assertEquals("gemma-4-e2b-it", entry.id)
+        assertEquals(2_588_147_712L, entry.sizeBytes)
+        assertEquals(
+            "181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c",
+            entry.sha256
+        )
+        assertEquals(ModelLicense.APACHE_2_0, entry.license)
+        assertFalse("Apache-2.0モデルはNoticeファイル同梱不要のはずです(§13 #24)", entry.requiresNoticeFile)
+    }
+
+    // 正常系: findByIdがgemma-4-e2b-itに対して正しいエントリを返す
+    @Test
+    fun findById_gemma4E2bId_returnsMatchingEntry() {
+        val found = ModelCatalog.findById("gemma-4-e2b-it")
+
+        assertEquals(ModelCatalog.GEMMA_4_E2B_IT, found)
+    }
+
+    // 正常系: QWEN3_1_7B_INT4_BLOCK32のdefaultProfilePeakRamBytesは、P7-C8実機PSS実測
+    // （ModelComparisonProbeTest.probeQwen17B_productionDefaults、実測ピークPSS=1,945,677,824
+    // バイト）に安全マージンを載せて切り上げた2.0GiB（2,147,483,648バイト）である
+    @Test
+    fun qwen17bEntry_defaultProfilePeakRamBytes_matchesP7C8MeasuredPssPeak() {
+        val entry = ModelCatalog.QWEN3_1_7B_INT4_BLOCK32
+
+        assertEquals(
+            "defaultProfilePeakRamBytesはP7-C8実機PSS実測から切り上げた2.0GiBであるべきです",
+            2_147_483_648L,
+            entry.defaultProfilePeakRamBytes
+        )
+    }
+
+    // 正常系: GEMMA_4_E2B_ITのdefaultProfilePeakRamBytesは、P7-C8実機PSS実測
+    // （ModelComparisonProbeTest.probeGemma4E2B_productionDefaults、実測ピークPSS=1,980,168,192
+    // バイト）に安全マージンを載せて切り上げた2.0GiB（2,147,483,648バイト）である
+    @Test
+    fun gemma4E2bEntry_defaultProfilePeakRamBytes_matchesP7C8MeasuredPssPeak() {
+        val entry = ModelCatalog.GEMMA_4_E2B_IT
+
+        assertEquals(
+            "defaultProfilePeakRamBytesはP7-C8実機PSS実測から切り上げた2.0GiBであるべきです",
+            2_147_483_648L,
+            entry.defaultProfilePeakRamBytes
+        )
+    }
+
+    // 備考: 「defaultProfilePeakRamBytesがAVDのavailMemを安全マージン込みで下回るか」は
+    // ActivityManager.MemoryInfo.availMemが実行時のシステム状態に依存し動的に変動するため
+    // （P7-C8実測でも2.62GB〜2.94GBの幅があった）、JVM単体テストで固定閾値として回帰ロック
+    // することはしない（実測値を偽って「余裕がある」と主張しない）。実機での成立可否は
+    // ModelComparisonProbeTestの実行結果（本体タスク最終報告・計画書§14.10）が正とする。
 
     // ------------------------------------------------------------------
     // ADR-0057: ModelCatalogEntry.defaultProfilePeakRamBytes
