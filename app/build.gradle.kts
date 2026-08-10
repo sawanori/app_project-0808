@@ -94,6 +94,9 @@ dependencies {
     // Phase 3 P3-C1（計画書§6.4#2・§7.1・F22）: 現在地取得。AARメタデータ実測済み
     // （gradle/libs.versions.toml参照）。
     implementation(libs.google.play.services.location)
+    // Phase 7 P7-C0（計画書§14 P7-C0・§0・U-2）: LiteRT-LM Go/No-Go判定プローブ用。
+    // 廃止系`litertlm`ではなく`litertlm-android`（現行AAR）を使用。バージョンは0.15.0に固定（R-2）。
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.15.0")
 
     testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.junit4)

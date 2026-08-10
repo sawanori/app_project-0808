@@ -400,6 +400,11 @@ sealed interface AiResult<out T> {
 | 12 | 既存モデルの破損・改竄（ロード前検証。Gemini G1 CRITICAL #2反映） | 毎回: ファイルサイズ照合。プロセス初回ロード前: SHA-256再検証（結果はプロセス内キャッシュ。以後の呼び出しでは再計算しない） | モデルロード直前（サイズは毎回、SHA-256はプロセス内初回のみ） | サイズ完全一致／SHA-256完全一致 | **当該ファイルを削除**し `Fallback(MODEL_CORRUPTED)`。再DL導線を提示 |
 | 13 | OOM（二次防御。事前ガードをすり抜けた残余ケース） | `OutOfMemoryError` 捕捉 / ネイティブalloc失敗 | ロード・推論中 | — | モデルをアンロードし `Fallback(OUT_OF_MEMORY)`。次段の小さいモデルを提案 |
 
+**#5・#12が参照するSHA-256の確定値（P7-C0実測・U-6・2026-08-10）**: `litert-community/Qwen3-0.6B`の`Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm`について、開発者（domain-implementer）が`build/models/`へダウンロードした個体を自ら`sha256sum`で計算した値を`ModelCatalog`（F87）へ焼き込む正の値とする（U-6の方針どおりHF側ハッシュの無条件信頼はしない）。
+- ファイルサイズ: **344,437,808 バイト**（328.5MiB。§0記載の「約328MB」と整合）
+- SHA-256: **`e3e290109da4388d65a17510a0c66af91c8039f52d2c465868dbc43c09a776cf`**
+- 参考: HFレスポンスヘッダ`x-linked-etag`の値も同一であり配信経路での破損は確認されなかったが、この一致は補助的な傍証にとどめ、上記の自己計算値を正とする。
+
 **#7と#13・#5と#12の関係（Gemini G1 CRITICAL #2/#3反映・確定）**: LinuxのLow Memory Killer（LMK）によるプロセスSIGKILLは、Javaの `try/catch` では**原理的に捕捉できない**（プロセスが即座に強制終了するため例外送出の余地がない）。したがって「`OutOfMemoryError` を捕捉して処理する」設計だけではLMKによる強制終了を防げない。**#7（能動的メモリガード）を主防御とし、ロード・推論を試みる前に空きメモリを確認して危険な場合は実行しないことでLMKに至る状況そのものを回避する。** #13（Javaの`catch(OutOfMemoryError)`）は、#7をすり抜けた軽微なJavaヒープ枯渇等に対する**二次防御**として残置する。同様に、**#5はDL完了直後の1回限りの検証であり、時間経過後の破損・改竄（ストレージ異常・手動改変等）は捕捉できない**。**#12（ロード前検証）は毎回のロード直前に再検証することでこの穴を塞ぐ**主防御であり、#5と#12は独立して両方とも必要とする。
 
 ### 8.7 UX設計原則（Fable 5指示・非同期前提）
@@ -694,6 +699,38 @@ AVD `actionstarter_test`（**実測: x86_64 / API 35 / RAM 4096MB**）。目的�
 
 **並列可否**: P7-C3 と P7-C4 は独立（共有ファイルなし）。P7-C5 は両者に依存するため直列。P7-C6 は C5 の `LocalAiGateway` シグネチャ確定後に開始。
 
+### 14.1 P7-C0実測結果（2026-08-10確定・domain-implementer・**Go/No-Go判定材料＝GO方向**）
+
+**結論**: ④`ResponseFormat.json(schema)`は AVD `actionstarter_test`（x86_64/API35）上で**スキーマ完全準拠のJSONを2回連続実行とも生成**した。日本語プロンプト「会議の準備について、短い提案を1件だけJSON形式で出力してください。個人情報や実在の予定は使用しないでください。」に対し、`{"event_type":"social","steps":[{"action_type":"prepare_item","display_text":"会議の準備","type":"preparation","estimated_minutes":15,"priority":"important","skippable":false}]}`（計画書§8.4のPlanningスキーマ簡易版・steps 1件固定）が生成され、enum・文字数・範囲制約のすべてを満たした。**判定自体はFable 5に委ねるが、④が実機で機能したことを示す一次証拠として報告する。**
+
+**①依存導入・衝突確認**: `com.google.ai.edge.litertlm:litertlm-android:0.15.0`を`app/build.gradle.kts`の`implementation`へ追加。`:app:dependencies --configuration debugRuntimeClasspath`実測: `com.google.code.gson:gson:2.13.2`・`org.jetbrains.kotlin:kotlin-reflect:2.2.21`・`org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0`のいずれも**衝突なし**（gson/kotlin-reflectは本プロジェクトに他バージョンが存在せず新規解決、coroutines-androidは既存の`play-services-location`経由の推移依存が既に1.9.0で一致）。`resolutionStrategy.force`は不要だった（§13 #21・R-1の想定より軽微）。`:app:assembleDebug`成功（`liblitertlm_jni.so`は`stripDebugDebugSymbols`でstrip対象外のままAPKへ同梱される旨のログ有り、機能に影響なし）。既存回帰: `:app:testDebugUnitTest --rerun`＝**417件・failures 0・errors 0・skipped 1**（導入前ベースラインと完全一致、JUnit XML集計で確認）。
+
+**モデル**: Hugging Face `litert-community/Qwen3-0.6B`の`Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm`を`build/models/`へ取得。**サイズ344,437,808B（328.5MiB、計画書記載の「約328MB」と整合）。SHA-256 = `e3e290109da4388d65a17510a0c66af91c8039f52d2c465868dbc43c09a776cf`**（ダウンロード直後に自らsha256sumで計算した値。HFの`x-linked-etag`ヘッダの値と一致したが、U-6の方針どおり開発者計算値を正としてここに焼き込む）。ライセンスApache-2.0（HF API `cardData.license`実測確認）。
+
+**測定表**（ctx128＝小コンテキスト・テストプロファイル下限、ctx256＝上限。いずれも`maxOutputToken=100`・`Backend.CPU(threadCount=4)`・同一プロンプト・2回目実行の値。**プロンプト/出力トークン数が小さいため厳密なベンチマークではない**）:
+
+| 指標 | ctx128 | ctx256 | 備考 |
+|---|---|---|---|
+| モデルロード時間（`Engine.initialize()`実測） | 5,046 ms | 803 ms | 2回目(ctx256)が速いのはプロセス内で2件目のロードでありOS側のページキャッシュ等が温まっているためと推定。単独プロセスでの絶対値としては参考程度 |
+| `BenchmarkInfo.initTimeInSecond`（native計測） | 14.53 s | 4.24 s | **要注意**: 自前のwall-clockロード時間（5,046ms/803ms）や試験全体の経過時間（後述）と桁が一致しない。ネイティブ側が複数スレッド（`threadCount=4`）のCPU時間を合算している可能性など複数の仮説があるが未検証。数値の意味を断定せず生値として報告する |
+| TTFT（`BenchmarkInfo.timeToFirstTokenInSecond`） | 1.017 s | 0.810 s | 初めてnative benchmarkから直接取得（後述の追加発見） |
+| decode速度（`BenchmarkInfo.lastDecodeTokensPerSecond`） | 32.60 tok/s | 42.72 tok/s | **x86_64エミュレータは実機と無関係に高速**（後述） |
+| prefill速度（`BenchmarkInfo.lastPrefillTokensPerSecond`） | 46.64 tok/s | 58.49 tok/s | 同上 |
+| 生成トークン数（prefill/decode） | 46 / 56 | 46 / 56 | 2回とも同一（決定的生成に近い挙動） |
+| ピークRAM（`ActivityManager.getProcessMemoryInfo().totalPss`） | 774,245 KB（約756MB） | 724,384 KB（約708MB） | **V-8参照。128→256で下がるのは実行順序効果の疑いが濃厚**、詳細はV-8行 |
+| ピークネイティブヒープ（`Debug.getNativeHeapAllocatedSize()`） | 347,544,528 B | 273,093,120 B | 同上の傾向 |
+| Native Heap summary stat（`Debug.MemoryInfo.getMemoryStat("summary.native-heap")`） | 285,172 KB | 238,312 KB | dumpsys meminfoのNative Heap行相当値。アプリ内からの`dumpsys meminfo`直接exec自体は出力を得たが期待した行フォーマットに一致せず「not found」（ベストエフォート扱いのため未達でも許容、本APIで代替取得済み） |
+| スキーマ適合 | ○（`schemaValid=true`） | ○（`schemaValid=true`） | 2回とも完全一致 |
+| `<think>`混入 | なし | なし | V-4参照 |
+
+**測定条件についての重要な留保**: **x86_64エミュレータはARM実機のバイナリ変換ではなくホストCPU上でネイティブ実行**（AAR自体がx86_64向け`.so`を同梱）であるため、decode 32〜43 tok/sという値は計画書§0引用のフラッグシップ実機値（Qwen3-0.6B @ Vivo X300 Pro: decode 9 tok/s）を3〜5倍上回っている。**これは「エミュレータが速い」だけであり、Galaxy A実機の性能を一切示唆しない**（計画書§11.2の既存の留保を実測値で追認)。tok/s・ロード時間の絶対値はP7-C8実機プローブ（§11.3）でのみ確定させる方針を変更しない。
+
+**新規発見（一次ソース未記載）**: `Conversation.getBenchmarkInfo()`は既定では`LiteRtLmJniException`（"Benchmark is not enabled. Please make sure the BenchmarkParams is set in the EngineSettings."）を送出する。`ExperimentalFlags.enableBenchmark = true`（`@OptIn(ExperimentalApi::class)`が必要）を事前に設定することで有効化できることを実測で確認した。§8.5の`AiMetrics`実装（`modelLoadMs`/`firstTokenMs`/`tokensPerSecond`）はこの`BenchmarkInfo`から直接取得できる可能性が高く、P7-C5（adapter/gateway実装）の設計材料として申し送る。
+
+**V-1〜V-4・V-8の確定値は本節ではなく§17表の追加列「P7-C0実測確定値」に記載する（詳細はそちらを参照）。** V-5〜V-7はP7-C0のスコープ外（未着手）。
+
+**証拠ファイル**: `build/agent-logs/p7c0-deps.log`（依存解決＋assembleDebug）・`p7c0-regression.log`（417/0/1）・`p7c0-download.log`（DL＋SHA-256）・`p7c0-probe-result.xml`（JUnit結果、2回目実行分。1件・failures 0・errors 0・skipped 0・time 17.56s）・`p7c0-logcat.log`（2回目実行のP7C0_PROBEタグ全量、native BenchmarkInfo値を含む）・`p7c0-probe-gradle.log`/`p7c0-probe-gradle-run2.log`（gradle実行ログ、1回目/2回目）。プローブ自体は`app/src/androidTest/java/com/actionstarter/probe/LiteRtLmProbeTest.kt`に実装し、実測完了後に`@Ignore`を付与済み（`AlarmExactAlarmProbeTest`と同じ運用）。
+
 ---
 
 ## §15. リスク
@@ -741,16 +778,16 @@ AVD `actionstarter_test`（**実測: x86_64 / API 35 / RAM 4096MB**）。目的�
 
 **いずれも P7-C0 で実測確定する。確定するまで本書の該当箇所を最終と見なさない。**
 
-| ID | 内容 | 影響範囲 |
-|---|---|---|
-| **V-1** | AAR 0.15.0 の ABI構成とminSdkの自プロジェクトでの再確認（調査エージェントはarm64-v8a＋x86_64・minSdk 24と実測したが、android-planner自身は未再現） | §8.2・G4-Eの成立可否 |
-| **V-2** | `Engine` / `Conversation` の**解放API**（`close()` 相当）の有無と正しいライフサイクル | §13 #8のアンロード設計・§8.6 #7 |
-| **V-3** | `Backend.CPU()` がスレッド数等の引数を取るか。ミッドレンジでのbig/LITTLEコア割り当ての制御可否 | §11の測定条件・性能 |
-| **V-4** | **Qwen3のthinking無効化の具体的な指定方法**と、無効化時の実出力トークン数 | §13 #23・§8.4のトークン予算・R-3 |
-| **V-5** | Qwen3の「119言語」およびGemmaの「140言語」主張の**公式一次ソースでの日本語の明示**（Qwen3はブログの言語テーブルで確認できたとの調査報告があるが、android-planner自身は未確認） | §5.2 ①の根拠強度 |
-| **V-6** | **Gemma 4 が Apache-2.0 へ変更された事実**の一次確認（調査報告は `opensource.googleblog.com` を出典としているが、android-planner自身は未取得）。Gemma 3が遡及的にApache化されていないことも含む | §5.2 ③・Gemma切替時の義務 |
-| **V-7** | `litert-community` の Qwen3-1.7B のピークRAMとAndroid実測tok/s（**モデルカードにベンチ表がなく未公開**） | §5.3 段2の成立可否 |
-| **V-8** | **`EngineConfig.maxNumTokens` を変えたときのピークRAMの変化**。2.9GBをどこまで下げられるか。**128〜256トークンまで絞った小コンテキスト・テストプロファイルでピークが1GB級まで下がるかを含む**（Gemini G1 CRITICAL #4により**P7-C0の必須測定項目へ格上げ**） | §5.3の段境界・S-1・R-4・**R-11・§11.2・§12.8（E3小コンテキストプロファイルの成立可否）** |
+| ID | 内容 | 影響範囲 | P7-C0実測確定値（2026-08-10・domain-implementer・AVD actionstarter_test x86_64/API35） |
+|---|---|---|---|
+| **V-1** | AAR 0.15.0 の ABI構成とminSdkの自プロジェクトでの再確認（調査エージェントはarm64-v8a＋x86_64・minSdk 24と実測したが、android-planner自身は未再現） | §8.2・G4-Eの成立可否 | **確定・調査エージェントの実測と完全一致**。AAR展開で再確認: `AndroidManifest.xml`の`minSdkVersion=24`。`jni/arm64-v8a/liblitertlm_jni.so`（21,199,264B）・`jni/x86_64/liblitertlm_jni.so`（25,222,024B）の2ABIのみ同梱、armeabi-v7aなし。実機ログでも`sdkInt=35 supportedAbis=x86_64,arm64-v8a`を確認、AVD上でJNI疎通・実推論とも成功 |
+| **V-2** | `Engine` / `Conversation` の**解放API**（`close()` 相当）の有無と正しいライフサイクル | §13 #8のアンロード設計・§8.6 #7 | **確定**。両クラスとも`java.lang.AutoCloseable`実装で`close()`を持つ（バイトコード確認）。実機実測: `close()`後に`engine.createConversation()`を呼ぶと`IllegalStateException: "Engine is not initialized."`を送出（2回とも再現）。`close()`自体は`checkInitialized()`を先頭で呼ぶため**冪等ではない**（未初期化/close済みEngineへの再`close()`も同例外を送出する設計。バイトコード確認。§13 #8のアンロード設計は「1回だけ呼ぶ」規律が必須という追加知見） |
+| **V-3** | `Backend.CPU()` がスレッド数等の引数を取るか。ミッドレンジでのbig/LITTLEコア割り当ての制御可否 | §11の測定条件・性能 | **確定（存在・使用可否のみ。性能差比較はP7-C0スコープ外）**。`Backend.CPU(threadCount: Int?, numOfThreads: Int?)`の2引数コンストラクタが存在（`numOfThreads`は`@Deprecated`マーカー付きの旧名、`threadCount`が優先されnull時のみ`numOfThreads`にフォールバックする実装をバイトコードで確認）。`Backend.CPU(threadCount=4)`で実機実行しエラーなく完走。big/LITTLE個別割当のAPIは確認できず（単純なスレッド総数指定のみ） |
+| **V-4** | **Qwen3のthinking無効化の具体的な指定方法**と、無効化時の実出力トークン数 | §13 #23・§8.4のトークン予算・R-3 | **確定**。`ConversationConfig.thinkingConfig = ThinkingConfig(enableThinking = false)`の**API設定のみで十分**（`/no_think`等プロンプト側の追加操作は不要と実測で確認）。2回の独立実行とも生出力に`<think`混入なし。実出力トークン数は`BenchmarkInfo.lastDecodeTokenCount=56`（2回とも同一。簡易スキーマ1件・`maxOutputToken=100`条件下） |
+| **V-5** | Qwen3の「119言語」およびGemmaの「140言語」主張の**公式一次ソースでの日本語の明示**（Qwen3はブログの言語テーブルで確認できたとの調査報告があるが、android-planner自身は未確認） | §5.2 ①の根拠強度 | **未着手（P7-C0スコープ外）**。§14 P7-C0の①〜⑦（Kotlin API実測）に含まれない別系統の一次ソース文献確認事項のため本サイクルでは対応していない |
+| **V-6** | **Gemma 4 が Apache-2.0 へ変更された事実**の一次確認（調査報告は `opensource.googleblog.com` を出典としているが、android-planner自身は未取得）。Gemma 3が遡及的にApache化されていないことも含む | §5.2 ③・Gemma切替時の義務 | **未着手（P7-C0スコープ外）**。同上、別系統の一次ソース文献確認事項のため本サイクルでは対応していない |
+| **V-7** | `litert-community` の Qwen3-1.7B のピークRAMとAndroid実測tok/s（**モデルカードにベンチ表がなく未公開**） | §5.3 段2の成立可否 | **未着手（P7-C0スコープ外）**。本サイクルはQwen3-0.6Bのみ実測。Qwen3-1.7Bの実測はP7-C8実機プローブ（§11.3）側の範囲 |
+| **V-8** | **`EngineConfig.maxNumTokens` を変えたときのピークRAMの変化**。2.9GBをどこまで下げられるか。**128〜256トークンまで絞った小コンテキスト・テストプロファイルでピークが1GB級まで下がるかを含む**（Gemini G1 CRITICAL #4により**P7-C0の必須測定項目へ格上げ**） | §5.3の段境界・S-1・R-4・**R-11・§11.2・§12.8（E3小コンテキストプロファイルの成立可否）** | **「1GB級まで下がるか」はYESで確定・「128→256の増分」は本実測だけでは確定不可（正直な未決着）**。ctx128/ctx256とも`ActivityManager.getProcessMemoryInfo().totalPss`ピークは約700〜775MB（2回の独立実行: 774,245KB/724,384KB）で、§11.2が想定した「1GB級」を下回り小コンテキスト・テストプロファイルがAVD RAM4096MBで安定成立することを確認。ただし**2回とも`ctx256`の方が`ctx128`よりピークRAMが低い**という直感に反する結果が再現し、同一プロセス内で128→256の順に逐次実行する本プローブの設計では実行順序効果（2回目はOSページキャッシュ/メモリアロケータが温まっている）との交絡を排除できていない。**128→256の真の増分を定量化するには実行順序を入れ替えた追加実測が必要**（P7-C1以降への申し送り事項） |
 
 **加えて、本書全体に関わる根本的な未確認事項**: **Galaxy Aクラス（Exynos 1280/1380・Dimensity 1080/6100+級）でのオンデバイスLLM実測値は、公式・非公式を問わず1件も存在しない。** 本書の性能に関する記述はすべてフラッグシップ機または準ミッドレンジ機（TECNO LJ9 / Dimensity 8350）からの外挿であり、**§11.3の実機プローブが完了するまで、Phase 7が主対象デバイスで成立するかどうかは確定していない**。これは計画の欠陥ではなく、この領域の情報が世の中に存在しないことによる。**だからこそ P7-C0 と P7-C8 を必須ゲートに置いている。**
 
