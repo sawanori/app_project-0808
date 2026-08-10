@@ -73,14 +73,16 @@ class DeviceCapabilityTest {
         assertEquals(DeviceTier.TIER_1_STANDARD, tier)
     }
 
-    // T-MDL-2相当: エッジ - 段0/段1の境界値ちょうど（6GB未満は段0、6GB以上は段1）
+    // T-DCT-11[既存期待値更新]: エッジ - 6GiB-1は新契約（5GiB/7GiB境界）では境界外の一点であり
+    // TIER_1_STANDARDが正しい（旧閾値6GBでの境界=TIER_0_UNSUPPORTEDから変更。
+    // メソッド名もreturnsTier0Unsupported→returnsTier1Standardへ改名、計画書§5参照）
     @Test
-    fun classify_justUnderSixGb_returnsTier0Unsupported() {
+    fun classify_justUnderSixGb_returnsTier1Standard() {
         setMemory(totalMemBytes = 6L * GB - 1, availMemBytes = 6L * GB - 1)
 
         val tier = DeviceCapabilityImpl(context()).classify()
 
-        assertEquals(DeviceTier.TIER_0_UNSUPPORTED, tier)
+        assertEquals(DeviceTier.TIER_1_STANDARD, tier)
     }
 
     // T-MDL-2相当（追加境界）: 段1/段2の境界値（8GB以上はTIER_2_OPT_IN対象の下限）
@@ -91,6 +93,92 @@ class DeviceCapabilityTest {
         val tier = DeviceCapabilityImpl(context()).classify()
 
         assertEquals(DeviceTier.TIER_2_OPT_IN, tier)
+    }
+
+    // T-DCT-1[Red・主目的ケース]: 正常系 - A54実測相当のtotalMem(5.5GiB)はTIER_1_STANDARD
+    // （旧閾値6GBでは非対応(TIER_0)に落ちるため失敗するのが正しい。計画書§5・§0参照）
+    @Test
+    fun classify_fivePointFiveGbTotalMem_returnsTier1Standard() {
+        val totalMem = 5L * GB + GB / 2 // 5.5GiB = 5,905,580,032B（A54実測相当）
+        setMemory(totalMemBytes = totalMem, availMemBytes = totalMem)
+
+        val tier = DeviceCapabilityImpl(context()).classify()
+
+        assertEquals(DeviceTier.TIER_1_STANDARD, tier)
+    }
+
+    // T-DCT-2[Red]: 正常系 - 表記8GB実測相当のtotalMem(7.4GiB)はTIER_2_OPT_IN
+    @Test
+    fun classify_sevenPointFourGbTotalMem_returnsTier2OptIn() {
+        val totalMem = 7_945_689_498L // 7.4GiB相当（表記8GB実測相当）
+        setMemory(totalMemBytes = totalMem, availMemBytes = totalMem)
+
+        val tier = DeviceCapabilityImpl(context()).classify()
+
+        assertEquals(DeviceTier.TIER_2_OPT_IN, tier)
+    }
+
+    // T-DCT-5[born-green]: 異常系 - 表記4GB実測相当のtotalMem(3.6GiB)を誤ってTIER_1へ
+    // 受け入れない（誤受け入れ防止）
+    @Test
+    fun classify_threePointSixGbTotalMem_returnsTier0Unsupported() {
+        val totalMem = 3_865_470_566L // 3.6GiB相当（表記4GB実測相当）
+        setMemory(totalMemBytes = totalMem, availMemBytes = totalMem)
+
+        val tier = DeviceCapabilityImpl(context()).classify()
+
+        assertEquals(DeviceTier.TIER_0_UNSUPPORTED, tier)
+    }
+
+    // T-DCT-6[born-green]: 異常系 - totalMem=0（未取得・異常値の代表）でも安全側の
+    // TIER_0_UNSUPPORTEDを返す
+    @Test
+    fun classify_zeroTotalMem_returnsTier0Unsupported() {
+        setMemory(totalMemBytes = 0L, availMemBytes = 0L)
+
+        val tier = DeviceCapabilityImpl(context()).classify()
+
+        assertEquals(DeviceTier.TIER_0_UNSUPPORTED, tier)
+    }
+
+    // T-DCT-7[Red]: エッジ - 新下限境界ちょうど(5GiB)はTIER_1_STANDARD（以上で段1）
+    @Test
+    fun classify_fiveGbTotalMem_returnsTier1Standard() {
+        setMemory(totalMemBytes = 5L * GB, availMemBytes = 5L * GB)
+
+        val tier = DeviceCapabilityImpl(context()).classify()
+
+        assertEquals(DeviceTier.TIER_1_STANDARD, tier)
+    }
+
+    // T-DCT-8[born-green]: エッジ - 新下限境界の下側(5GiB-1)はTIER_0_UNSUPPORTEDのまま
+    @Test
+    fun classify_justUnderFiveGb_returnsTier0Unsupported() {
+        setMemory(totalMemBytes = 5L * GB - 1, availMemBytes = 5L * GB - 1)
+
+        val tier = DeviceCapabilityImpl(context()).classify()
+
+        assertEquals(DeviceTier.TIER_0_UNSUPPORTED, tier)
+    }
+
+    // T-DCT-9[Red]: エッジ - 新段2下限境界ちょうど(7GiB)はTIER_2_OPT_IN
+    @Test
+    fun classify_sevenGbTotalMem_returnsTier2OptIn() {
+        setMemory(totalMemBytes = 7L * GB, availMemBytes = 7L * GB)
+
+        val tier = DeviceCapabilityImpl(context()).classify()
+
+        assertEquals(DeviceTier.TIER_2_OPT_IN, tier)
+    }
+
+    // T-DCT-10[born-green]: エッジ - 新段2境界の下側(7GiB-1)はTIER_1_STANDARDのまま
+    @Test
+    fun classify_justUnderSevenGb_returnsTier1Standard() {
+        setMemory(totalMemBytes = 7L * GB - 1, availMemBytes = 7L * GB - 1)
+
+        val tier = DeviceCapabilityImpl(context()).classify()
+
+        assertEquals(DeviceTier.TIER_1_STANDARD, tier)
     }
 
     // T-MDL-3相当: 異常系 - SUPPORTED_ABISにarm64-v8aがない → 非対応

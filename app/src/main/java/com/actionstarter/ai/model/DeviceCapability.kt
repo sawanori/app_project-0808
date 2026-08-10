@@ -23,9 +23,14 @@ import android.os.Build
  * （計画書§12.5 T-GW-5）に差し替え可能である必要がある点も静的判定と共通するため、同一型
  * へ統合する（新規の別インタフェースを設けない）。
  *
- * **段の対応（§5.3）**: [DeviceTier.TIER_0_UNSUPPORTED] = 6GB未満（§95.3、Local AI対象外）。
- * [DeviceTier.TIER_1_STANDARD] = 6GB以上（既定、Qwen3-0.6B級）。
- * [DeviceTier.TIER_2_OPT_IN] = 8GB以上かつ実機プローブ確認済み（オプトイン、より大きいモデル）。
+ * **段の対応（§5.3）**: [DeviceTier.TIER_0_UNSUPPORTED] = 表記4GB以下相当（§95.3、Local AI対象外）。
+ * [DeviceTier.TIER_1_STANDARD] = 表記6GB相当（既定、Qwen3-0.6B級）。
+ * [DeviceTier.TIER_2_OPT_IN] = 表記8GB以上相当かつ実機プローブ確認済み（オプトイン、より大きいモデル）。
+ * **`totalMem`実効値の判別点は5GiB／7GiBであり、表記(製品仕様)RAMの数値そのものではない
+ * （ADR-0061）**。Androidの`totalMem`はOS/ファームウェア予約分（表記値からの控除、目安
+ * 0.2〜1GiB）を控除した実効値であり、表記6GB機は実測5.3〜5.8GiB程度しか報告しないため、
+ * 判別点を表記段の中点（表記値−1GiB相当）へ是正した（旧6GiB/8GiB実装は表記RAMと`totalMem`
+ * 実効値を混同し、表記6GB機を誤って非対応と判定していた。A54実機ブロッカーの根本原因）。
  * 段3（4B級）はGalaxy Aクラスでは対象外のため本enumに含めない（§5.3明記）。モデル名を
  * [DeviceTier]の値名に含めない（§17「モデル名を製品仕様として固定しない」。段とモデルの
  * 対応表自体は[ModelCatalog]側・将来のSettings実装〔F97〕が持つ）。
@@ -48,11 +53,19 @@ interface DeviceCapability {
     fun hasAvailableMemory(requiredBytes: Long): Boolean
 
     companion object {
-        /** §95.3・§5.3段0上限。この値未満はLocal AI対象外。 */
-        const val TIER_0_MAX_TOTAL_MEM_BYTES: Long = 6L * 1024 * 1024 * 1024
+        /**
+         * §95.3・§5.3段0上限。この値未満はLocal AI対象外。本値は`totalMem`実効値の閾値であり、
+         * 表記(製品仕様)RAMの数値そのものではない（表記6GB機は実測5.3〜5.8GiB程度を報告する。
+         * ADR-0061で6GiB→5GiBへ是正、A54実機ブロッカー解消）。
+         */
+        const val TIER_0_MAX_TOTAL_MEM_BYTES: Long = 5L * 1024 * 1024 * 1024
 
-        /** §5.3段2下限（オプトイン条件の一部。実機プローブ確認と併せて判定）。 */
-        const val TIER_2_MIN_TOTAL_MEM_BYTES: Long = 8L * 1024 * 1024 * 1024
+        /**
+         * §5.3段2下限（オプトイン条件の一部。実機プローブ確認と併せて判定）。本値も`totalMem`
+         * 実効値の閾値であり、表記(製品仕様)RAMの数値そのものではない（ADR-0061で8GiB→7GiBへ
+         * 予防的に是正。本Phase時点で§5.3段2を挙動として消費する呼び出し箇所は存在しない）。
+         */
+        const val TIER_2_MIN_TOTAL_MEM_BYTES: Long = 7L * 1024 * 1024 * 1024
     }
 }
 
@@ -68,10 +81,12 @@ enum class DeviceTier {
  * 実端末状態を参照する。テストでは本クラスをRobolectric shadow経由で使うか、
  * [DeviceCapability]interfaceをfake実装で差し替える。
  *
- * **P7-C3実装済み（Green）**: `totalMem`ベースの段判定は[DeviceCapability.
+ * **P7-C3実装済み（Green）／ADR-0061で閾値是正（表記RAMと`totalMem`実効値の単位混同解消。
+ * A54実機ブロッカー解消）**: `totalMem`ベースの段判定は[DeviceCapability.
  * TIER_0_MAX_TOTAL_MEM_BYTES]／[DeviceCapability.TIER_2_MIN_TOTAL_MEM_BYTES]の2閾値で
- * 3区分に振り分ける（T-MDL-1〜2。境界値は「未満／以上」で判定し、ちょうど6GBは段1・
- * ちょうど8GBは段2）。[hasAvailableMemory]は`ActivityManager.MemoryInfo.availMem`と
+ * 3区分に振り分ける（T-MDL-1〜2・T-DCT-1〜11。境界値は「未満／以上」で判定し、実際の境界は
+ * 5GiB／7GiB。6GB／8GBはいずれも新境界の内側〔6GiBは段1、8GiBは段2〕のため回帰テストの
+ * 期待値は変わらない）。[hasAvailableMemory]は`ActivityManager.MemoryInfo.availMem`と
  * [requiredBytes]の単純比較（`>=`で合格）であり、判定自体に副作用はない
  * （T-GW-5・T-GW-9のfake化基盤。§8.6 #7の事前ガードが呼び出す）。
  *

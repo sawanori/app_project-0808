@@ -1565,3 +1565,33 @@ P7-C2c（品質ハーネス由来の新設部品へのRed補完サイクル）�
 **検証方法**: `IsolationGuardSupportTest`（自己診断: コメント内言及は非検出・実import/インライン参照は検出・許可リストは除外されることを個別に検証、T-AIISO-8）。T-AIISO-4／T-AIISO-5／T-AIISO-6／T-AIISO-7／T-AIISO-9は全件born-green（個別実行`build/agent-logs/p7c7-red.log`、全体`:app:testDebugUnitTest --rerun`でtests=564/failures=0/errors=0/skipped=1、`build/agent-logs/p7c7-full.log`）。`:app:lintDebug --rerun-tasks`でerror 0・warning 22（既存分と同数、`build/agent-logs/p7c7-lint.log`）。
 
 **再検討トリガー**: 将来、コメント除去ロジック（`IsolationGuardSupport.stripComments`）が文字列リテラル内の行コメント・ブロックコメント開始記号相当の文字並びを誤って解釈し見逃しを起こした実例が見つかった場合、文字列リテラルを認識する簡易lexerへの改修を検討すること（現状は本プロジェクトの対象ファイルにそのようなリテラルを含む行が存在しないことを確認済みのため据え置き）。
+
+---
+
+### ADR-0061: `DeviceCapability`のRAM段判別点を`totalMem`実効値ベースへ是正する（表記RAMとの単位混同解消・A54実機ブロッカー解消）
+
+- 日付: 2026-08-11 ／ ステータス: 採用（`docs/plans/phase8-a54-ram-tier-fix.md`のユーザー承認後、Step 4実装完了時点で確定） ／ 決定者: domain-implementer（Step 4実装時判断、オーケストレーターへの報告を前提とした判断） ／ 起案agent: domain-implementer ／ 関連仕様§: §5.3・§95.3、ADR-0048（`DeviceCapability`interface化）、ADR-0057（`defaultProfilePeakRamBytes`プロファイル別是正）
+
+- **ADR番号の付番根拠**: 起票直前に`grep -n "^### ADR-" DECISIONS.md`を再実行し、最新確定ADRがADR-0060（本書1542行、P7-C7）であることを確認した。計画書（`docs/plans/phase8-a54-ram-tier-fix.md`）起案時点の発注前提「既存ADR最新は0059」は`docs/plans/phase7-local-llm-foundation.md:729`の記述のみに基づく誤りだったが、計画書起案時に本ファイルを直接grepしてADR-0060の既存を確認済み（計画書§0・§7に記録）。本Step 4実装時判断として、ADR-0060の次番のADR-0061から起票する。
+
+**背景**: ユーザー実機Galaxy A54 5G（表記6GB RAM）で、設定画面に「この端末はプライベートAIに必要なメモリ（6GB以上）を満たしていません。」が表示されLocal AIを有効化できない不具合が発生した。原因は`DeviceCapabilityImpl.classify()`（`app/src/main/java/com/actionstarter/ai/model/DeviceCapability.kt`）が`ActivityManager.MemoryInfo.totalMem`（OS/ファームウェア予約控除後の実効値）を、旧`TIER_0_MAX_TOTAL_MEM_BYTES`（6GiB）と直接比較していたこと。Androidの`totalMem`は表記(製品仕様)RAMと異なり、表記6GB機は実測5.3〜5.8GiB程度しか報告しないため、表記6GB機が軒並み`TIER_0_UNSUPPORTED`（非対応）へ誤分類されていた。本バグはPhase 8最終確認（C4: A54実機でのAI有効化→Gemma4 DL→実行画面AI文言描画確認）の前提ブロッカーだった。計画書はStep 2アーキテクトレビュー済み（Pass 1指摘2件反映済み）・ユーザー承認済み。
+
+**決定**:
+1. `TIER_0_MAX_TOTAL_MEM_BYTES`を6GiB（6,442,450,944）→5GiB（5,368,709,120）、`TIER_2_MIN_TOTAL_MEM_BYTES`を8GiB（8,589,934,592）→7GiB（7,516,192,768）へ変更した。定数名・型・`classify()`の`when`分岐構造は無変更。
+2. KDoc3箇所（interface `DeviceCapability`の「段の対応」節／companion定数2件／`DeviceCapabilityImpl`クラスKDocの境界値例示）へ、「`totalMem`実効値」と「表記(製品仕様)RAM」が異なる値であることを明記した。
+3. 誤受け入れ側（表記4GB機が新閾値でTIER_1に混入するリスク）の防御は、既存のロード前`hasAvailableMemory`能動ガード（`defaultProfilePeakRamBytes`＋512MBマージン、ADR-0057）に委ね、変更していない。
+4. `TIER_2_MIN_TOTAL_MEM_BYTES`（8GiB→7GiB）も同時に是正した。現時点で`TIER_2_OPT_IN`を挙動として消費する呼び出し箇所は存在しないため挙動中立の予防的是正である。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| 5.5GiBへ是正（表記6GB下限ぎりぎり） | 重カーブアウト端末（`totalMem`実測5.3GiB級）を依然取りこぼす。表記段の中点(5GiB)よりマージンが小さい |
+| `TIER_2_MIN_TOTAL_MEM_BYTES`（8GiB）は据え置き、`TIER_0`側のみ是正 | 同型の単位混同バグが表記8GB機にも存在する。現状消費箇所ゼロで実害はないが、将来`TIER_2_OPT_IN`を消費するコードが追加された時点で同じ実機ブロッカーが再発する。予防的に同時是正する方が安全 |
+| 実機ごとにOEM提供の「表記RAM」を別APIで取得し直接比較する動的検出 | Android標準にOEM非依存の公式APIが存在しない。既存の`totalMem`ベース設計を維持しつつ閾値のみ是正する方が構造変更が小さく安全 |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/model/DeviceCapability.kt`（定数2件の値変更＋KDoc3箇所）。`app/src/test/java/com/actionstarter/ai/model/DeviceCapabilityTest.kt`（新規8件・期待値更新1件・既存維持6件、計15件）。`LocalAiGateway.kt`・`SettingsViewModel.kt`・`values(-ja)/strings.xml`・`ModelCatalog.kt`は無変更（消費するTIER判定結果が変わるため実質的な挙動変化〔A54でAI有効化可能になる〕は生じるが、コード自体は無改修）。
+
+**検証方法**: `:app:testDebugUnitTest --tests "com.actionstarter.ai.model.DeviceCapabilityTest"`でtests=15/failures=0/errors=0（新規8件・更新1件・既存維持6件、全件Green、JUnit XML集計で確認）。`:app:testDebugUnitTest`全体でtests=647/skipped=1/failures=0/errors=0（既存639＋新規8、`app/build/test-results/**/*.xml`集計で確認）。`:app:lintDebug`でBUILD SUCCESSFUL・error 0・warning 22（既存分と同数、`app/build/reports/lint-results-debug.xml`集計で確認）。実機A54での受け入れ手順（計画書§8）は本ADR起票時点で未実施のまま残る——Phase 8 C4完了の最終条件。
+
+**再検討トリガー**: A54実機の`totalMem`実測値が5GiB未満だった場合（想定外の重カーブアウト）、本ADRの閾値を再検討する。Phase 9以降で表記4GB機のTIER_1混入が実機報告された場合、中点(5GiB)自体を見直す。
