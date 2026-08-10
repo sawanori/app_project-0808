@@ -2,6 +2,7 @@ package com.actionstarter.ai.model
 
 import android.content.Context
 import android.os.StatFs
+import com.actionstarter.ai.AiPreferences
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
@@ -103,13 +104,31 @@ interface ModelStorage {
  * @param catalog [installedEntry]／[installedModelPath]が「導入済みか」を走査する対象の候補
  *   一覧。既定は本番カタログ全体（[ModelCatalog.ALL]）。テストは小さなfixtureエントリへ
  *   差し替えられる（クラスKDoc「導入済みモデルの解決方法」参照）。
+ * @param preferences Phase 8（計画書§6.4、Gemini G1 CRITICAL④／B4確定）。新引数・末尾・既定
+ *   `null`（既存呼び出し`ModelStorageImpl(context)`／`ModelStorageImpl(context, catalog=...)`を
+ *   壊さない後方互換パターン）。非nullかつ[AiPreferences.selectedModelId]に対応する
+ *   [finalFile]が実在する場合、[installedEntry]は本モデルをcatalog順走査より最優先で返す
+ *   （[installedEntry]の実装参照）。
  */
 class ModelStorageImpl(
     private val context: Context,
-    private val catalog: List<ModelCatalogEntry> = ModelCatalog.ALL
+    private val catalog: List<ModelCatalogEntry> = ModelCatalog.ALL,
+    private val preferences: AiPreferences? = null
 ) : ModelStorage {
 
-    override fun installedEntry(): ModelCatalogEntry? = catalog.firstOrNull { entry -> finalFile(entry).isFile }
+    /**
+     * Phase 8実装（計画書§6.4、Gemini G1 CRITICAL④／B4確定）。[preferences]が非nullかつ
+     * [AiPreferences.selectedModelId]が設定済みで、対応する[ModelCatalogEntry]の[finalFile]が
+     * 実在する場合は、そのエントリをcatalog順走査より最優先で返す。それ以外
+     * （[preferences]がnull・[AiPreferences.selectedModelId]がcatalogに存在しない・対応ファイルが
+     * 未DL）の場合のみ、既存のcatalog順first-matchへフォールバックする（既存の
+     * グレースフルデグレードは維持。§6.4「catalog順fallbackが働く条件」）。
+     */
+    override fun installedEntry(): ModelCatalogEntry? {
+        val selected = preferences?.selectedModelId?.let { id -> catalog.firstOrNull { it.id == id } }
+        if (selected != null && finalFile(selected).isFile) return selected
+        return catalog.firstOrNull { entry -> finalFile(entry).isFile }
+    }
 
     override fun installedModelPath(): String? = installedEntry()?.let { finalFile(it).absolutePath }
 

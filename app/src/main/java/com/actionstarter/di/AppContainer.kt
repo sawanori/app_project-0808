@@ -11,6 +11,7 @@ import com.actionstarter.BuildConfig
 import com.actionstarter.ai.AiPreferences
 import com.actionstarter.ai.AiPreferencesImpl
 import com.actionstarter.ai.LocalAiGateway
+import com.actionstarter.ai.LocalAiPlanContextualizer
 import com.actionstarter.ai.adapter.LiteRtLmLocalLanguageModel
 import com.actionstarter.ai.model.DeviceCapability
 import com.actionstarter.ai.model.DeviceCapabilityImpl
@@ -243,7 +244,14 @@ class AppContainer(
      * ファイルI/Oを伴わない軽量なコンストラクタだが、起動シーケンスの一貫性のため他のAI関連
      * プロパティと同じ遅延方針に揃える。
      */
-    private val modelStorage: ModelStorage by lazy { ModelStorageImpl(context) }
+    /**
+     * Phase 8（計画書§6.4、Gemini G1 CRITICAL④／B4確定）: `preferences = aiPreferences`を渡す
+     * 1行変更。`aiPreferences`はクラス内の宣言順としては本プロパティより後方だが、
+     * [modelStorage]は`by lazy`（初回アクセス時にのみ評価）のため、コンストラクタ完了後に
+     * 初めて評価される時点では[aiPreferences]は必ず初期化済みであり安全（§6.4参照）。
+     * 新規インスタンスは作らず、既にeager初期化済みの単一[aiPreferences]を再利用する。
+     */
+    private val modelStorage: ModelStorage by lazy { ModelStorageImpl(context, preferences = aiPreferences) }
 
     /**
      * F92実配線（計画書§7.1・§14 P7-C1／P7-C6、ADR-0048）。[localAiGateway]・
@@ -336,6 +344,43 @@ class AppContainer(
     }
 
     /**
+     * Phase 8実配線（計画書§6.3・§12）。[localAiGateway]（既存の単一lazyインスタンス、
+     * `inferenceMutex`による直列化を1本に保つ）をそのまま再利用する。`by lazy`は他のAI関連
+     * プロパティと同じくR-7（起動を重くしない）を理由とする。
+     * [createViewModelFactory]の`PlanReviewViewModel`初期化子へ注入する。
+     *
+     * **[LinkageError]防御（domain-implementer実装時の実測発見・報告事項、計画書§6.3の字義からの
+     * 逸脱）**: [localAiGateway]の構築（[LiteRtLmLocalLanguageModel]のインスタンス化）は、
+     * 依存先`com.google.ai.edge.litertlm`（litertlm-android 0.15.0 AAR）のクラスファイル
+     * バージョン（実測: class file version 65 = Java 21相当）が実行時JVMのバージョンを上回る
+     * 環境では`ExceptionInInitializerError`→`NoClassDefFoundError`（いずれも[LinkageError]の
+     * サブクラス）で失敗する（実測: JDK 17.0.19実行時に`UnsupportedClassVersionError`。本プロジェクトの
+     * 実機/ART上では発生しない、JVM単体のクラス検証固有の制約）。この経路はPhase 7時点では
+     * `AppContainer.localAiGateway`をどのProduction消費者も参照していなかったため潜在していた
+     * （`SettingsViewModel`はlocalAiGatewayを注入されない。既存`LocalAiGatewayTest`／
+     * `SettingsAiSafetyTest`はいずれも[LocalAiGateway]を直接fakeモデルで構築し`AppContainer`経由
+     * ではない）。Phase 8で`PlanReviewViewModel`へ実配線した結果、既存のRobolectric全画面遷移
+     * テスト（`NavigationFlowTest`等、実測で新規10件が失敗）が初めてこの経路を踏むことで顕在化した。
+     *
+     * [LocalAiGateway.invokeModel]が既に`UnsatisfiedLinkError`（同じく[LinkageError]の
+     * サブクラス）を「ネイティブ資源がロードできない」既知の縮退経路として捕捉している
+     * （§8.6 #6 MODEL_LOAD_FAILED）のと**同じ設計原則**を、DI構築の1つ手前の層へ適用する。
+     * 捕捉は[LinkageError]のみに意図的に狭く限定する（ビジネスロジックの例外は握り潰さない）。
+     * 実機（ART、本チェックが発生しない環境）では通常どおり構築が成功し非nullとなる。
+     *
+     * **申し送り**: 本ガードは計画書§6.3の例示スニペット（無条件`LocalAiPlanContextualizer(
+     * localAiGateway)`）からの実装時逸脱であり、アーキテクトレビュー（opus）での確認を要する
+     * （JDK 21環境の用意、または`litertlm-android`側の対応バージョン確認が本質的解決策の候補）。
+     */
+    val localAiPlanContextualizer: LocalAiPlanContextualizer? by lazy {
+        try {
+            LocalAiPlanContextualizer(localAiGateway)
+        } catch (e: LinkageError) {
+            null
+        }
+    }
+
+    /**
      * `ActionStarterNavHost`（統合サイクル・integration owner所有）から呼び出される単一
      * `ViewModelProvider.Factory`。[sharedPlanViewModel]はactivity-scopedの共有ViewModel
      * （計画書§10.1）であり、[PlanReviewViewModel]／[RecoveryViewModel]／[ExecutionViewModel]が
@@ -375,7 +420,11 @@ class AppContainer(
                     geocodingService = geocodingService,
                     locationService = locationService,
                     routingService = routingService,
-                    permissionGate = permissionGate
+                    permissionGate = permissionGate,
+                    // Phase 8実配線（計画書§6.1・§6.3）: イベント選択のたびにPlanReviewViewModel
+                    // 側のcollectLatestがtravel取得と並行してcontextualizer.contextualizeを呼ぶ
+                    // （§4.1）。localAiPlanContextualizerはLinkageError発生時null（KDoc参照）。
+                    aiPlanContextualizer = localAiPlanContextualizer
                 )
             }
             initializer {

@@ -3,7 +3,11 @@ package com.actionstarter.features.planreview
 import android.Manifest
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.actionstarter.ai.ContextualizationResult
+import com.actionstarter.ai.LocalAiPlanContextualizer
+import com.actionstarter.ai.overlay
 import com.actionstarter.domain.model.ExecutionEvent
+import com.actionstarter.domain.model.ExecutionPlan
 import com.actionstarter.domain.model.PlanningContext
 import com.actionstarter.domain.valueobject.TransportMode
 import com.actionstarter.navigation.SharedPlanViewModel
@@ -15,14 +19,20 @@ import com.actionstarter.services.location.LocationService
 import com.actionstarter.services.permission.PermissionGate
 import com.actionstarter.services.routing.RoutingException
 import com.actionstarter.services.routing.RoutingService
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.util.Locale
+import java.util.UUID
 
 /**
  * 仕様§26準拠（PlanReviewScreenのViewModel）。
@@ -88,6 +98,10 @@ import java.util.Locale
  * @param routingService 経路時間見積り（F24/F25）。`null`の間はfetchを行わない。
  * @param permissionGate 位置権限の事前チェック（無駄な非同期呼び出しの回避用）。`null`の間は
  *   事前チェックをスキップし[locationService]の応答を権威とする。
+ * @param aiPlanContextualizer Phase 8（計画書§6.1）。新引数・末尾・既定`null`（ADR-0028と同型の
+ *   後方互換パターン、既存の6引数以下の構築を壊さない、T-P8-13）。`null`の間はAIフェーズを
+ *   skip（Basic固定文言のまま・`uiState.aiState`は常に[AiContextualizationState.Idle]、§4.2）。
+ *   非nullの間は[init]の`collectLatest`がtravel取得と並行してAI推論を起動する（§4.1・§4.3）。
  */
 class PlanReviewViewModel(
     private val planningEngine: PlanningEngine,
@@ -95,21 +109,101 @@ class PlanReviewViewModel(
     private val geocodingService: GeocodingService? = null,
     private val locationService: LocationService? = null,
     private val routingService: RoutingService? = null,
-    private val permissionGate: PermissionGate? = null
+    private val permissionGate: PermissionGate? = null,
+    private val aiPlanContextualizer: LocalAiPlanContextualizer? = null
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(PlanReviewUiState())
-    val uiState: StateFlow<PlanReviewUiState> = _uiState.asStateFlow()
+    // ------------------------------------------------------------------
+    // Phase 8 §4（Gemini G1 CRITICAL②反映）。書き込み口はlatestBase／latestAiResponseの2つのみ、
+    // 読み出し口はuiState（combineの1箇所）のみ。_uiState.valueへの命令的全置換は行わない。
+    // ------------------------------------------------------------------
+
+    /** §4.1。Basic（travel未解決）→travel解決後のBasic、の順で同じStateFlowへ書き込む。 */
+    private val latestBase = MutableStateFlow<ExecutionPlan?>(null)
+
+    /** §4.1。AI推論完了時点の[ContextualizationResult]をevent.idと共に保持する。 */
+    private val latestAiResponse = MutableStateFlow<AiResponseCache?>(null)
+
+    /** [eventId]は書き込み時点でstale-writeガード済み（§4.3-1）。 */
+    private data class AiResponseCache(val eventId: UUID, val result: ContextualizationResult)
+
+    /**
+     * §4.2（Gemini G1 CRITICAL②反映）。[latestBase]・[latestAiResponse]いずれかの更新のたびに
+     * 再計算される宣言的合成。到達順序に関わらず、両方の最新値からのみ結果を導出するため
+     * 順序依存のバグが構造的に発生しない（T-P8-26）。[isBehindSchedule]は`combine`再計算のたびに
+     * 現在時刻で評価する（`base`はtravel解決の有無に関わらず時刻フィールド自体は不変のため、
+     * 評価タイミングを変えても既存の意味は保たれる）。
+     */
+    private fun combinedUiStateFlow(): Flow<PlanReviewUiState> =
+        combine(latestBase, latestAiResponse) { base, aiCache ->
+            if (base == null) return@combine PlanReviewUiState()
+
+            val isBehindSchedule = base.transitionStart.isBefore(Instant.now())
+            when {
+                aiPlanContextualizer == null -> PlanReviewUiState(
+                    plan = base,
+                    isBehindSchedule = isBehindSchedule,
+                    isEditEnabled = false,
+                    aiState = AiContextualizationState.Idle
+                )
+                aiCache == null || aiCache.eventId != base.event.id -> PlanReviewUiState(
+                    plan = base,
+                    isBehindSchedule = isBehindSchedule,
+                    isEditEnabled = false,
+                    aiState = AiContextualizationState.InProgress
+                )
+                else -> when (val result = aiCache.result) {
+                    is ContextualizationResult.Applied -> PlanReviewUiState(
+                        plan = overlay(base, result.response),
+                        isBehindSchedule = isBehindSchedule,
+                        isEditEnabled = false,
+                        aiState = AiContextualizationState.Applied
+                    )
+                    is ContextualizationResult.Unchanged -> PlanReviewUiState(
+                        plan = base,
+                        isBehindSchedule = isBehindSchedule,
+                        isEditEnabled = false,
+                        aiState = AiContextualizationState.FellBack(result.reason)
+                    )
+                }
+            }
+        }
+
+    /** §4.2の唯一の読み出し口。[SharingStarted.Eagerly]は既存`_uiState`即時公開の挙動を踏襲する。 */
+    val uiState: StateFlow<PlanReviewUiState> =
+        combinedUiStateFlow().stateIn(viewModelScope, SharingStarted.Eagerly, PlanReviewUiState())
 
     init {
         viewModelScope.launch {
-            sharedPlanViewModel.selectedEvent.collect { event ->
-                if (event != null) {
-                    applyPlan(event, travelEstimate = null)
+            sharedPlanViewModel.selectedEvent.collectLatest { event ->
+                if (event == null) return@collectLatest
+
+                // §4.3-2: 別イベント選択時の同期リセット（AI推論を起動する前）。
+                latestAiResponse.value = null
+
+                val initialContext = buildPlanningContext(event, travelEstimate = null)
+                val baseline = planningEngine.createPlan(initialContext)
+                latestBase.value = baseline
+
+                // §4.1: AIはlatencyの長いポーリングのため、travel取得と並行に早期起動する
+                // （travel待ちの後に直列起動しない）。coroutineScopeがAI launchの完了まで
+                // 本collectLatestイテレーションの寿命を保つ（§4.3、別イベント到達時に
+                // 構造化並行性で確実にキャンセル対象へ含まれる）。
+                coroutineScope {
+                    val contextualizer = aiPlanContextualizer
+                    if (contextualizer != null) {
+                        launch {
+                            val result = contextualizer.contextualize(baseline, initialContext)
+                            // §4.3-1: 書き込みゲート（fetchTravelEstimateの既存パターンと同型）。
+                            if (sharedPlanViewModel.selectedEvent.value?.id == event.id) {
+                                latestAiResponse.value = AiResponseCache(event.id, result)
+                            }
+                        }
+                    }
 
                     val travelEstimate = fetchTravelEstimate(event)
                     if (travelEstimate != null && sharedPlanViewModel.selectedEvent.value?.id == event.id) {
-                        applyPlan(event, travelEstimate = travelEstimate)
+                        latestBase.value = planningEngine.createPlan(buildPlanningContext(event, travelEstimate))
                     }
                 }
             }
@@ -117,23 +211,13 @@ class PlanReviewViewModel(
     }
 
     /**
-     * 「Start」タップ相当の操作（T-PLAN-3）。生成済みのPlanを
-     * [SharedPlanViewModel.confirmPlan]で確定する。Planが未生成（`null`）の場合は
+     * 「Start」タップ相当の操作（T-PLAN-3）。生成済みのPlan（AI適用済みなら適用後のもの、
+     * T-P8-4）を[SharedPlanViewModel.confirmPlan]で確定する。Planが未生成（`null`）の場合は
      * 何もしない（画面側のStartボタンはPlan生成後にのみ有効な文脈で呼ばれる想定）。
      */
     fun confirmAndStart() {
-        val plan = _uiState.value.plan ?: return
+        val plan = uiState.value.plan ?: return
         sharedPlanViewModel.confirmPlan(plan)
-    }
-
-    private suspend fun applyPlan(event: ExecutionEvent, travelEstimate: Duration?) {
-        val plan = planningEngine.createPlan(buildPlanningContext(event, travelEstimate))
-        val isBehindSchedule = plan.transitionStart.isBefore(Instant.now())
-        _uiState.value = PlanReviewUiState(
-            plan = plan,
-            isBehindSchedule = isBehindSchedule,
-            isEditEnabled = false
-        )
     }
 
     /** クラスKDoc「取得パイプライン」参照。 */

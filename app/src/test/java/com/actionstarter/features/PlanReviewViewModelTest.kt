@@ -3,12 +3,15 @@
 package com.actionstarter.features
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.actionstarter.ai.AiGatewayTestFixtures
+import com.actionstarter.ai.LocalAiPlanContextualizer
 import com.actionstarter.domain.model.ExecutionEvent
 import com.actionstarter.domain.model.ExecutionStepType
 import com.actionstarter.domain.valueobject.CalendarSource
 import com.actionstarter.domain.valueobject.Coordinate
 import com.actionstarter.domain.valueobject.RouteEstimate
 import com.actionstarter.domain.valueobject.TransportMode
+import com.actionstarter.features.planreview.AiContextualizationState
 import com.actionstarter.features.planreview.PlanReviewViewModel
 import com.actionstarter.navigation.SharedPlanViewModel
 import com.actionstarter.planning.BasicPlanningEngine
@@ -21,6 +24,7 @@ import com.actionstarter.services.routing.RoutingException
 import com.actionstarter.services.routing.RoutingService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -35,6 +39,7 @@ import org.junit.runner.RunWith
 import java.io.IOException
 import java.time.Duration
 import java.time.Instant
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -63,14 +68,24 @@ import java.util.UUID
 class PlanReviewViewModelTest {
 
     private val testDispatcher = StandardTestDispatcher()
+    private lateinit var originalDefaultLocale: Locale
 
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
+        // Phase 8（T-P8-3/4/19/26）: PlanReviewViewModel.buildPlanningContextはLocale.getDefault()
+        // をPlanningContext.localeへそのまま使う。本ファイルのAI経由テストは日本語の
+        // display_textフィクスチャを使うため、ContentSanityChecker.isLocaleConsistent
+        // （§15逸脱の二重防御）と整合させるためJVMの既定localeをJapanへ固定する
+        // （実行環境依存の既定localeに結果が左右されないようにする）。BasicPlanningEngineは
+        // localeを一切参照しないため、既存のtP4c8_*テストへの影響はない。
+        originalDefaultLocale = Locale.getDefault()
+        Locale.setDefault(Locale.JAPAN)
     }
 
     @After
     fun tearDown() {
+        Locale.setDefault(originalDefaultLocale)
         Dispatchers.resetMain()
     }
 
@@ -99,7 +114,10 @@ class PlanReviewViewModelTest {
 
     private class FakeRoutingService(
         var result: RouteEstimate? = null,
-        var exceptionToThrow: RoutingException? = null
+        var exceptionToThrow: RoutingException? = null,
+        // Phase 8（T-P8-26、新規・末尾・既定0）: travel解決のタイミングを人為的に制御するために追加。
+        // 既定0のため既存の全呼び出し（delayMillisを渡さない）は挙動不変。
+        var delayMillis: Long = 0L
     ) : RoutingService {
         var callCount = 0
             private set
@@ -120,6 +138,9 @@ class PlanReviewViewModelTest {
         ): RouteEstimate {
             callCount++
             calls += Call(origin, destination, mode, departureDate)
+            if (delayMillis > 0) {
+                delay(delayMillis)
+            }
             exceptionToThrow?.let { throw it }
             return result ?: error("FakeRoutingService: configure result or exceptionToThrow before calling estimateRoute")
         }
@@ -155,14 +176,17 @@ class PlanReviewViewModelTest {
         geocodingService: GeocodingService? = null,
         locationService: LocationService? = null,
         routingService: RoutingService? = null,
-        permissionGate: PermissionGate? = null
+        permissionGate: PermissionGate? = null,
+        // Phase 8（新規・末尾・既定null）: 省略時は既存呼び出しと完全に同じ挙動（AIフェーズskip）。
+        aiPlanContextualizer: LocalAiPlanContextualizer? = null
     ): PlanReviewViewModel = PlanReviewViewModel(
         planningEngine = BasicPlanningEngine(),
         sharedPlanViewModel = sharedPlanViewModel,
         geocodingService = geocodingService,
         locationService = locationService,
         routingService = routingService,
-        permissionGate = permissionGate
+        permissionGate = permissionGate,
+        aiPlanContextualizer = aiPlanContextualizer
     )
 
     // T-P4C8-1: 正常系 - サービス4種すべて揃い・権限あり・geocode/locate/route成功
@@ -360,4 +384,257 @@ class PlanReviewViewModelTest {
             plan!!.steps.none { it.type == ExecutionStepType.TRAVEL }
         )
     }
+
+    // ------------------------------------------------------------------
+    // Phase 8（計画書`docs/plans/phase8-ai-execution-wiring.md`§8）。ViewModelレベルのT-P8-*
+    // （3・4・13・19・22・26、6件）。gateway単体のT-P8-1/2/5〜12/14〜18/20/21/23/25は
+    // `com.actionstarter.ai.LocalAiPlanContextualizerTest`、T-P8-24は`ai.model.ModelStorageTest`。
+    // ------------------------------------------------------------------
+
+    // T-P8-3: 非同期状態遷移（combine由来、§4改訂）— event選択直後はBasic(IN_PROGRESS)、
+    // AI Success到達後はAPPLIEDへ遷移する。いずれもcombineの自動再emitであり、_uiState.valueへの
+    // 命令的代入はしない（Gemini G1 CRITICAL②反映）。
+    @Test
+    fun tP8_3_asyncStateTransition_startsInProgressThenBecomesAppliedAfterAiSuccess() = runTest(testDispatcher) {
+        val event = sampleEvent(startDate = Instant.parse("2026-08-10T10:00:00Z"), locationName = null)
+        val model = AiGatewayTestFixtures.FakeLocalLanguageModel(
+            listOf(
+                AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(
+                    AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "保険証を持って行く")
+                )
+            ),
+            delayMillisPerCall = 5_000L
+        )
+        val gateway = AiGatewayTestFixtures.readyGateway(model, prefsFileName = "p8_3")
+
+        val viewModel = createPlanReviewViewModel(
+            sharedPlanViewModel = sharedPlanViewModelWithSelectedEvent(event),
+            aiPlanContextualizer = LocalAiPlanContextualizer(gateway)
+        )
+        testDispatcher.scheduler.runCurrent()
+
+        val inProgress = viewModel.uiState.value
+        assertEquals(
+            "AI応答未到達の間はaiState=IN_PROGRESSであるべきです(T-P8-3)",
+            AiContextualizationState.InProgress,
+            inProgress.aiState
+        )
+        assertNotNull("Basic(travel未解決)のplanは即時表示されているべきです", inProgress.plan)
+
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val applied = viewModel.uiState.value
+        assertEquals(AiContextualizationState.Applied, applied.aiState)
+        assertEquals(
+            "保険証を持って行く",
+            applied.plan!!.steps.single { it.type == ExecutionStepType.PREPARATION }.title
+        )
+    }
+
+    // T-P8-4: 確定伝播 — Start後、Execution向けconfirmedPlan.steps[i].titleがAI文言を反映する
+    // （Execution無改修で透過。T-P8-4）。
+    @Test
+    fun tP8_4_confirmAndStart_propagatesAiOverlaidTitles_toConfirmedPlan() = runTest(testDispatcher) {
+        val event = sampleEvent(startDate = Instant.parse("2026-08-10T10:00:00Z"), locationName = null)
+        val model = AiGatewayTestFixtures.FakeLocalLanguageModel(
+            listOf(
+                AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(
+                    AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "保険証を持って行く")
+                )
+            )
+        )
+        val gateway = AiGatewayTestFixtures.readyGateway(model, prefsFileName = "p8_4")
+        val sharedPlanViewModel = sharedPlanViewModelWithSelectedEvent(event)
+
+        val viewModel = createPlanReviewViewModel(
+            sharedPlanViewModel = sharedPlanViewModel,
+            aiPlanContextualizer = LocalAiPlanContextualizer(gateway)
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals(AiContextualizationState.Applied, viewModel.uiState.value.aiState)
+
+        viewModel.confirmAndStart()
+
+        val confirmedPlan = sharedPlanViewModel.confirmedPlan.value
+        assertNotNull("confirmAndStart()はplanを確定させるはずです", confirmedPlan)
+        assertEquals(
+            "保険証を持って行く",
+            confirmedPlan!!.steps.single { it.type == ExecutionStepType.PREPARATION }.title
+        )
+    }
+
+    // T-P8-13: aiPlanContextualizer=null（旧2引数構築）→ AIフェーズskip・Basic（後方互換）
+    @Test
+    fun tP8_13_aiPlanContextualizerNull_legacyConstruction_aiPhaseSkipped_aiStateStaysIdle() = runTest(testDispatcher) {
+        val event = sampleEvent(startDate = Instant.parse("2026-08-10T10:00:00Z"))
+
+        // 旧2引数構築（aiPlanContextualizerを一切渡さない）。
+        val viewModel = PlanReviewViewModel(BasicPlanningEngine(), sharedPlanViewModelWithSelectedEvent(event))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(
+            "aiPlanContextualizer=nullの間はaiStateが常にIDLEであるべきです(T-P8-13)",
+            AiContextualizationState.Idle,
+            state.aiState
+        )
+        assertNotNull(state.plan)
+        assertTrue(state.plan!!.steps.none { it.type == ExecutionStepType.TRAVEL })
+    }
+
+    // T-P8-19: stale（推論中に別イベント選択）— 旧イベント宛てAI応答（またはその可能性）が
+    // 新イベントのuiStateへ混入せず、最終状態は新イベント自身のAI結果のみを反映する。
+    @Test
+    fun tP8_19_staleAiResponseAfterEventSwitch_finalUiStateReflectsOnlyNewEvent() = runTest(testDispatcher) {
+        val event1 = sampleEvent(startDate = Instant.parse("2026-08-10T10:00:00Z"), locationName = null)
+        val event2 = sampleEvent(startDate = Instant.parse("2026-08-11T10:00:00Z"), locationName = null)
+        val model = AiGatewayTestFixtures.FakeLocalLanguageModel(
+            listOf(
+                AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(
+                    AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "旧予定の文言")
+                ),
+                AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(
+                    AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "新予定の文言")
+                )
+            ),
+            delayMillisPerCall = 10_000L
+        )
+        val gateway = AiGatewayTestFixtures.readyGateway(model, prefsFileName = "p8_19")
+        val sharedPlanViewModel = sharedPlanViewModelWithSelectedEvent(event1)
+
+        val viewModel = createPlanReviewViewModel(
+            sharedPlanViewModel = sharedPlanViewModel,
+            aiPlanContextualizer = LocalAiPlanContextualizer(gateway)
+        )
+        testDispatcher.scheduler.runCurrent()
+        assertEquals(AiContextualizationState.InProgress, viewModel.uiState.value.aiState)
+
+        // event1のAI推論完了前に別イベントを選択する。
+        sharedPlanViewModel.selectEvent(event2)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val finalState = viewModel.uiState.value
+        assertEquals(
+            "最終planはevent2のものであるべきです(T-P8-19)",
+            event2.id,
+            finalState.plan?.event?.id
+        )
+        assertEquals(AiContextualizationState.Applied, finalState.aiState)
+        assertEquals(
+            "旧イベント(event1)宛てのAI文言が新イベントのplanへ混入してはいけません(T-P8-19)",
+            "新予定の文言",
+            finalState.plan?.steps?.single { it.type == ExecutionStepType.PREPARATION }?.title
+        )
+    }
+
+    // T-P8-22: キャンセル — 別イベント選択によりcollectLatestが旧イベントのAI推論coroutineを
+    // 構造的にキャンセルする（CancellationExceptionは再送出でスコープ健全、§4.3）。
+    @Test
+    fun tP8_22_eventSwitch_cancelsInFlightAiInference_viaCollectLatestStructuredConcurrency() = runTest(testDispatcher) {
+        val event1 = sampleEvent(startDate = Instant.parse("2026-08-10T10:00:00Z"), locationName = null)
+        val event2 = sampleEvent(startDate = Instant.parse("2026-08-11T10:00:00Z"), locationName = null)
+        val model = AiGatewayTestFixtures.FakeLocalLanguageModel(
+            listOf(AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "X"))),
+            delayMillisPerCall = 10_000L
+        )
+        val gateway = AiGatewayTestFixtures.readyGateway(model, prefsFileName = "p8_22")
+        val sharedPlanViewModel = sharedPlanViewModelWithSelectedEvent(event1)
+
+        createPlanReviewViewModel(
+            sharedPlanViewModel = sharedPlanViewModel,
+            aiPlanContextualizer = LocalAiPlanContextualizer(gateway)
+        )
+        testDispatcher.scheduler.runCurrent()
+        assertEquals("切り替え前はまだキャンセルされていないはずです", 0, model.cancelledCount)
+
+        sharedPlanViewModel.selectEvent(event2)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(
+            "別イベント選択でcollectLatestが旧イベントのAI推論coroutineを構造的にキャンセルする" +
+                "はずです(T-P8-22、§4.3)",
+            1,
+            model.cancelledCount
+        )
+    }
+
+    // T-P8-26: travel解決とAI解決の到達順序非依存 — (a)travelが先に解決→AIが後、
+    // (b)AIが先に解決→travelが後、いずれも最終uiState（plan・aiState）が一致する。
+    @Test
+    fun tP8_26_travelAndAiResolutionOrderIndependence_finalUiStateMatchesRegardlessOfArrivalOrder() =
+        runTest(testDispatcher) {
+            val eventStart = Instant.parse("2026-08-10T10:00:00Z")
+            val event = sampleEvent(startDate = eventStart, locationName = "Shibuya Office")
+            val permissionGate = FakePermissionGate(granted = true)
+
+            // シナリオ(a): travelが先に解決（短遅延）→AIが後（長遅延）
+            val routingA = FakeRoutingService(
+                result = RouteEstimate(duration = Duration.ofMinutes(25), mode = TransportMode.TRANSIT, computedAt = eventStart),
+                delayMillis = 100L
+            )
+            val modelA = AiGatewayTestFixtures.FakeLocalLanguageModel(
+                listOf(
+                    AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(
+                        AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "保険証を持って行く")
+                    )
+                ),
+                delayMillisPerCall = 5_000L
+            )
+            val viewModelA = createPlanReviewViewModel(
+                sharedPlanViewModel = sharedPlanViewModelWithSelectedEvent(event),
+                geocodingService = FakeGeocodingService(GeocodeResult.Success(defaultDestination)),
+                locationService = FakeLocationService(
+                    LocationResult.Success(coordinate = defaultOrigin, accuracyMeters = 10f, fixedAt = eventStart)
+                ),
+                routingService = routingA,
+                permissionGate = permissionGate,
+                aiPlanContextualizer = LocalAiPlanContextualizer(
+                    AiGatewayTestFixtures.readyGateway(modelA, prefsFileName = "p8_26_a")
+                )
+            )
+            testDispatcher.scheduler.advanceUntilIdle()
+            val finalA = viewModelA.uiState.value
+
+            // シナリオ(b): AIが先に解決（短遅延）→travelが後（長遅延）
+            val routingB = FakeRoutingService(
+                result = RouteEstimate(duration = Duration.ofMinutes(25), mode = TransportMode.TRANSIT, computedAt = eventStart),
+                delayMillis = 5_000L
+            )
+            val modelB = AiGatewayTestFixtures.FakeLocalLanguageModel(
+                listOf(
+                    AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(
+                        AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "保険証を持って行く")
+                    )
+                ),
+                delayMillisPerCall = 100L
+            )
+            val viewModelB = createPlanReviewViewModel(
+                sharedPlanViewModel = sharedPlanViewModelWithSelectedEvent(event),
+                geocodingService = FakeGeocodingService(GeocodeResult.Success(defaultDestination)),
+                locationService = FakeLocationService(
+                    LocationResult.Success(coordinate = defaultOrigin, accuracyMeters = 10f, fixedAt = eventStart)
+                ),
+                routingService = routingB,
+                permissionGate = permissionGate,
+                aiPlanContextualizer = LocalAiPlanContextualizer(
+                    AiGatewayTestFixtures.readyGateway(modelB, prefsFileName = "p8_26_b")
+                )
+            )
+            testDispatcher.scheduler.advanceUntilIdle()
+            val finalB = viewModelB.uiState.value
+
+            assertEquals("到達順序に関わらずplanは一致するはずです(T-P8-26)", finalA.plan, finalB.plan)
+            assertEquals(AiContextualizationState.Applied, finalA.aiState)
+            assertEquals(AiContextualizationState.Applied, finalB.aiState)
+            val planA = finalA.plan
+            assertNotNull(planA)
+            assertTrue(
+                "travel適用(TRAVELステップ)が両シナリオで反映されているはずです",
+                planA!!.steps.any { it.type == ExecutionStepType.TRAVEL }
+            )
+            assertEquals(
+                "保険証を持って行く",
+                planA.steps.single { it.type == ExecutionStepType.PREPARATION }.title
+            )
+        }
 }

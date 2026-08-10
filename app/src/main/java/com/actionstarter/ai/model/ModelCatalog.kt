@@ -140,14 +140,20 @@ object ModelCatalog {
     /**
      * カタログ全体。§5.3段2以降・Gemma系等を追加する際はここへ足す（U-4確定後）。
      *
-     * **順序の意図（P7-C8で2件追加）**: [QWEN3_0_6B_INT4_BLOCK32]を必ず先頭に置く。
-     * [ModelStorageImpl.installedEntry]は`catalog.firstOrNull { finalFile(entry).isFile }`で
-     * 「導入済み」を決めるため、本番の既定モデル（Qwen3-0.6B）が先頭である限り、[ALL]へ比較用
-     * エントリを追加しても本番の既定選択（Settings未実装のため事実上唯一のインストール経路）は
-     * 変わらない。[QWEN3_1_7B_INT4_BLOCK32]／[GEMMA_4_E2B_IT]はP7-C8比較probe
-     * （`ModelComparisonProbeTest`）が`ModelStorageImpl(context, catalog = listOf(entry))`で
-     * 単一エントリのcatalogへ差し替えて使うため、[ALL]内の並び自体が比較probeの動作に影響することは
-     * ない。
+     * **順序の意図（P7-C8で2件追加・Phase 8 C3で前提更新、Gemini G1 CRITICAL④／B4確定）**:
+     * [QWEN3_0_6B_INT4_BLOCK32]を先頭に置く並び自体はP7-C8時点のまま変更していない。
+     * ただし「Qwen3-0.6Bを先頭に置く限り本番の既定選択は変わらない」という**P7-C8時点の前提は
+     * Phase 8で崩れている**——[ModelStorageImpl.installedEntry]は
+     * `AiPreferences.selectedModelId`（P7-C6でGemma4-E2Bが既定値として確定済み）が設定済みかつ
+     * 対応ファイルが実在する場合、その導入済みモデルをcatalog順走査より**最優先**で返すように
+     * 改修された（[ModelStorageImpl.installedEntry]のKDoc参照）。したがって、端末にQwenと
+     * Gemma4の両方が導入されている状態でも、`selectedModelId=gemma-4-e2b-it`であれば
+     * `installedEntry()`はGemma4を返す。[ALL]内のcatalog順（Qwen先頭）は
+     * `selectedModelId`が未設定、または`selectedModelId`に対応するファイルが未DLの場合の
+     * **フォールバック順序としてのみ**意味を持つ（T-P8-24が回帰ロックする）。
+     * [QWEN3_1_7B_INT4_BLOCK32]／[GEMMA_4_E2B_IT]はP7-C8比較probe（`ModelComparisonProbeTest`）が
+     * `ModelStorageImpl(context, catalog = listOf(entry))`で単一エントリのcatalogへ差し替えて
+     * 使うため、[ALL]内の並び自体が比較probeの動作に影響することはない。
      */
     val ALL: List<ModelCatalogEntry> = listOf(QWEN3_0_6B_INT4_BLOCK32, QWEN3_1_7B_INT4_BLOCK32, GEMMA_4_E2B_IT)
 

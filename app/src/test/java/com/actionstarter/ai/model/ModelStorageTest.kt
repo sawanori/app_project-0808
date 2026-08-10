@@ -1,6 +1,8 @@
 package com.actionstarter.ai.model
 
 import android.content.Context
+import com.actionstarter.ai.AiPreferences
+import com.actionstarter.ai.AiPreferencesImpl
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -308,5 +310,95 @@ class ModelStorageTest {
         val storage = ModelStorageImpl(context(), catalog = listOf(entry))
 
         storage.delete(entry)
+    }
+
+    // ------------------------------------------------------------------
+    // T-P8-24（新設・計画書§6.4、Gemini G1 CRITICAL④／B4確定）:
+    // 既定モデル解決 — installedEntry()はselectedModelId（設定済み＋ファイル実在）を
+    // catalog順走査より最優先で採用し、それ以外の場合のみ既存のcatalog順first-matchへ
+    // フォールバックする。
+    // ------------------------------------------------------------------
+
+    private fun preferencesWithSelectedModelId(prefsFileName: String, selectedModelId: String?): AiPreferences {
+        val prefs = context().getSharedPreferences(prefsFileName, Context.MODE_PRIVATE)
+        prefs.edit().clear().commit()
+        val preferences = AiPreferencesImpl(prefs)
+        if (selectedModelId != null) {
+            preferences.selectedModelId = selectedModelId
+        }
+        return preferences
+    }
+
+    @Test
+    fun installedEntry_selectedModelIdPreference_prefersSelectedOverCatalogOrder_orFallsBackWhenUnavailable() {
+        // 各シナリオはcatalog id（＝finalFileのパス）を専用にし、noBackupFilesDir/models/を
+        // 共有するRobolectric環境下でもシナリオ間のファイル残留による汚染が起きないようにする
+        // （3シナリオが同一id "qwen3-0.6b-int4-block32"/"gemma-4-e2b-it" を再利用すると、
+        // 前段シナリオで書いたfinalFileが後段へ残留し誤ってGreen/Redが反転する事故を実測で確認済み）。
+
+        // シナリオ1: selectedModelId=gemma相当のid・両方のfinalFileが実在
+        // → catalog順(Qwen相当先頭)を上書きしGemma相当を返す。
+        run {
+            val qwen = entryFor("qwen3-0.6b-int4-block32-s1")
+            val gemma = entryFor("gemma-4-e2b-it-s1")
+            val preferences = preferencesWithSelectedModelId("test_ai_prefs_tp8_24_1", gemma.id)
+            val storage = ModelStorageImpl(context(), catalog = listOf(qwen, gemma), preferences = preferences)
+            listOf(qwen, gemma).forEach { entry ->
+                storage.finalFile(entry).apply {
+                    parentFile?.mkdirs()
+                    writeBytes(byteArrayOf(1))
+                }
+            }
+
+            assertEquals(
+                "selectedModelIdに対応するファイルが実在する場合、catalog順(Qwen相当先頭)を上書きし" +
+                    "Gemma相当を返すべきです(T-P8-24、§6.4)",
+                gemma,
+                storage.installedEntry()
+            )
+        }
+
+        // シナリオ2: preferences自体が未配線（既定null。AiPreferencesImpl.selectedModelIdは
+        // 未書き込み時でもDEFAULT_SELECTED_MODEL_ID＝gemma-4-e2b-itを返す契約であり、
+        // AiPreferencesImplインスタンスを使う限り「本当に未設定」を表せない。preferences=nullが
+        // 「AiPreferencesを一切参照しない」＝pre-Phase-8互換の唯一の表現、計画書§6.4）
+        // → catalog順(Qwen相当先頭)のfirst-matchへフォールバック。
+        run {
+            val qwen = entryFor("qwen3-0.6b-int4-block32-s2")
+            val gemma = entryFor("gemma-4-e2b-it-s2")
+            val storage = ModelStorageImpl(context(), catalog = listOf(qwen, gemma), preferences = null)
+            listOf(qwen, gemma).forEach { entry ->
+                storage.finalFile(entry).apply {
+                    parentFile?.mkdirs()
+                    writeBytes(byteArrayOf(1))
+                }
+            }
+
+            assertEquals(
+                "preferences未配線(null)ならcatalog順(Qwen相当先頭)のfirst-matchへフォールバックする" +
+                    "べきです(T-P8-24、§6.4)",
+                qwen,
+                storage.installedEntry()
+            )
+        }
+
+        // シナリオ3: selectedModelId=gemma相当のidだが対応ファイルが未DL → catalog順(Qwen相当先頭)へフォールバック。
+        run {
+            val qwen = entryFor("qwen3-0.6b-int4-block32-s3")
+            val gemma = entryFor("gemma-4-e2b-it-s3")
+            val preferences = preferencesWithSelectedModelId("test_ai_prefs_tp8_24_3", gemma.id)
+            val storage = ModelStorageImpl(context(), catalog = listOf(qwen, gemma), preferences = preferences)
+            storage.finalFile(qwen).apply {
+                parentFile?.mkdirs()
+                writeBytes(byteArrayOf(1))
+            } // Gemma相当は未DL(finalFileを書かない)
+
+            assertEquals(
+                "selectedModelId対応ファイルが未DLならcatalog順(Qwen相当先頭)へフォールバックする" +
+                    "べきです(T-P8-24、§6.4)",
+                qwen,
+                storage.installedEntry()
+            )
+        }
     }
 }
