@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.actionstarter.navigation.ActionStarterNavHost
+import com.actionstarter.ui.theme.ActionStarterTheme
 
 /**
  * App entry point (real 5-screen navigation graph wired in C5). [MainScreen] below is the
@@ -43,10 +45,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // UI再設計サイクル: edge-to-edge化（システムバーの背後までコンテンツを描画）。
+        // 実機実測（`dumpsys window displays`、2026-08-10）により、下の[ActionStarterNavHost]
+        // が保持する外側`Scaffold`の既定`contentWindowInsets`が既にsafe-drawing insets
+        // （status bar／navigation bar双方）をNavHost全体へ一度だけ適用済みであることを
+        // 確認した。したがって各画面（[ExecutionScreen]／[EventSelectionScreen]）は
+        // statusBarsPadding()／navigationBarsPadding()を自前で重ねて追加していない
+        // （二重適用による不自然な余白を避けるため。詳細は[ExecutionScreen]のKDoc
+        // 「edge-to-edge insetsについての設計判断」参照）。
+        enableEdgeToEdge()
         pendingNotificationRoute = routeFromIntent(intent)
         setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
+            ActionStarterTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
                     ActionStarterNavHost(
                         pendingNotificationRoute = pendingNotificationRoute,
                         onPendingNotificationRouteConsumed = { pendingNotificationRoute = null }

@@ -17,6 +17,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.actionstarter.R
 import com.actionstarter.domain.model.ExecutionEvent
@@ -183,11 +184,20 @@ class FontScaleResilienceTest {
         }
         val context = RuntimeEnvironment.getApplication()
 
+        // Done／5 min laterは画面下段の固定操作領域（ExecutionScreen.kt、上段のverticalScroll
+        // とは独立に常時可視）のため、スクロール操作なしでそのままassertIsDisplayed()できる。
         composeTestRule.onNodeWithText(context.getString(R.string.execution_done_button)).assertIsDisplayed()
         composeTestRule.onNodeWithText(context.getString(R.string.execution_five_min_later_button)).assertIsDisplayed()
-        composeTestRule.onNodeWithTag("execution_exact_alarm_degraded_banner").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("execution_notification_permission_banner").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("execution_fgs_degraded_banner").assertIsDisplayed()
+        // 再デザインサイクル2（目的・UX合致サイクル）実測是正: 3バナー同時表示×fontScale=1.5xの
+        // 組み合わせでは、ヒーローカード導入後のExecutionScreenの上段content高がRobolectric既定
+        // ビューポート（320×470dp、実機のどのAndroid端末よりはるかに小さいレガシーな既定値）を
+        // 超え、上段自身が持つverticalScrollでスクロールしないと後段のバナーが現在のビューポート
+        // 内に入らない。performScrollTo()でスクロールしたうえでassertIsDisplayed()する
+        // （バナーの存在・到達可能性の検証意図自体は不変。実機・通常サイズのエミュレータでは
+        // スクロール不要で最初から見える）。
+        composeTestRule.onNodeWithTag("execution_exact_alarm_degraded_banner").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("execution_notification_permission_banner").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("execution_fgs_degraded_banner").performScrollTo().assertIsDisplayed()
     }
 
     // T-P11F-4: 正常系 - DepartureScreen同上（DENIED状態でTravelTimeInput＋設定ボタン＋新規説明文
@@ -227,7 +237,18 @@ class FontScaleResilienceTest {
         options.forEach { option ->
             composeTestRule.onNodeWithTag("recovery_option_item_${option.id}").assertIsDisplayed()
         }
-        composeTestRule.onNodeWithText(context.getString(R.string.recovery_use_this_plan_button)).assertIsDisplayed()
+        // 再デザインサイクル2（目的・UX合致サイクル）実測是正: RecoveryScreenへカード型候補行・
+        // 十分な余白を導入した結果、3候補×fontScale=1.5xの組み合わせではRobolectric既定
+        // ビューポート（320×470dp、実機のどのAndroid端末よりはるかに小さいレガシーな既定値）を
+        // content高が超え、画面自身が持つverticalScroll（RecoveryScreen.kt、F82実装時点から
+        // 既存のKDoc「候補3件表示時に...ビューポート外へ押し出され...スクロールで到達可能に
+        // する」がまさに想定していた状況）でスクロールしないと本ボタンが現在のビューポート内に
+        // 入らない。performScrollTo()でスクロールしたうえでassertIsDisplayed()する（ボタンの
+        // 存在・到達可能性の検証意図自体は不変。実機・通常サイズのエミュレータではスクロール
+        // 不要で最初から見える）。
+        composeTestRule.onNodeWithText(context.getString(R.string.recovery_use_this_plan_button))
+            .performScrollTo()
+            .assertIsDisplayed()
     }
 
     // T-P11F-6: エッジケース - fontScale=1.5でExecutionのDone／5 min laterボタンが別ノードとして

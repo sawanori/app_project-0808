@@ -48,6 +48,15 @@ import com.actionstarter.domain.model.ExecutionStep
  * - [isForegroundServiceDegraded]: Foreground Service起動不可時、exact alarm＋通知のみで
  *   継続しDoze下での遅延可能性を明示する（F56/F57、S-3、エラー&レスキューマップ#5/#6、
  *   ADR-0026）。
+ *
+ * **再デザインサイクル2追補（目的・UX合致サイクル、§10「UXの繋がり」）**: [eventTitle]は
+ * 「どの予定のための行動か」という控えめな文脈をExecutionScreenへ添えるために追加した
+ * （末尾追加・既定値`null`のため、既存の名前付き引数によるコンストラクタ呼び出し
+ * （T-EXEC-1〜9等の全既存テスト）は無変更で成立する）。[ExecutionViewModel]が
+ * [com.actionstarter.navigation.SharedPlanViewModel.confirmedPlan]から取得済みの
+ * `plan.event.title`をそのまま転記するのみで、新規の文言生成・整形ロジックは持たない
+ * （無い情報を捏造しない。プレースホルダ経路（確定Planなし）では`null`のまま＝
+ * ExecutionScreen側は非表示にする）。
  */
 data class ExecutionUiState(
     val currentStep: ExecutionStep? = null,
@@ -57,5 +66,6 @@ data class ExecutionUiState(
     val onPostpone: (() -> Unit)? = null,
     val isNotificationPermissionDenied: Boolean = false,
     val isExactAlarmDegraded: Boolean = false,
-    val isForegroundServiceDegraded: Boolean = false
+    val isForegroundServiceDegraded: Boolean = false,
+    val eventTitle: String? = null
 )

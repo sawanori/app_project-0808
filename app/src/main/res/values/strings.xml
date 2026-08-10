@@ -80,7 +80,12 @@
     <string name="departure_title">Leave now</string>
     <string name="departure_estimated_arrival_label">Estimated arrival</string>
     <string name="departure_event_label">Event</string>
-    <string name="departure_buffer_label">Buffer</string>
+    <!-- Redesign cycle 2 (spec §27 "concrete action" spirit, §78 item 7 "Arrival Buffer"):
+         replaced the internal phase name "Buffer" with a Basic-version-default action phrase.
+         See features/common/StepTitle.kt KDoc for the full rationale (this is the same
+         internal-term-to-action-phrase treatment as step_title_*, just for the one internal
+         term that surfaces outside StepTitle.kt's resolver). ID unchanged, value only. -->
+    <string name="departure_buffer_label">Arrive with time to spare</string>
     <string name="departure_start_navigation_button">Start navigation</string>
     <string name="departure_start_navigation_disabled_reason">Navigation isn\'t available yet.</string>
     <string name="departure_eta_unavailable_message">Travel time not available</string>
@@ -164,11 +169,17 @@
     <!-- Step title resolution (F47, semanticId -> stringResource, spec §48/§7 "no hardcoded UI
          strings", G-4). Added in P4-C4 (ui-implementer) for T-P4UI-1..5. Resolved by
          features/common/StepTitle.kt#resolveStepTitle and shared by PlanReviewScreen and
-         ExecutionScreen. step_title_fallback covers unknown semanticId values (T-P4UI-3). -->
-    <string name="step_title_transition">Transition</string>
-    <string name="step_title_preparation">Preparation</string>
-    <string name="step_title_departure">Departure</string>
-    <string name="step_title_travel">Travel</string>
+         ExecutionScreen. step_title_fallback covers unknown semanticId values (T-P4UI-3).
+         Redesign cycle 2 (spec §27 "Finish your current task" / "Get dressed" spirit, §78 item
+         13 "AI OFF still works"): values replaced from bare internal step-type names
+         (Transition/Preparation/Departure/Travel) with Basic-version-default concrete action
+         phrases, since users were seeing the internal type name verbatim with no indication of
+         what to actually do. IDs unchanged (see features/common/StepTitle.kt KDoc for the full
+         rationale and the Local AI hand-off note). -->
+    <string name="step_title_transition">Wrap up what you\'re doing</string>
+    <string name="step_title_preparation">Get ready to leave</string>
+    <string name="step_title_departure">Time to leave</string>
+    <string name="step_title_travel">Head to your destination</string>
     <string name="step_title_fallback">Step</string>
 
     <!-- Notification content (F49/F52/F60, spec §62/§29/§43, ADR-0025/0026/0027). Added in P5-C6

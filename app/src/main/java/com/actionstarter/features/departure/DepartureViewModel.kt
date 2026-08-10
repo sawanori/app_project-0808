@@ -100,7 +100,10 @@ class DepartureViewModel(
             eventStart = plan.event.startDate,
             estimatedArrival = baselineEstimatedArrival,
             arrivalBuffer = baselineArrivalBuffer,
-            isStartNavigationEnabled = false
+            isStartNavigationEnabled = false,
+            // 再デザインサイクル2（§10「UXの繋がり」）: 「どの予定のための行動か」の控えめな
+            // 文脈をDepartureScreenへ渡す。plan.event.titleをそのまま転記するのみ。
+            eventTitle = plan.event.title
         )
     }
 

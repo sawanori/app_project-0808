@@ -41,6 +41,14 @@ import java.time.Instant
  *   `locationName`が無い場合に`true`。エラー表示ではなく手動入力導線＋
  *   [R.string.departure_geocode_no_match_message]の表示条件に使う（T-DEPVM-5、
  *   計画書§5.3・§10#11）。
+ *
+ * **再デザインサイクル2追補（目的・UX合致サイクル、§10「UXの繋がり」）**: [eventTitle]は
+ * 「どの予定のための行動か」という控えめな文脈をDepartureScreenへ添えるために追加した
+ * （末尾追加・既定値`null`のため、既存の名前付き引数によるコンストラクタ呼び出し
+ * （T-DEP-1〜4等の全既存テスト）は無変更で成立する）。[DepartureViewModel.applyPlanBaseline]が
+ * `plan.event.title`をそのまま転記するのみで、新規の文言生成・整形ロジックは持たない
+ * （無い情報を捏造しない。[eventStart]は既存フィールドをそのまま時刻表示に使い続けるため
+ * 重複した時刻フィールドは追加しない）。
  */
 data class DepartureUiState(
     val estimatedArrival: Instant? = null,
@@ -53,7 +61,8 @@ data class DepartureUiState(
     val permissionState: LocationPermissionState = LocationPermissionState.NOT_REQUESTED,
     val manualTravelMinutes: Int? = null,
     val locationAccuracyMeters: Float? = null,
-    val isDestinationUnresolved: Boolean = false
+    val isDestinationUnresolved: Boolean = false,
+    val eventTitle: String? = null
 )
 
 /**

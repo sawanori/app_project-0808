@@ -74,7 +74,12 @@
     <string name="departure_title">今すぐ出発</string>
     <string name="departure_estimated_arrival_label">到着予定時刻</string>
     <string name="departure_event_label">予定</string>
-    <string name="departure_buffer_label">余裕時間</string>
+    <!-- 再デザインサイクル2（仕様§27「具体的行動文」の精神、§78項目7「Arrival Buffer」）:
+         内部フェーズ名そのままの「余裕時間」をBasic版デフォルトの行動文言へ置換。
+         詳細な設計判断はfeatures/common/StepTitle.ktのKDoc参照（step_title_*と同種の
+         内部用語→行動文言置換を、StepTitle.kt解決対象外のこの1語にも適用したもの）。
+         リソースIDは不変、値のみ変更。 -->
+    <string name="departure_buffer_label">到着・落ち着く</string>
     <string name="departure_start_navigation_button">ナビを開始</string>
     <string name="departure_start_navigation_disabled_reason">ナビはまだ利用できません。</string>
     <string name="departure_eta_unavailable_message">移動時間を取得できませんでした</string>
@@ -158,11 +163,16 @@
          直接ハードコード禁止」、G-4）。P4-C4（ui-implementer）でT-P4UI-1..5向けに追加。
          features/common/StepTitle.ktのresolveStepTitleが解決し、PlanReviewScreen・
          ExecutionScreen双方で共通利用する。step_title_fallbackは未知のsemanticId向け
-         （T-P4UI-3）。 -->
-    <string name="step_title_transition">切り替え</string>
-    <string name="step_title_preparation">準備</string>
-    <string name="step_title_departure">出発</string>
-    <string name="step_title_travel">移動</string>
+         （T-P4UI-3）。
+         再デザインサイクル2（仕様§27「今の作業を切り上げる」「着替える」の精神、§78項目13
+         「AI OFFでも成立」）: 内部ステップ種別名（切り替え/準備/出発/移動）がそのまま
+         ユーザーに見えており「今何をすべきか」が伝わらなかったため、Basic版デフォルトの
+         具体的行動文言へ置換した。IDは不変（詳細はfeatures/common/StepTitle.ktのKDoc参照。
+         Local AIへの引き継ぎ方針も同KDocに記録）。 -->
+    <string name="step_title_transition">今の作業を切り上げる</string>
+    <string name="step_title_preparation">出かける準備をする</string>
+    <string name="step_title_departure">そろそろ出発</string>
+    <string name="step_title_travel">移動する</string>
     <string name="step_title_fallback">ステップ</string>
 
     <!-- 通知文言（F49/F52/F60、仕様§62/§29/§43、ADR-0025/0026/0027）。P5-C6（domain-implementer・

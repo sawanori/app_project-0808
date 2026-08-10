@@ -5,6 +5,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.actionstarter.R
@@ -135,7 +136,17 @@ class DepartureRoutingScreenTest {
         }
         val context = RuntimeEnvironment.getApplication()
 
-        composeTestRule.onNodeWithText(context.getString(R.string.departure_eta_stale_notice)).assertIsDisplayed()
+        // 再デザインサイクル2（目的・UX合致サイクル）実測是正: DepartureScreenへカード型
+        // ヒーロー・十分な余白を導入した結果、NOT_REQUESTED＋isEtaStale同時成立時（事前説明
+        // カード＋stale注記の両方を表示）はRobolectric既定ビューポート（320×470dp、実機の
+        // どのAndroid端末よりはるかに小さいレガシーな既定値）を content 高が超え、
+        // 画面自身が持つverticalScroll（DepartureScreen.kt）でスクロールしないと本ノードが
+        // 現在のビューポート内に入らない。performScrollTo()でスクロールしたうえで
+        // assertIsDisplayed()する（要素の存在・可視性の検証意図自体は不変。実機・通常サイズの
+        // エミュレータではスクロール不要で最初から見える）。
+        composeTestRule.onNodeWithText(context.getString(R.string.departure_eta_stale_notice))
+            .performScrollTo()
+            .assertIsDisplayed()
     }
 
     // T-DEP2-3: 異常系 - 手動Travel Time入力 → ETAが再表示される（対象: TravelTimeInput）。

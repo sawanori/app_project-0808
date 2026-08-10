@@ -1,17 +1,26 @@
 package com.actionstarter.features.eventselection
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -28,6 +37,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.actionstarter.R
@@ -73,6 +83,22 @@ import java.time.format.FormatStyle
  * "Prepare this event"ボタンを表示する（T-SEL2-1「先頭が強調される」）。2件目以降は
  * ボタンを重ねず、行全体をタップ対象にする（T-SEL2-2）。無題（title空白）の行は破棄せず
  * [R.string.event_untitled]を表示する（エラー＆レスキューマップ#13、T-SEL2-5）。
+ *
+ * **UI再設計サイクル（テーマ基盤＋EventSelection作り込み）**: 予定を素のテキスト羅列ではなく
+ * **カード**で提示する（先頭＝次の予定は`primaryContainer`で塗ったCard、2件目以降は
+ * `OutlinedCard`）。カード間の余白は行Modifier自身のpaddingではなく`LazyColumn`の
+ * `contentPadding`／`Arrangement.spacedBy`で確保し、クリック領域とカード境界を一致させた
+ * （旧実装は行の内側にvertical paddingを持たせておりクリック不可の隙間があった）。
+ * `event_selection_row_<index>`のクリック判定はセマンティクスの`onClick`アクション／
+ * `clickable`経由（[EventRow]のKDoc参照）であり、`performClick()`は座標ではなくこの
+ * セマンティクスアクションを直接呼ぶため、余白の取り方を変えてもT-SEL2-2／T-SEL2-8の
+ * 挙動には影響しない。
+ *
+ * **edge-to-edge insetsについての設計判断（実機実測、2026-08-10）**: [ExecutionScreen]と
+ * 同じ理由により、本画面もstatusBars／navigationBarsのpaddingを自前で追加しない
+ * （`ActionStarterNavHost`側の外側`Scaffold`が既にsafe-drawing insetsをNavHost全体へ
+ * 一度だけ適用済みであることを実機実測済み。[com.actionstarter.features.execution.
+ * ExecutionScreen]のKDoc「edge-to-edge insetsについての設計判断」参照）。
  */
 @Composable
 fun EventSelectionScreen(
@@ -112,28 +138,34 @@ fun EventSelectionScreen(
     }
 }
 
-/** [EventSelectionUiState.Empty]の表示（一覧が0件）。分割前と同一のUIツリー。 */
+/** [EventSelectionUiState.Empty]の表示(一覧が0件)。UI再設計サイクルでテーマ配色・タイポを適用。 */
 @Composable
 private fun EventSelectionEmptyContent() {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .background(MaterialTheme.colorScheme.background)
+            .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Text(
             text = stringResource(R.string.event_selection_empty_title),
-            style = MaterialTheme.typography.headlineSmall
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onBackground,
+            textAlign = TextAlign.Center
         )
+        Spacer(Modifier.height(8.dp))
         Text(
             text = stringResource(R.string.event_selection_empty_message),
-            style = MaterialTheme.typography.bodyMedium
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
         )
     }
 }
 
-/** [EventSelectionUiState.Content]の表示（Upcoming Events一覧、F18）。分割前と同一のUIツリー。 */
+/** [EventSelectionUiState.Content]の表示（Upcoming Events一覧、F18）。カード一覧で提示する。 */
 @Composable
 private fun EventSelectionContentList(
     uiState: EventSelectionUiState.Content,
@@ -146,12 +178,16 @@ private fun EventSelectionContentList(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp)
+            .background(MaterialTheme.colorScheme.background),
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
             Text(
                 text = stringResource(R.string.event_selection_title),
-                style = MaterialTheme.typography.headlineSmall
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
             )
         }
         itemsIndexed(
@@ -168,7 +204,7 @@ private fun EventSelectionContentList(
     }
 }
 
-/** [EventSelectionUiState.PermissionRequired]の表示（事前説明カード、T-PERM-1/2）。分割前と同一のUIツリー。 */
+/** [EventSelectionUiState.PermissionRequired]の表示（事前説明カード、T-PERM-1/2）。 */
 @Composable
 private fun EventSelectionPermissionRequiredContent(
     onRequestCalendarPermission: () -> Unit
@@ -176,27 +212,36 @@ private fun EventSelectionPermissionRequiredContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .background(MaterialTheme.colorScheme.background)
+            .padding(28.dp),
         verticalArrangement = Arrangement.Center
     ) {
         Text(
             text = stringResource(R.string.calendar_permission_rationale_title),
-            style = MaterialTheme.typography.headlineSmall
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onBackground
         )
+        Spacer(Modifier.height(8.dp))
         Text(
             text = stringResource(R.string.calendar_permission_rationale_message),
-            style = MaterialTheme.typography.bodyMedium
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        Spacer(Modifier.height(20.dp))
         Button(
             onClick = onRequestCalendarPermission,
-            modifier = Modifier.testTag("event_selection_grant_permission_button")
+            shape = MaterialTheme.shapes.large,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .testTag("event_selection_grant_permission_button")
         ) {
             Text(text = stringResource(R.string.calendar_permission_grant_button))
         }
     }
 }
 
-/** [EventSelectionUiState.PermissionDenied]の表示（手動入力フォールバック、F17）。分割前と同一のUIツリー。 */
+/** [EventSelectionUiState.PermissionDenied]の表示（手動入力フォールバック、F17）。 */
 @Composable
 private fun EventSelectionPermissionDeniedContent(
     onOpenAppSettings: () -> Unit,
@@ -206,12 +251,14 @@ private fun EventSelectionPermissionDeniedContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp)
+            .background(MaterialTheme.colorScheme.background)
+            .padding(horizontal = 4.dp)
     ) {
         // ManualEventEntryはweight(fill=false)で上限のみ拘束する：フォームが長くなっても
         // Settingsボタンの表示領域を必ず確保する（フォームは自身のverticalScrollで
         // 内部スクロールする）。フォーム側のほうが短い場合はボタンをすぐ下に詰めて表示する
-        // （画面全体を埋めるほどには引き伸ばさない）。
+        // （画面全体を埋めるほどには引き伸ばさない）。この上下スクロール協調は変更しない
+        // （[ManualEventEntry]自体は本サイクルの変更許可対象外）。
         ManualEventEntry(
             state = manualEntryState,
             onStateChange = { manualEntryState = it },
@@ -220,30 +267,43 @@ private fun EventSelectionPermissionDeniedContent(
         )
         Button(
             onClick = onOpenAppSettings,
-            modifier = Modifier.testTag("event_selection_open_settings_button")
+            shape = MaterialTheme.shapes.large,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+                .height(52.dp)
+                .testTag("event_selection_open_settings_button")
         ) {
             Text(text = stringResource(R.string.calendar_open_settings_button))
         }
     }
 }
 
-/** [EventSelectionUiState.Error]の表示（再試行導線、T-SEL2-6）。分割前と同一のUIツリー。 */
+/** [EventSelectionUiState.Error]の表示（再試行導線、T-SEL2-6）。 */
 @Composable
 private fun EventSelectionErrorContent(onRetry: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .background(MaterialTheme.colorScheme.background)
+            .padding(28.dp),
         verticalArrangement = Arrangement.Center
     ) {
         Text(
             text = stringResource(R.string.event_selection_error_message),
             style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onBackground,
             modifier = Modifier.testTag("event_selection_error_message")
         )
+        Spacer(Modifier.height(20.dp))
         Button(
             onClick = onRetry,
-            modifier = Modifier.testTag("event_selection_retry_button")
+            shape = MaterialTheme.shapes.large,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .testTag("event_selection_retry_button")
         ) {
             Text(text = stringResource(R.string.event_selection_retry_button))
         }
@@ -277,6 +337,14 @@ private fun EventSelectionErrorContent(onRetry: () -> Unit) {
  * （`!isNext`）は`clickable`が既に`mergeDescendants = true`を確立しているため
  * `.semantics { contentDescription = ... }`を追加するだけで「1行1停止点＋文脈のある
  * 読み上げ文」（§7.2）が成立する。
+ *
+ * **UI再設計サイクル**: 見た目を素のColumnから[Card]／[OutlinedCard]へ変更した。
+ * `rowModifier`（testTag・クリックハンドリング・semantics）はカードの`modifier`引数へ
+ * そのまま渡すのみで内容・意味は変更していない（`Card`の非clickableオーバーロードは
+ * 自身では追加のclickableセマンティクスを持たないため、[rowModifier]が付与するクリック
+ * セマンティクスと衝突しない）。カード間の余白は呼び出し元`LazyColumn`の
+ * `Arrangement.spacedBy`が担うため、旧実装が行の内側に持っていた`padding(vertical = 12.dp)`
+ * （クリック不可の隙間を生んでいた）は廃止した。
  */
 @Composable
 private fun EventRow(
@@ -298,7 +366,6 @@ private fun EventRow(
     val rowModifier = Modifier
         .testTag("event_selection_row_$index")
         .fillMaxWidth()
-        .padding(vertical = 12.dp)
         .then(
             if (isNext) {
                 Modifier
@@ -316,11 +383,70 @@ private fun EventRow(
             }
         )
 
-    Column(modifier = rowModifier) {
+    if (isNext) {
+        Card(
+            modifier = rowModifier,
+            shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        ) {
+            EventRowContent(
+                isNext = true,
+                displayTitle = displayTitle,
+                formattedTime = formattedTime,
+                event = event,
+                onNavigateToPlanReview = onNavigateToPlanReview
+            )
+        }
+    } else {
+        OutlinedCard(
+            modifier = rowModifier,
+            shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.outlinedCardColors(
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.onSurface
+            ),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        ) {
+            EventRowContent(
+                isNext = false,
+                displayTitle = displayTitle,
+                formattedTime = formattedTime,
+                event = event,
+                onNavigateToPlanReview = onNavigateToPlanReview
+            )
+        }
+    }
+}
+
+/**
+ * [EventRow]のカード内部レイアウト（バッジ／タイトル／時刻／場所／Prepareボタン）。
+ * testTagは[EventRow]のKDoc「testTag規約」を参照。カード種別（[Card]／[OutlinedCard]）に
+ * 関わらず内容構成は同一のため共通化した。
+ */
+@Composable
+private fun EventRowContent(
+    isNext: Boolean,
+    displayTitle: String,
+    formattedTime: String,
+    event: ExecutionEvent,
+    onNavigateToPlanReview: () -> Unit
+) {
+    val secondaryColor = LocalContentColor.current.copy(alpha = 0.72f)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
         if (isNext) {
             Text(
                 text = stringResource(R.string.event_selection_next_event_label),
                 style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.testTag("event_selection_next_badge")
             )
         }
@@ -334,15 +460,30 @@ private fun EventRow(
         Text(
             text = formattedTime,
             style = MaterialTheme.typography.bodyMedium,
+            color = secondaryColor,
             modifier = Modifier.testTag("event_selection_time_text")
         )
         if (event.locationName != null) {
-            Row(modifier = Modifier.testTag("event_selection_location_row")) {
-                Text(text = event.locationName, style = MaterialTheme.typography.bodyMedium)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.testTag("event_selection_location_row")
+            ) {
+                Text(
+                    text = event.locationName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = secondaryColor
+                )
             }
         }
         if (isNext) {
-            Button(onClick = onNavigateToPlanReview) {
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = onNavigateToPlanReview,
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+            ) {
                 Text(text = stringResource(R.string.event_selection_prepare_button))
             }
         }

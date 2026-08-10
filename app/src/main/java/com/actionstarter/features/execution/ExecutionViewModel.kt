@@ -247,7 +247,11 @@ class ExecutionViewModel(
             onDone = ::handleConfirmedPlanDone,
             onPostpone = ::handleConfirmedPlanPostpone,
             isNotificationPermissionDenied = isNotificationPermissionDenied(),
-            isExactAlarmDegraded = isExactAlarmDegraded()
+            isExactAlarmDegraded = isExactAlarmDegraded(),
+            // 再デザインサイクル2（§10「UXの繋がり」）: 「どの予定のための行動か」の控えめな
+            // 文脈をExecutionScreenへ渡す。plan.event.titleをそのまま転記するのみ（新規の
+            // 文言生成・整形ロジックなし）。
+            eventTitle = plan.event.title
         )
     }
 
