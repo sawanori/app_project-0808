@@ -173,7 +173,12 @@ class LocalAiGateway(
             if (modelCheck is InstalledModelCheck.Failed) return@withLock modelCheck.fallback
             val installedEntry = (modelCheck as InstalledModelCheck.Ready).entry
 
-            val requiredPeakMemoryBytes = installedEntry.peakRamBytes + MEMORY_SAFETY_MARGIN_BYTES
+            // ADR-0057: peakRamBytes（フルコンテキスト実測・プロファイル非依存の単一値）ではなく
+            // defaultProfilePeakRamBytes（実際に使う既定プロファイルでの実効ピーク）を使う。
+            // P7-C5実機実測（ADR-0056決定6b）がpeakRamBytesのまま判定すると小コンテキスト・
+            // 本番プロファイルの実要求量に対してガードが過大判定することを発見したため
+            // （ModelCatalogEntryのKDoc「defaultProfilePeakRamBytes」参照）。
+            val requiredPeakMemoryBytes = installedEntry.defaultProfilePeakRamBytes + MEMORY_SAFETY_MARGIN_BYTES
             if (!deviceCapability.hasAvailableMemory(requiredPeakMemoryBytes)) {
                 return@withLock AiResult.Fallback(
                     AiFallbackReason.OUT_OF_MEMORY_PREVENTED,
@@ -388,11 +393,18 @@ class LocalAiGateway(
          * 確定するまでの仮値（§8.6冒頭「タイムアウト閾値の数値は...仮置き」と同じ扱い）。
          *
          * **P7-C4での変更**: 必要ピークRAMは`ModelCatalog`の特定エントリを本クラスへ
-         * ハードコードせず、[checkInstalledModel]が解決した導入済み[ModelCatalogEntry.
-         * peakRamBytes]（実際にロード対象となるモデル）へ本マージンを加える形へ改めた
-         * （[generatePlan]参照）。§17「モデル名を製品仕様として固定しない」との整合、および
-         * `ModelStorage`のテストfixtureエントリ（本番カタログ非依存）でもOOMガードが正しい値で
-         * 動作するようにするための変更。
+         * ハードコードせず、[checkInstalledModel]が解決した導入済み[ModelCatalogEntry]
+         * （実際にロード対象となるモデル）へ本マージンを加える形へ改めた（[generatePlan]参照）。
+         * §17「モデル名を製品仕様として固定しない」との整合、および`ModelStorage`のテスト
+         * fixtureエントリ（本番カタログ非依存）でもOOMガードが正しい値で動作するようにするための
+         * 変更。
+         *
+         * **P7-C5b（ADR-0057）での変更**: 参照する必要ピークRAMのフィールドを
+         * [ModelCatalogEntry.peakRamBytes]（フルコンテキスト実測・プロファイル非依存の単一値）
+         * から[ModelCatalogEntry.defaultProfilePeakRamBytes]（実際に使う既定プロファイルでの
+         * 実効ピーク）へ変更した（[generatePlan]参照）。マージン自体の数値（512MB）は変更していない
+         * ——P7-C5実機実測（ADR-0056決定6b）が発見した過大判定は`peakRamBytes`側の
+         * プロファイル非依存性が原因であり、マージンの大きさの問題ではないと判断したため。
          */
         private const val MEMORY_SAFETY_MARGIN_BYTES: Long = 512L * 1024 * 1024
     }

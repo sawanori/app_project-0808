@@ -3,6 +3,7 @@ package com.actionstarter.ai.model
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -52,5 +53,72 @@ class ModelCatalogTest {
     @Test
     fun all_containsQwen3Entry() {
         assertEquals(listOf(ModelCatalog.QWEN3_0_6B_INT4_BLOCK32), ModelCatalog.ALL)
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-0057: ModelCatalogEntry.defaultProfilePeakRamBytes
+    // ------------------------------------------------------------------
+    //
+    // P7-C5実機実測（ADR-0056）が発見した「peakRamBytesがコンテキストプロファイル非依存の
+    // 単一値（フルコンテキスト4096実測=2,890MB）のため、実際に使う小コンテキスト・
+    // 本番プロファイル（maxNumTokens≈1024〜）ではOOM事前ガード（§8.6 #7）が過大判定する」
+    // 問題への対処。新設フィールドdefaultProfilePeakRamBytesは「実際に使う既定プロファイルでの
+    // 実効ピークRAM」を表し、LocalAiGatewayのOOM事前ガードはこちらを参照する
+    // （peakRamBytesはフルコンテキスト参考値として温存）。
+
+    // 正常系: 本番QWEN3_0_6B_INT4_BLOCK32のdefaultProfilePeakRamBytesは、P7-C5診断実測
+    // （probeAdapterThroughGateway_widerContextDiagnostic、maxNumTokens=1024・peakRamBytes
+    // fixture=1.25GiBで3件とも実推論成功）で実際に検証済みの1.25GiB
+    // （1,342,177,280バイト）である
+    @Test
+    fun qwen3Entry_defaultProfilePeakRamBytes_matchesP7C5ValidatedSmallContextValue() {
+        val entry = ModelCatalog.QWEN3_0_6B_INT4_BLOCK32
+
+        assertEquals(
+            "defaultProfilePeakRamBytesはP7-C5診断実測で検証済みの1.25GiBであるべきです(ADR-0057)",
+            1_342_177_280L,
+            entry.defaultProfilePeakRamBytes
+        )
+    }
+
+    // 正常系: defaultProfilePeakRamBytesはフルコンテキストのpeakRamBytes（2,890MB）より
+    // 明確に小さい（プロファイル別の実効ピークを持つことの回帰ロック。等しいままだと
+    // 「プロファイル依存の是正」が効いていない）
+    @Test
+    fun qwen3Entry_defaultProfilePeakRamBytes_isMeaningfullySmallerThanFullContextPeakRamBytes() {
+        val entry = ModelCatalog.QWEN3_0_6B_INT4_BLOCK32
+
+        assertTrue(
+            "defaultProfilePeakRamBytes(${entry.defaultProfilePeakRamBytes})はフルコンテキストの" +
+                "peakRamBytes(${entry.peakRamBytes})より小さいべきです(ADR-0057、プロファイル別の実効ピーク)",
+            entry.defaultProfilePeakRamBytes < entry.peakRamBytes
+        )
+    }
+
+    // エッジ: defaultProfilePeakRamBytesを明示指定しない場合、既存呼び出し元（テストfixture等）の
+    // 挙動を変えないようpeakRamBytesと同値へ既定される（データクラスの既定値式の回帰ロック。
+    // §8.6 #7のOOM事前ガードにdefaultProfilePeakRamBytesを未指定のfixtureエントリを渡しても
+    // 従来どおりpeakRamBytes基準で判定される後方互換性の保証）
+    @Test
+    fun modelCatalogEntry_defaultProfilePeakRamBytesOmitted_defaultsToSameAsPeakRamBytes() {
+        val entry = ModelCatalogEntry(
+            id = "adr-0057-default-value-check",
+            displayName = "ADR-0057 Default Value Check",
+            downloadUrl = "https://example.invalid/adr-0057.litertlm",
+            sha256 = "0".repeat(64),
+            sizeBytes = 1L,
+            peakRamBytes = 999_888_777L,
+            contextLength = 1,
+            quantization = "test",
+            license = ModelLicense.APACHE_2_0,
+            requiresNoticeFile = false
+        )
+
+        assertEquals(
+            "defaultProfilePeakRamBytesを省略した場合はpeakRamBytesと同値になるべきです" +
+                "(ADR-0057、既存fixtureの後方互換性)",
+            entry.peakRamBytes,
+            entry.defaultProfilePeakRamBytes
+        )
     }
 }

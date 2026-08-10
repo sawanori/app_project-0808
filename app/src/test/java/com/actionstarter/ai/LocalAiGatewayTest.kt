@@ -301,8 +301,16 @@ class LocalAiGatewayTest {
      * `installedEntry()`／`installedModelPath()`が非nullを返し、`ModelVerifier.verify`も
      * 合格する状態を作る。
      */
-    private fun installedModelStorage(): ModelStorage {
-        val entry = fakeInstalledEntry()
+    private fun installedModelStorage(): ModelStorage = installedModelStorageWithEntry(fakeInstalledEntry())
+
+    /**
+     * [installedModelStorage]の一般化版（ADR-0057・T-GW-21/22用）。[fakeInstalledEntry]固定ではなく
+     * 任意の[entry]（`.copy(peakRamBytes = ..., defaultProfilePeakRamBytes = ...)`等でOOM関連の値を
+     * 差し替えたもの）を「導入済み」状態にする。[FAKE_INSTALLED_MODEL_BYTES]は[entry].sizeBytes
+     * と一致させる必要があるため、[entry]は[fakeInstalledEntry]から`.copy`したものを渡すこと
+     * （`sizeBytes`／`sha256`を変えないまま他のフィールドのみ差し替える）。
+     */
+    private fun installedModelStorageWithEntry(entry: ModelCatalogEntry): ModelStorage {
         val storage = ModelStorageImpl(context(), catalog = listOf(entry))
         storage.finalFile(entry).apply {
             parentFile?.mkdirs()
@@ -439,6 +447,65 @@ class LocalAiGatewayTest {
 
         assertTrue(result is AiResult.Fallback)
         assertEquals(AiFallbackReason.OUT_OF_MEMORY, (result as AiResult.Fallback).reason)
+    }
+
+    // T-GW-21: 正常系（ADR-0057・回帰ロック） - OOM事前ガードはModelCatalogEntry.peakRamBytes
+    // （フルコンテキスト参考値）ではなくdefaultProfilePeakRamBytes（実際に使う既定プロファイルの
+    // 実効ピーク）を基準に判定する。peakRamBytesを故意に巨大値にし、defaultProfilePeakRamBytesは
+    // 空きメモリ内に収まる小さい値にした場合、Fallbackにならず推論へ進むことを検証する
+    // （修正前の実装〔installedEntry.peakRamBytesを直接参照〕ではこのテストはFallbackになり失敗する）
+    @Test
+    fun tGw21_hugePeakRamBytesButSmallDefaultProfilePeakRamBytes_doesNotTriggerOomGuard() = runTest {
+        val entry = fakeInstalledEntry().copy(
+            peakRamBytes = 100L * GB,
+            defaultProfilePeakRamBytes = 1L * 1024 * 1024
+        )
+        val model = FakeLocalLanguageModel(listOf(PlanCallOutcome.Respond(validSingleStepResponse())))
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorageWithEntry(entry),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tGw21")
+        )
+
+        val result = gateway.generatePlan(planningContext())
+
+        assertTrue(
+            "peakRamBytesが巨大でもdefaultProfilePeakRamBytesが空きメモリ内ならOOMガードは" +
+                "発動せず推論へ進むべきです(ADR-0057): $result",
+            result is AiResult.Success
+        )
+    }
+
+    // T-GW-22: 異常系（ADR-0057・回帰ロック） - 逆に、peakRamBytesが小さくても
+    // defaultProfilePeakRamBytesが空きメモリを超える巨大値ならOOM事前ガードが発動し、
+    // 推論を一切開始しない（Gatewayが新フィールドを実際に参照していることの確認）
+    @Test
+    fun tGw22_smallPeakRamBytesButHugeDefaultProfilePeakRamBytes_triggersOomGuard_modelNeverInvoked() = runTest {
+        val entry = fakeInstalledEntry().copy(
+            peakRamBytes = 1L * 1024 * 1024,
+            defaultProfilePeakRamBytes = 100L * GB
+        )
+        val model = FakeLocalLanguageModel(listOf(PlanCallOutcome.Respond(validSingleStepResponse())))
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorageWithEntry(entry),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tGw22")
+        )
+
+        val result = gateway.generatePlan(planningContext())
+
+        assertTrue(result is AiResult.Fallback)
+        assertEquals(AiFallbackReason.OUT_OF_MEMORY_PREVENTED, (result as AiResult.Fallback).reason)
+        assertEquals(
+            "defaultProfilePeakRamBytesが巨大でOOMガードが発動した場合はfakeモデルの" +
+                "generatePlanが1回も呼ばれてはいけません(ADR-0057)",
+            0,
+            model.generatePlanCallCount
+        )
     }
 
     // ------------------------------------------------------------------

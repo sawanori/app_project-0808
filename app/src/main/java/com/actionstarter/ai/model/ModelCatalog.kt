@@ -36,7 +36,15 @@ object ModelCatalog {
         contextLength = 4096,
         quantization = "dynamic-int4-block32",
         license = ModelLicense.APACHE_2_0,
-        requiresNoticeFile = false
+        requiresNoticeFile = false,
+        // ADR-0057。P7-C5診断実測（probeAdapterThroughGateway_widerContextDiagnostic、
+        // maxNumTokens=1024・peakRamBytesフィクスチャ=1.25GiBで実機3件とも実推論成功、
+        // build/agent-logs/p7c5-e2e.log）で検証済みの値をそのまま本番値へ採用する。
+        // peakRamBytes（フルコンテキスト4096実測=2,890MB）はコンテキストプロファイル非依存の
+        // 単一値であり、実際に使う既定プロファイル（LiteRtLmLocalLanguageModel.
+        // DEFAULT_MAX_NUM_TOKENS、P7-C5b時点で1024〜1500程度）の実要求量より過大にOOM事前ガード
+        // （LocalAiGateway §8.6 #7）を判定させてしまう問題がP7-C5で発見された（ADR-0056決定6b）。
+        defaultProfilePeakRamBytes = 1_342_177_280L
     )
 
     /** カタログ全体。§5.3段2以降・Gemma系等を追加する際はここへ足す（U-4確定後）。 */
@@ -54,9 +62,21 @@ object ModelCatalog {
  * @param id [com.actionstarter.ai.AiPreferences.selectedModelId]と対応させる一意キー。
  * @param sha256 [ModelVerifier]が検証に用いる正の値（U-6: 開発者自身が計算した値を焼き込む。
  *   HF側ハッシュを無条件には信頼しない）。
- * @param peakRamBytes 実測ピークRAM（近縁機、計画書§5.3表）。
+ * @param peakRamBytes 実測ピークRAM（近縁機、計画書§5.3表）。**フルコンテキスト
+ *   （[contextLength]）実測値であり、コンテキストプロファイル非依存の単一値**（P7-C5実測で
+ *   発見された制約、ADR-0056決定6b・ADR-0057）。§5.3の段判定など「モデルを最大構成で使った
+ *   場合の参考値」としての用途に残す。**OOM事前ガードには使わない**（[defaultProfilePeakRamBytes]
+ *   参照）。
+ * @param defaultProfilePeakRamBytes ADR-0057新設。**実際に使う既定プロファイル
+ *   （[com.actionstarter.ai.adapter.LiteRtLmLocalLanguageModel]の既定`maxNumTokens`、
+ *   フルコンテキストより十分小さい）での実効ピークRAM**。
  *   [com.actionstarter.ai.LocalAiGateway]のOOM事前ガード（§8.6 #7）が安全マージンを加えて
- *   参照する想定値。
+ *   参照するのはこちらであり、[peakRamBytes]ではない——フルコンテキスト値をそのまま使うと
+ *   小コンテキスト・本番プロファイルの実要求量に対してガードが過大判定してしまう問題を
+ *   P7-C5が実機で発見したため（ADR-0056決定6b）。**既定値は[peakRamBytes]と同値**（未指定の
+ *   既存fixtureエントリの挙動を変えない後方互換性）。実際に値を引き下げるのは
+ *   [ModelCatalog.QWEN3_0_6B_INT4_BLOCK32]のみであり、P7-C5診断実測（`maxNumTokens=1024`で
+ *   実推論成功）で検証済みの値を焼き込む。
  * @param requiresNoticeFile Apache-2.0以外のライセンスでNoticeファイル同梱が必要か（§13 #24）。
  */
 data class ModelCatalogEntry(
@@ -69,7 +89,8 @@ data class ModelCatalogEntry(
     val contextLength: Int,
     val quantization: String,
     val license: ModelLicense,
-    val requiresNoticeFile: Boolean
+    val requiresNoticeFile: Boolean,
+    val defaultProfilePeakRamBytes: Long = peakRamBytes
 )
 
 /**

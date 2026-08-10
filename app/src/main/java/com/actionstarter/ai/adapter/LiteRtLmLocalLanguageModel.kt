@@ -92,17 +92,41 @@ import java.util.concurrent.atomic.AtomicLong
  *   未導入なら例外を送出する契約とし、[com.actionstarter.ai.LocalAiGateway]側の§8.6 #11
  *   チェックが先に走ることを前提に、ここでの例外送出はガードをすり抜けた場合の防御的
  *   フォールバックとして扱う。
- * @param maxNumTokens コンテキスト長（V-8。小コンテキスト・テストプロファイルは128〜256、
- *   §11.2）。既定値はP7-C1が定めた暫定値のまま変更していない——本番運用値の確定はP7-C8実機
- *   プローブの責務であり（計画書§17 V-8・§11.3）、P7-C5はこれを追い越して確定させない
- *   （ADR-0056の判断根拠を参照）。
+ * @param maxNumTokens コンテキスト長（V-8。§11.2）。**P7-C5b（ADR-0057）でP7-C1の固定値256から
+ *   変更した**——P7-C5実機実測（ADR-0056）が、本番プロンプト一式（`systemInstruction`＋
+ *   既定2-shot few-shot＋data message）では256では実機`FAILED_PRECONDITION`により推論が
+ *   一度も成功しないことを発見したため（256のままでは§8.6 #7のOOM事前ガード修正〔ADR-0057〕
+ *   と無関係に、推論そのものが機能しない状態だった）。既定値は
+ *   [PlanPromptBuilder.estimateMaxNumTokens]（実際のprefaceの文字数＋出力上限から算出、
+ *   P7-C5実機実測で成功確認済みの1024を下限にclamp）を使う。本番運用値の絶対的な最終確定は
+ *   引き続きP7-C8実機プローブの責務（計画書§17 V-8・§11.3、Galaxy A実機での再検証）だが、
+ *   「実機で推論が一度も成功しない既定値のまま放置する」ことは基盤バグでありP7-C8を待たずに
+ *   P7-C5bで是正した（ADR-0057「代替案と却下理由」参照）。
+ * @param shotCount ADR-0057新設。[buildConversationConfig]が[PlanPromptBuilder.buildFewShot]へ
+ *   渡すfew-shot件数（既定[PlanPromptBuilder.DEFAULT_SHOT_COUNT]）。品質ハーネスQH-16
+ *   （shotCount別のTTFT×品質比較、計画書§7）をアプリ本体のコードを分岐させずに実測できるよう
+ *   注入可能にした。**[maxNumTokens]の既定値は本パラメータに追従する**（下記参照）ため、
+ *   `shotCount`のみを変えて`maxNumTokens`を省略しても、その`shotCount`向けに算出された
+ *   コンテキスト予算がそのまま使われ、既定値のまま強い設定と弱い設定が食い違って
+ *   `FAILED_PRECONDITION`を再発することはない。
+ * @param maxNumTokens コンテキスト長（V-8。§11.2）。**P7-C5b（ADR-0057）でP7-C1の固定値256から
+ *   変更した**——P7-C5実機実測（ADR-0056）が、本番プロンプト一式（`systemInstruction`＋
+ *   既定2-shot few-shot＋data message）では256では実機`FAILED_PRECONDITION`により推論が
+ *   一度も成功しないことを発見したため（256のままでは§8.6 #7のOOM事前ガード修正〔ADR-0057〕
+ *   と無関係に、推論そのものが機能しない状態だった）。既定値は[shotCount]に応じて
+ *   [PlanPromptBuilder.estimateMaxNumTokens]（実際に組み立てるprefaceの文字数＋出力上限から
+ *   算出、P7-C5実機実測で成功確認済みの1024を下限にclamp）を呼んだ結果を使う。本番運用値の
+ *   絶対的な最終確定は引き続きP7-C8実機プローブの責務（計画書§17 V-8・§11.3、Galaxy A実機での
+ *   再検証）だが、「実機で推論が一度も成功しない既定値のまま放置する」ことは基盤バグであり
+ *   P7-C8を待たずにP7-C5bで是正した（ADR-0057「代替案と却下理由」参照）。
  * @param threadCount `Backend.CPU(threadCount = ...)`（V-3実測で存在確認済み）。既定4は
  *   P7-C0実測条件と同一値。
  */
 @OptIn(ExperimentalApi::class)
 class LiteRtLmLocalLanguageModel(
     private val modelPathProvider: () -> String,
-    private val maxNumTokens: Int = DEFAULT_MAX_NUM_TOKENS,
+    private val shotCount: Int = PlanPromptBuilder.DEFAULT_SHOT_COUNT,
+    private val maxNumTokens: Int = defaultMaxNumTokensFor(shotCount),
     private val threadCount: Int = DEFAULT_THREAD_COUNT
 ) : LocalLanguageModel, BenchmarkMetricsSource {
 
@@ -216,7 +240,7 @@ class LiteRtLmLocalLanguageModel(
      * `prefillPrefaceOnInit = true`でこのprefaceを会話生成時にprefillする（品質ハーネス§3末尾）。
      */
     private fun buildConversationConfig(context: PlanningContext, samplingPolicy: SamplingPolicy): ConversationConfig {
-        val fewShotMessages = promptBuilder.buildFewShot(context.locale).flatMap { example ->
+        val fewShotMessages = promptBuilder.buildFewShot(context.locale, shotCount).flatMap { example ->
             listOf(Message.user(example.userTurn), Message.model(example.modelTurn))
         }
         return ConversationConfig(
@@ -312,12 +336,6 @@ class LiteRtLmLocalLanguageModel(
     }
 
     companion object {
-        /** §11.2小コンテキスト・テストプロファイルの上限（P7-C1が定めた暫定既定値、無変更）。 */
-        const val DEFAULT_MAX_NUM_TOKENS: Int = 256
-
-        /** P7-C0実測条件（`Backend.CPU(threadCount = 4)`）と同一値。 */
-        const val DEFAULT_THREAD_COUNT: Int = 4
-
         /**
          * 出力トークン上限（ADR-0056）。確定契約（ADR-0045・0046）でstepあたり
          * `action_type`／`display_text`の2フィールドのみに削減されたため、P7-C0実測
@@ -325,6 +343,30 @@ class LiteRtLmLocalLanguageModel(
          * 安全側に維持しつつmaxItems=8まで許容する値として200を既定とする。
          */
         private const val MAX_OUTPUT_TOKEN = 200
+
+        /**
+         * [shotCount]から`maxNumTokens`の推奨既定値を算出する（ADR-0057）。
+         * [PlanPromptBuilder.estimateMaxNumTokens]（実際に組み立てるpreface＋[MAX_OUTPUT_TOKEN]
+         * から算出、P7-C5実機実測で成功確認済みの1024を下限にclamp）へ委譲する薄いラッパー。
+         * 主コンストラクタの`maxNumTokens`パラメータの既定値式と[DEFAULT_MAX_NUM_TOKENS]の
+         * 両方から呼ばれ、**「`shotCount`だけ変えてfew-shotを増減させたのに`maxNumTokens`は
+         * 既定のまま」という食い違いを構造的に防ぐ**（[LiteRtLmLocalLanguageModel]クラスKDoc
+         * 「`@param shotCount`」参照）。
+         */
+        private fun defaultMaxNumTokensFor(shotCount: Int): Int =
+            PlanPromptBuilder().estimateMaxNumTokens(shotCount = shotCount, maxOutputToken = MAX_OUTPUT_TOKEN)
+
+        /**
+         * §11.2コンテキスト長プロファイルの既定値（[PlanPromptBuilder.DEFAULT_SHOT_COUNT]向け、
+         * ADR-0057）。**P7-C1が定めた固定256からP7-C5b（本ADR）で変更した**。`const val`に
+         * できないのは関数呼び出しの結果でありコンパイル時定数式ではないため（`256`の頃と異なる
+         * 制約）。外部（テスト・プローブ）から既定値を参照する用途に残す
+         * （[LiteRtLmLocalLanguageModel]クラスKDoc「`@param maxNumTokens`」参照）。
+         */
+        val DEFAULT_MAX_NUM_TOKENS: Int = defaultMaxNumTokensFor(PlanPromptBuilder.DEFAULT_SHOT_COUNT)
+
+        /** P7-C0実測条件（`Backend.CPU(threadCount = 4)`）と同一値。 */
+        const val DEFAULT_THREAD_COUNT: Int = 4
 
         private const val MILLIS_PER_SECOND = 1000.0
 

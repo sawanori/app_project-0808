@@ -333,4 +333,197 @@ class PlanPromptBuilderTest {
             examples.size
         )
     }
+
+    // QH-14g: 正常系 - P7-C5b（品質ハーネス強化）でja/enとも模範プールを2件→4件へ拡張した
+    // （結婚式/歯科検診/出張/打ち合わせ、Wedding/Dental checkup/Business trip/Team meeting）
+    // ことの回帰ロック。shotCountを利用可能数以上（10）にしても4件に丸められる
+    // （既存のクランプ仕様、コメント「上限超過は最大件数へ丸める」との整合）。
+    @Test
+    fun qh14g_buildFewShot_expandedSeedPool_clampsAtFourForBothLocales() {
+        val builder = PlanPromptBuilder()
+
+        val japaneseExamples = builder.buildFewShot(Locale.JAPAN, shotCount = 10)
+        val englishExamples = builder.buildFewShot(Locale.US, shotCount = 10)
+
+        assertEquals(
+            "P7-C5bでja模範プールは4件へ拡張されているはずです(QH-14g): $japaneseExamples",
+            4,
+            japaneseExamples.size
+        )
+        assertEquals(
+            "P7-C5bでen模範プールは4件へ拡張されているはずです(QH-14g): $englishExamples",
+            4,
+            englishExamples.size
+        )
+    }
+
+    // QH-14h: 正常系 - shotCount=3（品質ハーネスQH-16のshotCount比較対象値）はちょうど3件返す
+    @Test
+    fun qh14h_buildFewShot_shotCountThree_returnsExactlyThreeExamples() {
+        val examples = PlanPromptBuilder().buildFewShot(Locale.JAPAN, shotCount = 3)
+
+        assertEquals("shotCount=3はちょうど3件返すべきです(QH-14h・QH-16比較用)", 3, examples.size)
+    }
+
+    // QH-14f: 異常系の回帰防止 - few-shot例自身が、模範として教えている「titleの逐語コピー禁止」
+    // ルール（§6②・ContentSanityChecker.isTitleCopy相当、正規化後完全一致 or 占有率80%以上）に
+    // 違反していない。模範自身がコピーになっていては「タイトルをコピーするな」を教えられない
+    // （P7-C5実測でチームMTG→「チームMTGの準備」が占有率75%とギリギリ合格だった反省を踏まえ、
+    // 新設・改訂した全模範に対する自己矛盾チェックとして追加）。
+    @Test
+    fun qh14f_buildFewShot_examples_neverCopyTheirOwnEventTitleIntoDisplayText() {
+        val builder = PlanPromptBuilder()
+        val titlePattern = Regex("title=\"([^\"]*)\"")
+
+        listOf(Locale.JAPAN, Locale.US).forEach { locale ->
+            val examples = builder.buildFewShot(locale, shotCount = MAX_AVAILABLE_SHOT_COUNT_PROBE)
+            examples.forEach { example ->
+                val title = titlePattern.find(example.userTurn)?.groupValues?.get(1).orEmpty()
+                val normalizedTitle = title.filterNot { it.isWhitespace() }.lowercase()
+                if (normalizedTitle.length < MIN_TITLE_LENGTH_FOR_COPY_CHECK) return@forEach
+
+                extractDisplayTexts(example.modelTurn).forEach { displayText ->
+                    val normalizedDisplayText = displayText.filterNot { it.isWhitespace() }.lowercase()
+                    assertFalse(
+                        "few-shot例のdisplay_text \"$displayText\"(title=\"$title\") が正規化後完全一致で" +
+                            "titleの逐語コピーです。模範自身がコピー抑止ルールに違反しています(QH-14f)",
+                        normalizedDisplayText == normalizedTitle
+                    )
+                    if (normalizedDisplayText.isNotEmpty() && normalizedDisplayText.contains(normalizedTitle)) {
+                        val occupancyRatio = normalizedTitle.length.toDouble() / normalizedDisplayText.length.toDouble()
+                        assertTrue(
+                            "few-shot例のdisplay_text \"$displayText\"(title=\"$title\") のtitle占有率が" +
+                                "${(occupancyRatio * 100).toInt()}%で80%以上です。模範自身がコピー抑止ルールに" +
+                                "違反しています(QH-14f)",
+                            occupancyRatio < TITLE_COPY_OCCUPANCY_THRESHOLD
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // QH-8 追加分（P7-C5b・品質ハーネス強化）: systemInstructionの「予定名の逐語/軽微な
+    // 言い換えの抑止＋具体性の要求」「自然な文法」ルール強化
+    // ------------------------------------------------------------------
+
+    // QH-8d: 正常系 - system指示にdisplay_textの文法的自然さを求める文言が含まれる
+    // （P7-C5実測「歯科検診に手順を計らる」のような不自然な文法の再発防止）
+    @Test
+    fun qh8d_buildSystemInstruction_requiresGrammaticalNaturalness() {
+        val instruction = PlanPromptBuilder().buildSystemInstruction(Locale.JAPAN)
+
+        assertTrue(
+            "system指示にdisplay_textの自然さ(natural)を求める文言が見当たりません(QH-8d、" +
+                "P7-C5実測の文法崩れ再発防止): $instruction",
+            instruction.contains("natural", ignoreCase = true)
+        )
+    }
+
+    // QH-8e: 正常系 - system指示にタイトルの単純な言い換え（コピーに近い改変）を禁じ、
+    // その予定に特有の具体的な準備物・行動を1つ挙げるよう求める文言が含まれる
+    // （P7-C5実測「結婚式→結婚式に参加する」のような当たり前の言い換えの再発防止）
+    @Test
+    fun qh8e_buildSystemInstruction_requiresSpecificActionNotTitleRestatement() {
+        val instruction = PlanPromptBuilder().buildSystemInstruction(Locale.JAPAN)
+
+        assertTrue(
+            "system指示にタイトルの単純な言い換えを禁じる文言(restate/reword等)が見当たりません" +
+                "(QH-8e、P7-C5実測の「結婚式に参加する」のような当たり前の言い換え再発防止): $instruction",
+            instruction.contains("restate", ignoreCase = true) || instruction.contains("reword", ignoreCase = true)
+        )
+        assertTrue(
+            "system指示にその予定固有の具体的な準備物・行動を挙げるよう求める文言" +
+                "(concrete/specific等)が見当たりません(QH-8e、Semantic Contextualizationの明示化): $instruction",
+            instruction.contains("concrete", ignoreCase = true) || instruction.contains("specific", ignoreCase = true)
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // ADR-0057: estimateMaxNumTokens(shotCount, maxOutputToken)
+    // ------------------------------------------------------------------
+    //
+    // P7-C5実機実測（ADR-0056）で本番プロンプト一式に既定maxNumTokens=256では実機
+    // `FAILED_PRECONDITION`が発生し、1024へ引き上げると成功することが判明した。本関数は
+    // 「256」を「1024」へのハードコード差し替えにする代わりに、実際に組み立てるpreface
+    // （systemInstruction＋few-shot）の文字数と出力上限からコンテキスト予算を算出する
+    // （P7-C5実機実測値=1024を下回らない下限、モデルの確定contextLength=4096を上回らない上限で
+    // clamp）。正確なトークナイザーには依存できない（ai/prompt/はランタイム非依存・T-AIISO-9）
+    // ための近似であることは関数のKDoc・ADR-0057に明記する。
+
+    // 正常系: 既定shotCountでの見積りは、P7-C5実機実測(ADR-0056)で成功が確認された下限
+    // (VERIFIED_WORKING_MAX_NUM_TOKENS=1024)を下回らない
+    @Test
+    fun estimateMaxNumTokens_defaultShotCount_isAtLeastTheVerifiedWorkingFloor() {
+        val estimate = PlanPromptBuilder().estimateMaxNumTokens(
+            shotCount = PlanPromptBuilder.DEFAULT_SHOT_COUNT,
+            maxOutputToken = 200
+        )
+
+        assertTrue(
+            "既定shotCountの見積りはP7-C5実機実測(ADR-0056)で成功が確認された" +
+                "${PlanPromptBuilder.VERIFIED_WORKING_MAX_NUM_TOKENS}を下回ってはいけません: $estimate",
+            estimate >= PlanPromptBuilder.VERIFIED_WORKING_MAX_NUM_TOKENS
+        )
+    }
+
+    // 正常系: few-shot例が多い(shotCount大)ほど見積りは増えるか同じ（実際のプロンプト構造から
+    // 算出していることの回帰ロック。ハードコード値だとshotCountを変えても値が変化しない）
+    @Test
+    fun estimateMaxNumTokens_scalesWithShotCount() {
+        val builder = PlanPromptBuilder()
+        val zeroShot = builder.estimateMaxNumTokens(shotCount = 0, maxOutputToken = 200)
+        val twoShot = builder.estimateMaxNumTokens(shotCount = 2, maxOutputToken = 200)
+        val fourShot = builder.estimateMaxNumTokens(shotCount = 4, maxOutputToken = 200)
+
+        assertTrue(
+            "few-shot例が多いほど見積りは増えるべきです(shotCount=0:$zeroShot, shotCount=2:$twoShot)",
+            zeroShot < twoShot
+        )
+        assertTrue(
+            "shotCount=4はshotCount=2以上の見積りになるべきです(shotCount=2:$twoShot, shotCount=4:$fourShot)",
+            twoShot <= fourShot
+        )
+    }
+
+    // 正常系: maxOutputTokenが大きいほど見積りも大きい（出力上限からの算出であることの回帰ロック）
+    @Test
+    fun estimateMaxNumTokens_scalesWithMaxOutputToken() {
+        val builder = PlanPromptBuilder()
+        val small = builder.estimateMaxNumTokens(shotCount = 2, maxOutputToken = 50)
+        val large = builder.estimateMaxNumTokens(shotCount = 2, maxOutputToken = 2000)
+
+        assertTrue(
+            "maxOutputTokenが大きいほど見積りも増えるべきです(50:$small, 2000:$large)",
+            small < large
+        )
+    }
+
+    // エッジ: 見積り結果はモデルの確定contextLength(4096、ModelCatalog.QWEN3_0_6B_INT4_BLOCK32と
+    // 同値)を超えない（法外なshotCount/maxOutputTokenを渡してもEngineConfigへ渡せない値を
+    // 生成しない上限ガード）
+    @Test
+    fun estimateMaxNumTokens_extremeInputs_neverExceedsContextLengthCeiling() {
+        val estimate = PlanPromptBuilder().estimateMaxNumTokens(shotCount = 4, maxOutputToken = 100_000)
+
+        assertTrue(
+            "見積りはCONTEXT_LENGTH_CEILING(${PlanPromptBuilder.CONTEXT_LENGTH_CEILING})を" +
+                "超えてはいけません: $estimate",
+            estimate <= PlanPromptBuilder.CONTEXT_LENGTH_CEILING
+        )
+    }
+
+    companion object {
+        /** [qh14f_buildFewShot_examples_neverCopyTheirOwnEventTitleIntoDisplayText]用: 実際の
+         * seed数に関わらず全件を取得するための十分大きいshotCount（[PlanPromptBuilder.buildFewShot]
+         * は利用可能数へ自動クランプするため、正確な件数を知らなくても安全に全件取得できる）。 */
+        private const val MAX_AVAILABLE_SHOT_COUNT_PROBE = 100
+
+        /** [ContentSanityChecker][com.actionstarter.ai.schema.ContentSanityChecker]の閾値と
+         * 同値（本テストファイルは既存の方針どおり production クラスをimportせず自己完結した
+         * 軽量チェックとして再実装する）。 */
+        private const val MIN_TITLE_LENGTH_FOR_COPY_CHECK = 6
+        private const val TITLE_COPY_OCCUPANCY_THRESHOLD = 0.8
+    }
 }

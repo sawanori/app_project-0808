@@ -723,6 +723,7 @@ AVD `actionstarter_test`（**実測: x86_64 / API 35 / RAM 4096MB**）。目的�
 | **P7-C3** Green: schema/prompt | F93・F94・F95 を実装。**E1中心で最も検証密度が高い層** | sonnet | G3（部分） |
 | **P7-C4** Green: model管理 | F87〜F91 を実装（Catalog/Downloader/Verifier/Storage/DeviceCapability）。**C3と並列可** | sonnet | G3（部分） |
 | **P7-C5** Green: adapter/gateway | F86・F96 を実装。C3・C4の完了後に直列 | sonnet | G3（部分） |
+| **P7-C5b** 品質ハーネス強化（Fable 5指示・P7-C5実測への対応） | ADR-0057（`maxNumTokens`計算式化・OOM事前ガードのプロファイル依存是正）・ADR-0058（few-shot拡張・systemInstruction強化）。実機で改善前後比較・shotCount比較を実測 | sonnet | JVM回帰542件0失敗・lint error 0・実機E2E実測完了（§14.9） |
 | **P7-C6** Green: settings | F92・F97 を実装。Settings route追加・ja/en文言追加 | sonnet | G3（部分） |
 | **P7-C7** 統合 | 全体結線・§9のガード改修と新設・E3テストの実行（G4-E）。既存245件規模の回帰確認 | sonnet | **G4-JVM ＋ G4-E** |
 | **P7-C8** 実機プローブ＋Refactor | §11.3 の Galaxy A実機ベンチ（Qwen3-0.6B / Qwen3-1.7B / Gemma3-1B の3者比較）。測定値で §8.6 のタイムアウト閾値と §5.3 の段境界を確定。リファクタ後に再度全テスト通過を確認 | sonnet → opus | **G4-D**。**未達のままPhase 8へ進むことを禁止** |
@@ -1119,6 +1120,65 @@ ADR-0051のとおり、**`LocalAiGateway`のprivateフィールドとして直�
 `adb push`したモデルは`app/src/androidTest`の`LiteRtLmAdapterE2EProbeTest`が各テストメソッドの`finally`でアプリ内部ストレージ（`noBackupFilesDir/models/`）から`ModelStorage.delete()`により削除する。実測後に`/data/user/0/com.actionstarter/no_backup/`・`shared_prefs/ai_preferences.xml`をroot adb shellで確認し、**残存なし**を確認済み（`connectedDebugAndroidTest`のテストランナー自体がテスト間でアプリデータをクリアするため、二重に保護されている）。ホスト側`/data/local/tmp/Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm`（328MB）はアプリのストレージではないため放置してもアプリ動作に影響しないが、`adb shell rm /data/local/tmp/Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm`で手動削除可能（未実施のまま申し送り）。`AiPreferencesImpl.aiEnabled`はテスト内で`true`へ一時変更後、`finally`で実行前の値（`false`）へ復元済み。
 
 **証拠ファイル**: `build/agent-logs/p7c5-jvm.log`（`:app:testDebugUnitTest --rerun`、tests=528/failures=0/errors=0/skipped=1）・`p7c5-lint.log`（`:app:lintDebug --rerun-tasks`、BUILD SUCCESSFUL・error 0）・`p7c5-e2e.log`（3実行分のLogcat全量＋JUnit結果XML統合）・`p7c5-e2e-result.xml`（最終実行分のJUnit結果、1件・failures=0）・`p7c5-e2e-logcat.log`／`p7c5-e2e-logcat-run2.log`／`p7c5-e2e-logcat-run3.log`（実行別Logcat）。
+
+---
+
+### 14.9 P7-C5b完了記録（2026-08-10確定・domain-implementer、Fable 5指示「品質ハーネス強化」）
+
+**結論**: 0.6Bのまま周辺設計（基盤バグ修正＋few-shot/systemInstruction強化）で品質を追い込んだ結果、**文法崩れは解消したが、目標とした深いSemantic Contextualization（結婚式→「ご祝儀を用意する」級の具体性）には到達しなかった**。実機5+3+3=11回の生成中、非文法的出力は0件（P7-C5の「歯科検診に手順を計らる」型は再発せず）だったが、大半の出力はタイトルの自然な言い換え（「歯科検診を受けてください」「友人の結婚式を迎える」等）にとどまり、few-shotが示す具体物（保険証・ご祝儀・切符）への転用はできなかった。加えて「チームMTG」入力でshotCount 0/2/3を横断して不安定な挙動（無関係文言の生成・locale不一致・誤分類）を観測した。**「0.6Bを上げるべき」という結論も本サイクルの正当な成果である**（下記「0.6Bの限界に関する所見」）。
+
+#### A. 基盤バグ修正（ADR-0057）
+
+1. **`maxNumTokens`既定値**: `LiteRtLmLocalLanguageModel.DEFAULT_MAX_NUM_TOKENS`の固定256を、`PlanPromptBuilder.estimateMaxNumTokens(shotCount, maxOutputToken)`（実際に組み立てるpreface文字数＋出力上限から算出、P7-C5実機実測で成功確認済みの1024を下限・モデルのcontextLength=4096を上限にclamp）による計算値へ変更した。既定`shotCount=2`・`maxOutputToken=200`で**`DEFAULT_MAX_NUM_TOKENS=1280`**と算出された（JVM実行で実測確認済み）。`LiteRtLmLocalLanguageModel`に`shotCount`コンストラクタパラメータを新設し、`maxNumTokens`の既定値が`shotCount`へ自動追従する設計とした。
+2. **OOM事前ガードのプロファイル依存是正**: `ModelCatalogEntry`へ`defaultProfilePeakRamBytes: Long = peakRamBytes`（既定値は`peakRamBytes`と同値・後方互換）を新設し、`LocalAiGateway`のOOM事前ガードの参照先を`peakRamBytes`（フルコンテキスト実測・プロファイル非依存）から`defaultProfilePeakRamBytes`（実効ピーク）へ変更した。`ModelCatalog.QWEN3_0_6B_INT4_BLOCK32`のみ`1,342,177,280`バイト（1.25GiB、P7-C5診断実測で既に検証済みの値）を明示指定した。
+3. 詳細な設計判断・代替案の却下理由はDECISIONS.md ADR-0057参照。
+
+#### B. few-shot／systemInstruction強化（ADR-0058）
+
+1. **few-shot模範プールをja/enとも2件→4件へ拡張**: Fable 5指示の3例（結婚式/social/prepare_items/「ご祝儀を用意する」、歯科検診/medical/prepare_items/「保険証を持って出る」、出張/travel/gather_belongings/「切符と充電器を確認する」）を採用し、既存の打ち合わせ例を4件目として残置。EN側も同4テーマで対称構成。既定`shotCount=2`は変更せず（P7-C8実測後にFable 5が最終確定する既存裁定を尊重）、既定2-shotに採用される先頭2件をあえて同一`action_type=prepare_items`かつ大きく異なる`display_text`の組み合わせにし、「同じaction_typeでも意味で全く違う具体物になる」ことを最優先で模範化した。
+2. **systemInstruction強化**: ルール2に「grammatically natural」を追加（文法崩れ対策）。ルール4を「コピー抑止のみ」から「タイトルの単純な言い換えも抑止し、予定固有の具体的な準備物・行動を1つ挙げるよう積極的に要求する」へ強化（例示付き）。
+3. 詳細・実機での効果評価はDECISIONS.md ADR-0058参照。
+
+#### C. 改善前後の出力比較表（P7-C5 → P7-C5b、いずれもAVD `actionstarter_test` x86_64/API35実測）
+
+| 予定 | P7-C5出力（`maxNumTokens=1024`診断fixture） | P7-C5b出力（production defaults・`maxNumTokens=1280`） | 評価 |
+|---|---|---|---|
+| 歯科検診 | `action_type=prepare_items` "歯科検診に手順を計らる"（文法崩れ） | `action_type=finish_current_task` "歯科検診を受けてください"（文法は自然。ただし「保険証を持って出る」級の具体性には未到達、action_typeもfinish_current_taskとやや不整合） | 文法◯・具体性✗ |
+| 友人の結婚式 | `action_type=commute` "結婚式に参加する"（自然だが当たり前の言い換え） | `action_type=get_ready` "友人の結婚式を迎える"（同様に自然だが当たり前の言い換え。「ご祝儀」への転用なし） | 変化ほぼなし |
+| チームMTG | `action_type=prepare_items` "チームMTGの準備"（タイトルほぼコピー、占有率0.75でギリギリ合格） | `action_type=get_ready` "歯科検診を受けてください"（**無関係な文言への誤生成を複数回再現**） | 悪化（新規発見の弱点） |
+| 大阪出張（新規） | （P7-C5未実施） | `action_type=get_ready` "大阪の出張を予定した"（自然、具体性は限定的） | 新規データ |
+| 友人の誕生日会（新規） | （P7-C5未実施） | `Fallback(SCHEMA_INVALID)`（タイトルほぼコピーとしてContentSanityCheckerが正しく検出、Basicへ安全降格） | 安全網は機能 |
+
+**総括**: 文法面は明確に改善（非文法的出力0件）。具体性（Semantic Contextualizationの深さ）は改善が確認できず、チームMTG入力では既存にはなかった誤生成パターンが複数回再現し、むしろ新たな弱点として顕在化した。
+
+#### shotCount×品質×TTFT実測（品質ハーネスQH-16、独立プロセス実行）
+
+| shotCount | maxNumTokens | firstTokenMs（範囲） | tokensPerSecond（範囲） | peakNativeHeapBytes（範囲） | 品質の特徴 |
+|---|---|---|---|---|---|
+| 0 | 1024 | 1552〜1798 | 26.6〜32.1 | 約558MB | 語句重複の固有欠陥（「歯科検診の歯科検診を受けてください」）。チームMTGはlocale不一致でFallback |
+| 2（既定） | 1280 | 1652〜1883 | 26.4〜32.4 | 約624MB | 重複欠陥は解消。チームMTGは無関係な「歯科検診」文言を生成 |
+| 3 | 1664 | 1800〜2077 | 21.1〜26.3（明確に低下） | 約723〜742MB | チームMTGは「歯科検診」を4文字だけ生成しeventTypeも誤分類、retry発生 |
+
+shotCountを上げるほど遅く・重くなるトレードオフは実測どおり明確に確認できたが、**品質面でshotCountによる明確な優劣はつかず**、チームMTG入力の不安定さは0/2/3いずれでも解消しなかった。当初の単一プロセス内連続実行では2回目・3回目のEngineが未解放の1回目Engineとメモリを取り合い`OUT_OF_MEMORY_PREVENTED`が誤発動する方法論上の不備を発見し、shotCount別に独立プロセス化して再実測した（`LiteRtLmAdapterE2EProbeTest.runShotCountComparisonScenario`のKDoc参照）。
+
+#### JVM回帰・lint
+
+`:app:testDebugUnitTest --rerun`: tests=**542**/failures=0/errors=0/skipped=1（P7-C5ベースライン528＋新規14件〔`PlanPromptBuilderTest`9件・`ModelCatalogTest`3件・`LocalAiGatewayTest`2件〕、既存テストの変更・削除はゼロ。`build/agent-logs/p7c5b-jvm.log`）。`:app:lintDebug`: BUILD SUCCESSFUL・error 0・warning 22（P7-C5ベースラインと同数、新規warningなし。`build/agent-logs/p7c5b-lint.log`）。
+
+#### 0.6Bの限界に関する所見（正直な評価）
+
+- **文法性はプロンプト強化で改善できた**が、**「予定の意味を理解した個別具体的な行動」という本来の付加価値（Semantic Contextualization）はfew-shot/systemInstruction強化だけでは引き出せなかった**。few-shotが「ご祝儀」「保険証」「切符」という具体物を明示的に示していても、0.6Bモデルは多くの場合そのパターンを転用せず、タイトルの言い換えに収束する。
+- **チームMTG（カタカナ略語混じりの表記）入力で顕著な不安定性**を横断的に観測した——無関係な文言の生成・locale不一致・event_type誤分類・retry発生のいずれかがshotCount 0/2/3の**すべて**で発生した。原因はGateway/adapterの実装不備という証拠は本実測では見当たらず（Conversation/Engineライフサイクルの正しさはADR-0056 V-2実測で既に確認済み）、0.6Bモデル自体の指示追従力・汎化力の限界である可能性が高いと判断する（断定はできない、n=11の実測に基づく所見）。
+- **したがって「0.6Bのまま周辺設計を最大限強化しても、Semantic Contextualizationの深さという核心的な品質目標は満たせない」というのが本サイクルの正直な結論**である。基盤バグ（maxNumTokens/OOMガード）の是正自体は実機で明確に効果が確認できた独立した価値だが、これと出力品質の深さは別問題である。
+
+#### P7-C8モデル比較への申し送り
+
+1. **本ADR-0058の結論の再検証**: Qwen3-1.7B・Gemma3-1B等より大きいモデルで同一のfew-shot/systemInstructionを使い、具体性（ご祝儀・保険証級）が引き出せるかを比較すること。0.6Bで頭打ちなら、より大きいモデルでの改善幅がモデルサイズ起因の証拠になる。
+2. **チームMTG型入力（カタカナ略語混じり表記）を比較シナリオへ明示的に含めること**——0.6Bで横断的に観測された弱点が他モデルでも再現するかを確認する価値がある。
+3. **`DEFAULT_MAX_NUM_TOKENS=1280`・`defaultProfilePeakRamBytes=1.25GiB`（ADR-0057）は依然AVD実測の外挿**であり、Galaxy Aクラス実機での最終確定はP7-C8の責務のまま。
+4. **`DEFAULT_SHOT_COUNT`（現行2、未変更）の最終確定**もP7-C8実測後にFable 5が行う（品質ハーネスUQ-4）。本サイクルの実測（上表）は「shotCountでは品質差が明確につかない」という追加データ点として活用できる。
+
+**証拠ファイル**: `build/agent-logs/p7c5b-jvm.log`（JVM回帰）・`p7c5b-lint.log`（lint）・`p7c5b-e2e.log`（実機E2E統合ログ）・`p7c5b-e2e-gradle-run1.log`／`p7c5b-e2e-gradle-probeAdapterThroughGateway_shotCount{0,2,3}.log`（Gradle実行ログ）・`p7c5b-e2e-logcat-run1.log`／`p7c5b-e2e-logcat-shotcount-split.log`（Logcat）。
 
 ---
 

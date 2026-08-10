@@ -1432,3 +1432,65 @@ P7-C2c（品質ハーネス由来の新設部品へのRed補完サイクル）�
 **検証方法**: `:app:compileDebugKotlin`成功（実際のAAR 0.15.0のバイトコードに対してコンパイルが通ることを`SamplerConfig`／`ConversationConfig`／`ResponseFormat`等のAPI形状の一次確認とした）。`:app:testDebugUnitTest --rerun`でtests=528/failures=0/errors=0/skipped=1（`build/agent-logs/p7c5-jvm.log`）。`:app:lintDebug --rerun-tasks`でBUILD SUCCESSFUL・error 0（`build/agent-logs/p7c5-lint.log`）。実機E2E3パターン（`build/agent-logs/p7c5-e2e.log`）: (1)本番`peakRamBytes`のまま→3件とも`Fallback(OUT_OF_MEMORY_PREVENTED)`、(2)`maxNumTokens=256`のまま→3件とも`Fallback(UNKNOWN)`（ネイティブ`FAILED_PRECONDITION`）、(3)`maxNumTokens=1024`→3件とも`AiResult.Success`（`schemaValid=true`・`sanityPassed=true`、実際に生成された`display_text`をログへ記録）。
 
 **再検討トリガー**: P7-C8実機プローブ完了後、決定6(a)(b)の申し送り事項を本ADRの「決定」欄へ追記して確定させること。決定4のTTFT/tok/s実測値がGalaxy A実機でエミュレータ実測（`tokensPerSecond`=25.7〜35.2、x86_64のため参考値）と大きく乖離する場合、`MAX_OUTPUT_TOKEN`（決定4）の再検討も合わせて行うこと。
+
+---
+
+### ADR-0057: `maxNumTokens`既定値を実際のpreface文字数から算出する計算式へ変更し、OOM事前ガードへプロファイル別の実効ピークRAMフィールドを追加する（ADR-0056決定6の申し送り解消）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（Fable 5指示「品質ハーネス強化」の一部・報告事項） ／ 決定者: domain-implementer（P7-C5b、Fable 5への報告を前提とした実装時判断） ／ 起案agent: domain-implementer ／ 関連仕様§: 計画書§8.6#7（OOM事前ガード）・§17 V-8・§11.2〜3、品質ハーネス§7（速度×品質トレードオフ）、ADR-0056決定6(a)(b)の申し送り解消（記録トリガー②仕様未定義箇所の補完・③新事実発覚。`LocalAiGateway`のOOM判定に使うフィールドの変更・`LiteRtLmLocalLanguageModel`の`maxNumTokens`既定値算出方法の変更のため①契約変更にも該当）
+
+- **ADR番号の付番根拠**: `grep -n "^### ADR-00" DECISIONS.md`を起票直前に再実行し、実測最新確定ADRがADR-0056であることを確認した。本タスク指示書自身も「ADR-0057〜」を明示的に指定しているため、これと整合する形で0057を採番した。
+
+**背景**: P7-C5実機実測（ADR-0056決定6・計画書§14.8）が2つの未解決課題を残していた。(a) `LiteRtLmLocalLanguageModel.DEFAULT_MAX_NUM_TOKENS`が256のままでは本番プロンプト一式（`PlanPromptBuilder`のsystemInstruction＋既定2-shot few-shot＋data message）が実機`FAILED_PRECONDITION`で失敗し、`maxNumTokens=1024`への引き上げで解消することを実測したが、この値自体はP7-C8実機プローブの確定事項として据え置かれていた。(b) `ModelCatalogEntry.peakRamBytes`（2,890MB、フルコンテキスト4096の実測値）がコンテキストプロファイル非依存の単一値であるため、`LocalAiGateway`のOOM事前ガード（§8.6#7）が実際に使う小コンテキスト・本番プロファイルの実要求量に対して過大判定し、実機で空きメモリが十分あるにもかかわらず`Fallback(OUT_OF_MEMORY_PREVENTED)`を返す構造的なギャップがあった。本タスク（Fable 5指示・品質ハーネス強化サイクル、P7-C5b）はこの2点を「方針非依存・必須の基盤バグ修正」として明示的にP7-C8を待たず是正することを指示した。
+
+**決定**:
+
+1. **`maxNumTokens`の既定値算出（256のハードコード差し替えではなく計算式）**: `PlanPromptBuilder`（`ai/prompt/`、ランタイム非依存）へ`estimateMaxNumTokens(shotCount, maxOutputToken): Int`を新設した。実際に組み立てる`buildSystemInstruction`＋`buildFewShot`の文字数（ja/en両locale中の最悪ケース。Engineはプロセス内で高々1個の遅延シングルトンでありインスタンス生成時点でどちらのlocaleが最初に呼ばれるか不明なため）を、P7-C5実機実測で`maxNumTokens=1024`が成功したときのpreface文字数のスナップショット（`BASELINE_PREFACE_CHARS_P7C5=1206`文字、当時のソースから本ADR起票時に再計算）と比較し、増分文字数をトークン数の増分へ保守的な比率で変換して1024へ加算する。**変換比はja/en個別**（日本語1.5トークン/文字・英語0.5トークン/文字）とし、大きい方（最悪ケース）を採用する——Gemini（`gemini-3.5-flash`、P7-C5bアーキテクトレビュー）CRITICAL指摘「文字数が少ない方を素朴に安全側とみなすと、Qwen3のbyte-level BPEでは日本語の方が1文字あたりのトークン消費が英語より多くなり得るため危険」の反映。最終結果は128トークン単位へ切り上げ（同レビュー「端数値はネイティブランタイムのメモリアラインメントで無駄なパディングを招きうる」の反映）、`VERIFIED_WORKING_MAX_NUM_TOKENS=1024`を下限・`CONTEXT_LENGTH_CEILING=4096`（`ModelCatalog`の`contextLength`と同値）を上限にclampする。**実測結果**: 既定`shotCount=2`・`maxOutputToken=200`で`DEFAULT_MAX_NUM_TOKENS=1280`（1024の約1.25倍）と算出された（JVM実行での実測確認済み）。`LiteRtLmLocalLanguageModel`に`shotCount`コンストラクタパラメータを新設し（既定`PlanPromptBuilder.DEFAULT_SHOT_COUNT`）、`maxNumTokens`の既定値式が`shotCount`に自動追従する設計とした——「`shotCount`だけ変えて`maxNumTokens`は既定のまま」という食い違いで`FAILED_PRECONDITION`が再発することを構造的に防ぐため。
+2. **OOM事前ガードのプロファイル依存是正**: `ModelCatalogEntry`へ`defaultProfilePeakRamBytes: Long = peakRamBytes`（新規・既定値は`peakRamBytes`と同値で後方互換）を追加し、`LocalAiGateway`のOOM事前ガードが参照するフィールドを`peakRamBytes`（フルコンテキスト実測・プロファイル非依存）から`defaultProfilePeakRamBytes`（実際に使う既定プロファイルでの実効ピーク）へ変更した。`ModelCatalog.QWEN3_0_6B_INT4_BLOCK32`のみ`defaultProfilePeakRamBytes=1,342,177,280バイト（1.25GiB）`を明示指定する——この値はP7-C5診断実測（`probeAdapterThroughGateway_widerContextDiagnostic`、`maxNumTokens=1024`・`peakRamBytes`フィクスチャ=1.25GiBで実機3件とも実推論成功）で**既に検証済みの値をそのまま採用**したものであり、新たな未検証の数値ではない。マージン自体（`MEMORY_SAFETY_MARGIN_BYTES=512MB`）は変更していない——過大判定の原因は`peakRamBytes`側のプロファイル非依存性であり、マージンの大きさの問題ではないと判断したため。
+3. **既存fixtureへの影響ゼロ**: `defaultProfilePeakRamBytes`の既定値を`peakRamBytes`と同値にしたことで、`ModelCatalogEntry`を構築する既存の全呼び出し箇所（`ModelDownloaderTest`・`ModelStorageTest`・`ModelVerifierTest`・`LocalAiGatewayTest.fakeInstalledEntry`、いずれも名前付き引数で構築）は無変更のまま挙動が変わらない。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `DEFAULT_MAX_NUM_TOKENS`を`1024`（P7-C5実測値）へ直接ハードコード差し替えする | 本タスク指示が「ハードコードでなく算出」を第一選択として明示。将来few-shot内容やsystemInstructionが変更された場合に同じ`FAILED_PRECONDITION`が無警告で再発するリスクを、実際のプロンプト構造から算出する設計で構造的に防ぐ方が安全（本ADR決定1の設計により、`estimateMaxNumTokens`のJVMテスト3件が「shotCount/maxOutputTokenが増えると見積りも増える」ことを回帰ロックしている） |
+| `peakRamBytes`を実際のcontextLength比で線形スケーリングする動的計算式（`baseRam + kvCachePerToken × maxNumTokens`） | Gemini（`gemini-3.5-flash`）アーキテクトレビューが提案した代替だが、`baseRam`・KVキャッシュのトークン単価はいずれも実測データが不足しており（フルコンテキストの2,890MBとP7-C0/P7-C5の小コンテキスト実測〔異なる測定手法・異なる端末〕の2点だけでは線形モデルを確信を持って当てはめられない）、未検証の比例定数を事実であるかのように埋め込むことになり知的誠実性に反する。既に実機で検証済みの単一の定数値（1.25GiB）を明示的な既定プロファイル専用フィールドとして持たせる方が、精度は劣るが正直である |
+| `LiteRtLmLocalLanguageModel`に`ContextProfileSource`のような任意interfaceを追加し、`LocalAiGateway`が`as?`で実際の`maxNumTokens`を読み取ってスケーリングする（`BenchmarkMetricsSource`＝ADR-0055と同型のパターン） | 上記と同じ理由（線形スケーリング定数が未検証）に加え、本サイクルのスコープ（AppContainer最小変更）を超える設計変更になるため見送った。`defaultProfilePeakRamBytes`と実際の`maxNumTokens`が将来乖離しうる残存リスクは「再検討トリガー」で明示し、未対応のまま隠さない |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/prompt/PlanPromptBuilder.kt`（`estimateMaxNumTokens`新設）。`app/src/main/java/com/actionstarter/ai/adapter/LiteRtLmLocalLanguageModel.kt`（`shotCount`パラメータ新設、`DEFAULT_MAX_NUM_TOKENS`の算出方法変更）。`app/src/main/java/com/actionstarter/ai/model/ModelCatalog.kt`（`ModelCatalogEntry.defaultProfilePeakRamBytes`新設）。`app/src/main/java/com/actionstarter/ai/LocalAiGateway.kt`（OOM事前ガードの参照フィールド変更）。テスト: `PlanPromptBuilderTest`・`ModelCatalogTest`・`LocalAiGatewayTest`（新規14件、詳細は計画書§14.9）。`app/src/androidTest/java/com/actionstarter/probe/LiteRtLmAdapterE2EProbeTest.kt`（`probeAdapterThroughGateway_productionDefaultsAfterFix`・shotCount比較3メソッド新設）。`AppContainer.kt`は無変更（コンストラクタ既定値のみで解決するよう設計したため）。
+
+**検証方法**: `:app:testDebugUnitTest --rerun`でtests=542/failures=0/errors=0/skipped=1（528+新規14件、`build/agent-logs/p7c5b-jvm.log`）。`:app:lintDebug`でBUILD SUCCESSFUL・error 0・warning 22（既存分と同数、`build/agent-logs/p7c5b-lint.log`）。実機E2E（`build/agent-logs/p7c5b-e2e.log`）: production defaults（手動迂回なし）で5シナリオ中4件`Success`・1件`Fallback(SCHEMA_INVALID)`（OOM/FAILED_PRECONDITIONは1件も発生せず、Part A是正の直接証拠）。shotCount 0/2/3比較（独立プロセス実行）でも0/2/3いずれもOOM/FAILED_PRECONDITIONなしで完走。
+
+**再検討トリガー**: P7-C8のGalaxy A実機実測で`DEFAULT_MAX_NUM_TOKENS`（決定1）・`defaultProfilePeakRamBytes`（決定2）とも最終確定させること。特に`defaultProfilePeakRamBytes=1.25GiB`は現状AVD（x86_64エミュレータ）実測の外挿であり、Galaxy Aクラス実機での確認が必要（`ModelCatalogEntry.peakRamBytes`のKDocが持つ既存の留保と同種）。`DEFAULT_SHOT_COUNT`（現行2、未変更）を変更する場合は`estimateMaxNumTokens`の既定値追従設計により`DEFAULT_MAX_NUM_TOKENS`も自動的に再算出されるが、`defaultProfilePeakRamBytes=1.25GiB`との整合は別途確認が必要（本ADR代替案却下理由3行目の残存リスク）。
+
+---
+
+### ADR-0058: `PlanPromptBuilder`のfew-shot模範プールを2件→4件へ拡張し、systemInstructionへ「タイトルの言い換え抑止＋具体的行動の明示要求」「文法的自然さ」ルールを追加する（P7-C5実測の浅いSemantic Contextualization・文法崩れへの対処）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（Fable 5指示「品質ハーネス強化」の一部・報告事項） ／ 決定者: domain-implementer（P7-C5b） ／ 起案agent: domain-implementer ／ 関連仕様§: 品質ハーネス§0・§2・§3（Semantic Contextualization）、計画書§14.8（P7-C5実測）（記録トリガー②仕様未定義箇所の補完に該当。`PlanPromptBuilder.buildFewShot`／`buildSystemInstruction`の戻り値の中身が変わるがpublicシグネチャは無変更のため①契約変更には該当しない）
+
+- **ADR番号の付番根拠**: ADR-0057と同一バッチ起票。起票直前の`grep`再実測（ADR-0057参照）によりADR-0057の次番としてADR-0058を採番した。
+
+**背景**: P7-C5実機実測（計画書§14.8）は、既存few-shot（2例・ja: 打ち合わせ／結婚式）とsystemInstructionのままでは、次の2種の品質課題が生じることを発見した。(1) 文法崩れ（歯科検診→「歯科検診に手順を計らる」）。(2) 浅い言い換え（友人の結婚式→「結婚式に参加する」、タイトルの当たり前の再述にとどまり、few-shotが示す「ご祝儀を準備する」級の具体的な文脈化に届かない）。本タスク（Fable 5指示）はFable 5自身が指定した3例（結婚式／歯科検診／出張）を反映したfew-shot強化と、systemInstructionでの明示的なルール化を求めた。
+
+**決定**:
+
+1. **few-shot模範プールをja/enとも2件→4件へ拡張**: `JAPANESE_FEW_SHOT_SEEDS`を[結婚式(social/prepare_items/「ご祝儀を用意する」)、歯科検診(medical/prepare_items/「保険証を持って出る」)、出張(travel/gather_belongings/「切符と充電器を確認する」)、打ち合わせ(business_meeting/prepare_items/「資料を準備する」、既存踏襲)]の順で構成した（Fable 5指示の3例をそのまま採用し、既存の打ち合わせ例を4件目として残置）。`ENGLISH_FEW_SHOT_SEEDS`も同じ4テーマ（Wedding／Dental checkup／Business trip／Team meeting）でja側と対称に構成した。**先頭2件（既定`shotCount=2`で採用される組）は意図的に同一`action_type=prepare_items`だが`display_text`が大きく異なる組み合わせ**にした——「同じaction_typeでも予定の意味によって全く違う具体物になる」ことを最優先で模範として伝えるための順序設計（KDoc「順序の意図」参照）。`DEFAULT_SHOT_COUNT`（既定2）自体は変更していない——最終確定はP7-C8実測後にFable 5が行うとする既存の裁定（品質ハーネスUQ-4）を尊重し、本サイクルは模範プールの質のみを強化した。
+2. **systemInstructionルール2（自然さ）**: 「SHORT imperative phrase」に「grammatically natural」を追加した。
+3. **systemInstructionルール4（具体性の明示要求）**: 「Do NOT copy the event title verbatim」（コピー抑止のみ）から、「タイトルの単純な言い換え（軽微な改変）も抑止し、その予定固有の具体的な準備物・行動を1つ挙げるよう積極的に要求する」文言へ強化した（例示付き: "do not turn 'wedding' into 'attend the wedding'"）。
+4. **回帰テスト**: `PlanPromptBuilderTest`へ9件追加した（QH-8d・QH-8e＝systemInstruction強化の検証、QH-14f＝few-shot模範自身がタイトルコピー抑止ルールに違反していないことの自己整合性チェック、QH-14g・QH-14h＝プール拡張の回帰ロック、`estimateMaxNumTokens`関連4件はADR-0057側）。既存QH-8a〜c・QH-14a〜eはいずれも文言変更なしで通過した（変更後もJSON/action_type/time・number/Japanese/Englishの各キーワードを保持する形でルール文を書いたため）。
+
+**実機での効果（正直な評価、詳細は本体タスク最終報告参照）**: P7-C5b実測（`build/agent-logs/p7c5b-e2e.log`）では、文法崩れは解消された（「歯科検診に手順を計らる」のような非文法的出力は本サイクルの5+3+3=11件中0件）。一方、「具体的な行動」を挙げる目標（ご祝儀・保険証・切符級の具体性）は**達成できなかった**——実際の出力は「歯科検診を受けてください」「友人の結婚式を迎える」「大阪の出張を予定した」のようにタイトルの自然な言い換えにとどまり、few-shotが示す具体物（保険証・ご祝儀・切符）を転用できていない。さらに「チームMTG」入力でshotCount 0/2/3のいずれでも不安定な挙動（無関係な「歯科検診」関連文言の生成・locale不一致・誤分類）を横断的に観測した。**この結果は隠さず正直に報告する**（本タスク制約「出力が改善しない/0.6Bの限界が明確な場合もそのまま報告」）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| few-shot例を5件以上に増やす、またはCoT風の説明を追加する | 品質ハーネス§7のTTFT/maxTokensトレードオフ（例数が増えるほどprefillコストが増大、本サイクルの実測でもshotCount=3はtok/sが明確に低下）と、Fable 5指示「実際の採用例数shotCountは...2〜3例」の範囲を尊重し、既定2-shotのまま模範の質のみを強化する方針を採った |
+| systemInstructionのルール4をさらに強く・長くする（複数の具体例を列挙する等） | 品質ハーネス§3「英語systemは小型モデルでも指示追従が安定」の前提は簡潔さに支えられており、ルールを冗長にするとpreface文字数が増えADR-0057の`maxNumTokens`見積りも連動して増える（RAM・速度トレードオフの悪化）。実測（P7-C5b）でも具体性向上の効果は限定的だったため、これ以上ルール文だけを強化しても0.6Bモデルの根本的な指示追従力の限界を超えられない可能性が高いと判断し、追加の言語強化ではなく実測結果の正直な報告とP7-C8モデル比較への申し送りを優先した |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/prompt/PlanPromptBuilder.kt`（`JAPANESE_FEW_SHOT_SEEDS`・`ENGLISH_FEW_SHOT_SEEDS`・`buildSystemInstruction`の中身）。`app/src/test/java/com/actionstarter/ai/prompt/PlanPromptBuilderTest.kt`（9件追加）。
+
+**検証方法**: ADR-0057と同一の`:app:testDebugUnitTest --rerun`（tests=542/failures=0）・`:app:lintDebug`（error 0）・実機E2E（`build/agent-logs/p7c5b-e2e.log`）で検証した。
+
+**再検討トリガー**: P7-C8でのモデル比較（Qwen3-0.6B／1.7B／Gemma3-1B）実測後、「0.6Bモデルは周辺設計（few-shot/systemInstruction強化）だけでは深いSemantic Contextualizationに到達しない」という本ADRの結論が他モデルでも成り立つか確認すること。成り立たない場合（より大きいモデルなら同じfew-shotで具体性が出る場合）、0.6B自体の能力限界が主因という結論を補強する追加証拠になる。

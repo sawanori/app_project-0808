@@ -15,6 +15,7 @@ import com.actionstarter.ai.model.ModelCatalog
 import com.actionstarter.ai.model.ModelCatalogEntry
 import com.actionstarter.ai.model.ModelStorageImpl
 import com.actionstarter.ai.model.ModelVerifierImpl
+import com.actionstarter.ai.prompt.PlanPromptBuilder
 import com.actionstarter.domain.model.ExecutionEvent
 import com.actionstarter.domain.model.PlanningContext
 import com.actionstarter.domain.valueobject.CalendarSource
@@ -132,16 +133,44 @@ import java.util.UUID
  *   引き上げ（本実測は1024で解決）、または`shotCount`を減らす（既定2→1／0、品質ハーネス§7が
  *   既に候補として挙げていた0-shot）の少なくとも一方が必要。最終値はP7-C8のGalaxy A実測で
  *   確定すること（§11.2・§17 V-8の対象時点では想定されていなかった新規制約のため）。
+ *
+ * **P7-C5b実測（2026-08-10、AVD `actionstarter_test` x86_64/API35。ADR-0057の基盤バグ修正後、
+ * `build/agent-logs/p7c5b-e2e.log`）**: 上記の申し送り2件（`peakRamBytes`プロファイル依存・
+ * `DEFAULT_MAX_NUM_TOKENS`=256）をADR-0057で是正した後の実測。詳細な数値・display_text
+ * 前後比較表は本体タスクの最終報告参照。ここでは本ファイルの実行結果のみ記録する。
+ *
+ * 1. [probeAdapterThroughGateway_productionDefaultsAfterFix]（**`.copy()`等の手動迂回を一切
+ *    使わない、`ModelCatalog.QWEN3_0_6B_INT4_BLOCK32`と`LiteRtLmLocalLanguageModel`の完全な
+ *    既定値のみ**で5シナリオ実行）: 5件中4件`AiResult.Success`・1件`Fallback(SCHEMA_INVALID)`
+ *    （friend-birthday-party、`ContentSanityChecker`のtitleコピー検出が両attempt分とも作動し
+ *    Basicへ安全に降格——**捏造/コピー検出の安全網が実際に機能した観測事例**）。P7-C5の3メソッド
+ *    が必要としていた`maxNumTokens`／`peakRamBytes`の手動オーバーライドが**一切不要**になった
+ *    こと自体が、Part A基盤バグ修正の直接的な実機証拠である。
+ * 2. [probeAdapterThroughGateway_shotCount0]・[probeAdapterThroughGateway_shotCount2]・
+ *    [probeAdapterThroughGateway_shotCount3]（品質ハーネスQH-16、各々**独立プロセス**として
+ *    実行——理由は[runShotCountComparisonScenario]のKDoc参照）: shotCount=0は3件中1件が
+ *    `Fallback(SCHEMA_INVALID、locale不一致)`で2回とも再現、shotCount=2/3の2回目実行
+ *    （独立プロセス版）はいずれも3件ともSuccess。`peakNativeHeapBytes`はshotCount 0→2→3で
+ *    約558MB→624MB→723〜742MBと単調増加、`tokensPerSecond`はshotCount=3でのみ明確に低下
+ *    （21〜26 vs 0/2の26〜32）——**shotCountを上げるほど遅く・重くなるという直感どおりの
+ *    トレードオフを実測で確認**。品質面はshotCountで明確な優劣がつかず（0はdisplay_textの
+ *    語句重複という固有の欠陥あり、2/3は概ね同水準）、**「チームMTG」入力がshotCount=0/2/3の
+ *    いずれでも不安定**（0=locale不一致でFallback、2=無関係な「歯科検診」関連文言を生成、
+ *    3=「歯科検診」を4文字だけ生成しeventTypeも誤分類のうえretry発生）という共通の弱点を
+ *    横断的に確認した——0.6Bモデルの限界がshotCount調整だけでは解消しないことの実測証拠
+ *    （本体タスク最終報告の「0.6Bの限界に関する正直な所見」参照）。
  */
 @RunWith(AndroidJUnit4::class)
 @org.junit.Ignore(
-    "probe専用（P7-C5実測、本ファイルKDoc「実測済み」参照）。328MBモデルのadb push前提かつ" +
-        "実行に数十秒〜1分超を要するため、connectedDebugAndroidTest一括実行やG4-Eの対象に" +
+    "probe専用（P7-C5・P7-C5b実測、本ファイルKDoc「実測済み」参照）。328MBモデルのadb push前提" +
+        "かつ実行に数十秒〜数分を要するため、connectedDebugAndroidTest一括実行やG4-Eの対象に" +
         "含めないため意図的にIgnore。実測結果はクラスKDocおよびbuild/agent-logs/" +
-        "p7c5-e2e-logcat*.logに転記済み。再実行する場合は@Ignoreを外すか、" +
+        "p7c5-e2e-logcat*.log・p7c5b-e2e*.logに転記済み。再実行する場合は@Ignoreを外すか、" +
         "-Pandroid.testInstrumentationRunnerArguments.classで本クラス（または" +
         "#メソッド名で個別メソッド）を直接指定し、事前にadb push " +
-        "build/models/Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm /data/local/tmp/ を行う。"
+        "build/models/Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm /data/local/tmp/ を行う。" +
+        "shotCount比較3メソッドはプロセス分離のため必ず1メソッドずつ個別に指定して実行すること" +
+        "（[runShotCountComparisonScenario]のKDoc参照）。"
 )
 class LiteRtLmAdapterE2EProbeTest {
 
@@ -194,9 +223,45 @@ class LiteRtLmAdapterE2EProbeTest {
         runProbe(scenarioLabel = "wider-context-diagnostic", entry = widerContextEntry, maxNumTokens = WIDER_CONTEXT_DIAGNOSTIC_MAX_NUM_TOKENS)
     }
 
-    private fun runProbe(scenarioLabel: String, entry: ModelCatalogEntry, maxNumTokens: Int) {
+    /**
+     * P7-C5と同一の3件（[com.actionstarter.probe.LiteRtLmAdapterE2EProbeTest]クラスKDoc
+     * 「実測済み」参照）。改善前後比較の基準点として固定する。
+     */
+    private fun originalThreeScenarios(): List<Pair<String, PlanningContext>> = listOf(
+        "dental-checkup" to sampleContext(title = "歯科検診", eventType = "medical"),
+        "friend-wedding" to sampleContext(title = "友人の結婚式", eventType = "social"),
+        "team-meeting" to sampleContext(title = "チームMTG", eventType = "business_meeting")
+    )
+
+    /**
+     * P7-C5b（本体タスク「C. エミュ実機で改善前後比較」）向けに追加した2件。few-shot模範
+     * （[com.actionstarter.ai.prompt.PlanPromptBuilder]の「出張」「結婚式」例）と**意図的に
+     * 異なる具体的な言い回し**にし、模範の丸暗記ではなく汎化できているかを見る
+     * （「出張」ではなく「大阪出張」、「結婚式」ではなく「友人の誕生日会」）。
+     */
+    private fun additionalP7C5bScenarios(): List<Pair<String, PlanningContext>> = listOf(
+        "osaka-business-trip" to sampleContext(title = "大阪出張", eventType = "travel"),
+        "friend-birthday-party" to sampleContext(title = "友人の誕生日会", eventType = "social")
+    )
+
+    private fun fiveScenarios(): List<Pair<String, PlanningContext>> =
+        originalThreeScenarios() + additionalP7C5bScenarios()
+
+    /**
+     * @param shotCount ADR-0057・QH-16（品質ハーネス§7）。[LiteRtLmLocalLanguageModel]へ渡す
+     *   few-shot件数。既定は[PlanPromptBuilder.DEFAULT_SHOT_COUNT]（本番と同一構成）。
+     * @param scenarios 実行する予定シナリオ一覧（既定[originalThreeScenarios]、P7-C5との
+     *   直接比較用）。
+     */
+    private fun runProbe(
+        scenarioLabel: String,
+        entry: ModelCatalogEntry,
+        maxNumTokens: Int,
+        shotCount: Int = PlanPromptBuilder.DEFAULT_SHOT_COUNT,
+        scenarios: List<Pair<String, PlanningContext>> = originalThreeScenarios()
+    ) {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        logLine("===== P7-C5 adapter/gateway E2E probe start ($scenarioLabel) =====")
+        logLine("===== P7-C5b adapter/gateway E2E probe start ($scenarioLabel, shotCount=$shotCount, maxNumTokens=$maxNumTokens) =====")
 
         val pushedModel = File(PUSHED_MODEL_PATH)
         if (!pushedModel.exists()) {
@@ -221,18 +286,13 @@ class LiteRtLmAdapterE2EProbeTest {
             val gateway = LocalAiGateway(
                 model = LiteRtLmLocalLanguageModel(
                     modelPathProvider = { storage.installedModelPath()!! },
+                    shotCount = shotCount,
                     maxNumTokens = maxNumTokens
                 ),
                 modelStorage = storage,
                 modelVerifier = ModelVerifierImpl(),
                 deviceCapability = TierOverrideDeviceCapability(DeviceCapabilityImpl(context)),
                 preferences = preferences
-            )
-
-            val scenarios = listOf(
-                "dental-checkup" to sampleContext(title = "歯科検診", eventType = "medical"),
-                "friend-wedding" to sampleContext(title = "友人の結婚式", eventType = "social"),
-                "team-meeting" to sampleContext(title = "チームMTG", eventType = "business_meeting")
             )
 
             scenarios.forEach { (label, planningContext) ->
@@ -243,9 +303,74 @@ class LiteRtLmAdapterE2EProbeTest {
                 .onFailure { Log.w(TAG, "cleanup: failed to delete installed model file", it) }
             preferences.aiEnabled = originalAiEnabled
             logLine("CLEANUP modelFileDeleted=true aiEnabledRestoredTo=$originalAiEnabled")
-            logLine("===== P7-C5 adapter/gateway E2E probe end ($scenarioLabel) =====")
+            logLine("===== P7-C5b adapter/gateway E2E probe end ($scenarioLabel) =====")
         }
     }
+
+    /**
+     * P7-C5b（本体タスクA・C）: **基盤バグ修正後、production defaultsをそのまま使って**
+     * （`ModelCatalog.QWEN3_0_6B_INT4_BLOCK32`を`.copy()`せず、`LiteRtLmLocalLanguageModel`も
+     * `maxNumTokens`／`shotCount`を明示指定せず既定値のまま）5シナリオを実行する。P7-C5の
+     * 3メソッド（[probeAdapterThroughGateway_defaultCatalog]・
+     * [probeAdapterThroughGateway_smallContextProfile]・
+     * [probeAdapterThroughGateway_widerContextDiagnostic]）はいずれも本番既定値256のままでは
+     * 動かず、fixtureで`maxNumTokens`／`peakRamBytes`を手動で迂回する必要があった
+     * （クラスKDoc「実測済み」参照）。本メソッドはADR-0057の是正後、**その手動迂回が一切不要に
+     * なったこと自体を実証する**（=Part Aの基盤バグ修正が効いていることの直接証拠）。
+     */
+    @Test
+    fun probeAdapterThroughGateway_productionDefaultsAfterFix() {
+        runProbe(
+            scenarioLabel = "production-defaults-after-fix",
+            entry = ModelCatalog.QWEN3_0_6B_INT4_BLOCK32,
+            maxNumTokens = LiteRtLmLocalLanguageModel.DEFAULT_MAX_NUM_TOKENS,
+            scenarios = fiveScenarios()
+        )
+    }
+
+    /**
+     * P7-C5b（本体タスクC・品質ハーネスQH-16）: shotCount 0/2/3での品質×TTFT比較用の共通実装。
+     * [probeAdapterThroughGateway_shotCount0]・[probeAdapterThroughGateway_shotCount2]・
+     * [probeAdapterThroughGateway_shotCount3]それぞれから1回のGradle/adb起動＝**独立した
+     * アプリプロセス**として呼ばれる（3メソッドを1メソッド内でforEachループにして同一プロセス内
+     * で連続実行する設計を最初に試したが、各shotCountが独立した`LiteRtLmLocalLanguageModel`
+     * インスタンス＝独立した`Engine`を持つにもかかわらず、**どのEngineも明示的にunloadしない**
+     * ため2つ目・3つ目のEngine生成時点で1つ目のEngineがまだプロセスのネイティブヒープを
+     * 占有したまま残り、`peakNativeHeapBytes`にその蓄積分が混入して過大に出ることを実測で
+     * 発見した——本番は`AppContainer`の`by lazy`によりEngineが1個しか生成されないため
+     * この蓄積は起きないが、本テストの単一プロセス内3連続構成ではプロセス全体のOOM事前ガードが
+     * 誤って発動してしまう。**独立プロセス化がこの蓄積を構造的に断つ**ため本設計へ変更した。
+     */
+    private fun runShotCountComparisonScenario(shotCount: Int) {
+        // 既定式（LiteRtLmLocalLanguageModelのコンストラクタのデフォルト式）と同じ計算をここでも
+        // 使う。デフォルト式自体は`private`引数の初期化式であり外から読めないため、テスト側で
+        // 明示指定する必要がある（PlanPromptBuilderの200＝LiteRtLmLocalLanguageModel.
+        // MAX_OUTPUT_TOKENの複製値、両者のKDoc参照）。
+        val maxNumTokensForShotCount = PlanPromptBuilder().estimateMaxNumTokens(
+            shotCount = shotCount,
+            maxOutputToken = 200
+        )
+        runProbe(
+            scenarioLabel = "shotcount-comparison-shots$shotCount",
+            entry = ModelCatalog.QWEN3_0_6B_INT4_BLOCK32,
+            maxNumTokens = maxNumTokensForShotCount,
+            shotCount = shotCount,
+            scenarios = originalThreeScenarios()
+        )
+    }
+
+    /** shotCount=0（few-shotなし、systemInstructionのみ）。[runShotCountComparisonScenario]参照。 */
+    @Test
+    fun probeAdapterThroughGateway_shotCount0() = runShotCountComparisonScenario(shotCount = 0)
+
+    /** shotCount=2（既定、本番と同一構成）。[runShotCountComparisonScenario]参照。 */
+    @Test
+    fun probeAdapterThroughGateway_shotCount2() =
+        runShotCountComparisonScenario(shotCount = PlanPromptBuilder.DEFAULT_SHOT_COUNT)
+
+    /** shotCount=3（品質ハーネス§7の上限候補）。[runShotCountComparisonScenario]参照。 */
+    @Test
+    fun probeAdapterThroughGateway_shotCount3() = runShotCountComparisonScenario(shotCount = 3)
 
     /** `adb push`済みファイルを`ModelStorage`の本番配置規約（ADR-0053）へコピーする。 */
     private fun installModel(storage: ModelStorageImpl, entry: ModelCatalogEntry, pushedModel: File) {
