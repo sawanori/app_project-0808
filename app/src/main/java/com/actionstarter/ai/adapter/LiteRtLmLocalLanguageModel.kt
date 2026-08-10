@@ -1,10 +1,35 @@
 package com.actionstarter.ai.adapter
 
+import android.os.Debug
+import android.os.SystemClock
 import com.actionstarter.ai.AIRecoveryResponse
+import com.actionstarter.ai.BenchmarkMetricsSource
+import com.actionstarter.ai.InferenceBenchmarkSnapshot
 import com.actionstarter.ai.LocalLanguageModel
 import com.actionstarter.ai.SamplingPolicy
+import com.actionstarter.ai.prompt.PlanPromptBuilder
+import com.actionstarter.ai.schema.PlanJsonSchema
 import com.actionstarter.domain.model.PlanningContext
 import com.actionstarter.domain.model.RecoveryContext
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
+import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.ResponseFormat
+import com.google.ai.edge.litertlm.SamplerConfig
+import com.google.ai.edge.litertlm.ThinkingConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * F86実装（計画書§7.1・§8.1・§8.3・§14 P7-C1／C5／P7契約確定）。[LocalLanguageModel]（§16）の
@@ -12,62 +37,55 @@ import com.actionstarter.domain.model.RecoveryContext
  *
  * **依存方向の規律（§8.1・T-AIISO-9）**: `com.google.ai.edge.litertlm`を直接importしてよいのは
  * 本パッケージ（`ai/adapter/`）配下のみ。[com.actionstarter.ai.LocalAiGateway]を含む他の
- * `ai/`サブパッケージはこのクラスを型`LocalLanguageModel`としてのみ参照する。
+ * `ai/`サブパッケージはこのクラスを型`LocalLanguageModel`（および任意実装の
+ * [BenchmarkMetricsSource]、litertlm型を一切含まない）としてのみ参照する。
  *
- * **[generatePlan]戻り値契約変更（Fable 5裁定3、2026-08-10、ADR-0045）**: `AIPlanResponse`
- * （パース済み）ではなく**LLM生JSONテキスト（`String`）をそのまま返す**契約になった。
- * パース・①形式検証・②内容sanity検証はいずれも[com.actionstarter.ai.LocalAiGateway]側の
- * 責務であり、本クラスは`sendMessage`が返したテキストを加工せず返す
- * （[LocalLanguageModel]のKDoc参照）。
+ * **[generatePlan]戻り値契約（Fable 5裁定3、ADR-0045）**: `AIPlanResponse`ではなく**LLM生JSON
+ * テキスト（`String`）をそのまま返す**。パース・①形式検証・②内容sanity検証はいずれも
+ * [com.actionstarter.ai.LocalAiGateway]側の責務であり、本クラスは`sendMessage`が返した
+ * テキストを加工せず返す。
  *
- * **retry契約（品質ハーネス§4/§6・Fable 5裁定・retry契約確定、2026-08-10、ADR-0049。
- * さらにFable 5裁定9・ADR-0050で解決済み）**:
- * [com.actionstarter.ai.LocalAiGateway]がスキーマ検証／内容sanityの不合格を検知して
- * 本メソッドをもう一度呼び出す場合（retry 1回、Gateway側の責務）、その2回目の生成は
- * 「**新規single-turnセッション＋微小摂動（`temperature 0.1〜0.2, topK=5`程度）＋静的な
- * 簡潔化制約文の追加**」（1回目の失敗出力を含む会話履歴を持たない、マルチターン自己修正では
- * ない）で行う（S-2是正・Gemini G1 CRITICAL #1）。**「Gateway起点の『これは何回目の呼び出しか』を
- * どう本クラスへ伝えるか」は、ADR-0049時点では未確定のまま残されていたが、Fable 5裁定9
- * （ADR-0050）で解決した**: §16の`LocalLanguageModel`インタフェースへ
- * [com.actionstarter.ai.SamplingPolicy]引数を追加し（ADR-0049「代替案と却下理由」が一度
- * 却下した設計をFable 5裁定9が明示的に覆した）、Gatewayが1回目=
- * [com.actionstarter.ai.SamplingPolicy.Primary]・2回目=
- * [com.actionstarter.ai.SamplingPolicy.Retry]を明示的に渡す設計へ確定した。本クラスは
- * 「これは何回目の呼び出しか」を自ら判断する内部カウンタを持つ必要がない——渡された
- * [com.actionstarter.ai.SamplingPolicy]の[com.actionstarter.ai.SamplingPolicy.topK]／
- * [com.actionstarter.ai.SamplingPolicy.temperature]をそのままLiteRT-LMの`SamplerConfig`へ
- * マップし、[com.actionstarter.ai.SamplingPolicy.appendConcisenessConstraint]が`true`のときのみ
- * data message末尾に固定の簡潔化制約文を追記する（`SamplerConfig`の`topP`・`seed`の具体値、
- * および新規single-turnセッション生成の実装自体はP7-C5で行う。[com.actionstarter.ai.
- * SamplingPolicy]のKDoc参照）。
+ * **retry契約の実装（品質ハーネス§4/§6、ADR-0049・ADR-0050、P7-C5で確定）**: [model]呼び出しの
+ * 「これは何回目か」は[com.actionstarter.ai.SamplingPolicy]引数で明示的に渡されるため、本クラスは
+ * 呼び出し回数を追跡しない。[samplingPolicy]の[SamplingPolicy.topK]／[SamplingPolicy.temperature]を
+ * [toSamplerConfig]でLiteRT-LMの`SamplerConfig(topK, topP, temperature, seed)`へマップし
+ * （`topP`／`seed`の具体値はADR-0056参照）、[SamplingPolicy.appendConcisenessConstraint]が
+ * `true`のときのみ[buildDataMessage]がdata message末尾へ固定簡潔化制約文を追記する。**さらに
+ * 「新規single-turnセッション」の要求（S-2是正・Gemini G1 CRITICAL #1）は、[generatePlan]が
+ * 呼び出しのたびに新しい[Conversation]を生成する設計（下記「Engine/Conversationのライフサイクル」）
+ * によって自動的に満たされる**——2回目（Retry）の呼び出しも独立した新規Conversationであり、
+ * 1回目の失敗出力を含む会話履歴を一切引き継がない。
  *
- * **P7-C0実測（GO判定、計画書§14 P7-C0行・§17 V-1〜V-4・V-8）で確認済みのAPI形状**
- * （実装はP7-C5、`LiteRtLmProbeTest`の実測パターンをそのまま踏襲する想定）:
- * - `Engine(EngineConfig(modelPath, backend = Backend.CPU(threadCount = N), maxNumTokens))`
- *   → `.initialize()`
- * - `engine.createConversation(ConversationConfig(enableResponseFormat = true,
- *   thinkingConfig = ThinkingConfig(enableThinking = false), maxOutputToken = N,
- *   systemInstruction = ..., initialMessages = ..., samplerConfig = ...,
- *   prefillPrefaceOnInit = true))`（品質ハーネス§1・§3・§4・§10で追加確認済みのフィールド。
- *   `systemInstruction`は[com.actionstarter.ai.prompt.PlanPromptBuilder.buildSystemInstruction]、
- *   `initialMessages`は[com.actionstarter.ai.prompt.PlanPromptBuilder.buildFewShot]の変換先）
- * - `conversation.sendMessage(text, maxOutputToken, thinkingConfig,
- *   responseFormat = ResponseFormat.json(schema))`（同期API）。cancellation協調が必要な経路では
- *   `sendMessageAsync(...): Flow<Message>`を使う（§8.3、§8.7原則3の作り込み先）。
- * - `Engine`／`Conversation`はいずれも`AutoCloseable`。`close()`は**冪等ではない**
- *   （V-2実測: close済み／未初期化への再呼び出しは`IllegalStateException`）。
+ * **Engine/Conversationのライフサイクル（R-7・T-GW-16・§13 #8、P7-C5で確定）**:
+ * - **Engine**: プロセス内で高々1個。[obtainEngine]が[engineLifecycleMutex]配下で遅延生成し、
+ *   以後の呼び出しは同一インスタンスを再利用する（モデルロードは通常プロセス生涯で1回のみ）。
+ * - **Conversation**: [generatePlan]の呼び出しごとに新規生成し、`finally`で必ず`close()`する。
+ *   毎回`systemInstruction`＋`initialMessages`（few-shot）のprefaceを`prefillPrefaceOnInit=true`で
+ *   再prefillする（品質ハーネス§3「動的単一言語few-shot」・§7「各generatePlanでpreface再prefill」）。
+ *   これにより「KVキャッシュのみクリアして再利用する」（Engineの重みは保持しつつ会話状態は
+ *   都度リセットする）というR-7の要求と、retryの新規single-turnセッション要求を同一の仕組みで
+ *   満たす。
+ * - **`close()`は非冪等**（V-2実測、`LiteRtLmProbeTest`）。Conversationは1回だけ`close()`し、
+ *   Engineは`OutOfMemoryError`発生時の「アンロード」（[unloadEngine]、§13 #8二次防御）以外では
+ *   閉じない。
  *
- * **モデルロードの遅延・再利用（R-7・T-GW-16）**: [modelPathProvider]は呼び出し時点で都度
- * パスを解決する関数として受け取る（`AppContainer`構築時点でモデルが未導入でもコンパイル・
- * DI結線が成立する）。`Engine`／`Conversation`はP7-C5で本クラスの内部状態として保持し、
- * 初回[generatePlan]呼び出しまで生成を遅延させ、2回目以降は再ロードせず再利用する
- * （KVキャッシュのみクリア）。OOM等の異常時に内部状態を破棄し次回呼び出しで再生成する
- * 「アンロード」もこの内部状態の一部として実装する（§13 #8）。この内部ライフサイクル管理は
- * [LocalLanguageModel]契約（§16、凍結）には現れない実装詳細であり、`close()`相当の公開APIは
- * 意図的に持たない（呼び出し元の[com.actionstarter.ai.LocalAiGateway]は`LocalLanguageModel`型の
- * みを介して本クラスを扱うため）。
+ * **PII最小化（§10・§34、Gateway統合配線タスク指示）**: [PlanPromptBuilder.build]は
+ * カレンダー本文（`notes`）を含まない設計（P7-C3実装済み）であり、本クラスはこれをそのまま
+ * data messageとして使う。few-shot例（[PlanPromptBuilder.buildFewShot]）も固定の合成例であり
+ * 実データを含まない。
  *
- * 契約scaffold（TDD厳守）時点では宣言のみであり、実装本体はP7-C5で行う。
+ * **実測メトリクス（ADR-0055、AiMetrics実測差し替え）**: 本クラスは新設[BenchmarkMetricsSource]を
+ * 追加実装し、直近の[generatePlan]呼び出しで得た[InferenceBenchmarkSnapshot]を保持する。
+ * [com.actionstarter.ai.LocalAiGateway]はこれを型検査（`as?`）で任意に読み出す
+ * （[BenchmarkMetricsSource]のKDoc参照。§16の凍結`LocalLanguageModel`interfaceには一切
+ * 手を加えていない）。`modelLoadMs`はP7-C0 `LiteRtLmProbeTest`実測に倣い`SystemClock.
+ * elapsedRealtime()`のwall-clock差分を使う——同実測が`BenchmarkInfo.initTimeInSecond`について
+ * 「自前のwall-clockロード時間や試験全体の経過時間と桁が一致しない」（数値の意味を断定できない）
+ * ことを発見済みのため、これを`modelLoadMs`の情報源として採用しない（ADR-0056）。
+ * `firstTokenMs`／`outputTokens`／`tokensPerSecond`は`Conversation.getBenchmarkInfo()`
+ * （`ExperimentalFlags.enableBenchmark = true`が前提、同じくP7-C0実測で発見）から取得する。
+ * `peakNativeHeapBytes`はP7-C0 `LiteRtLmProbeTest`の`RamSampler`と同一方式（バックグラウンド
+ * スレッドによる定期サンプリング）の[NativeHeapPeakSampler]で取得する。
  *
  * @param modelPathProvider 導入済みモデルの絶対パスを返す関数
  *   （[com.actionstarter.ai.model.ModelStorage.installedModelPath]相当）。呼び出し時点で
@@ -75,29 +93,80 @@ import com.actionstarter.domain.model.RecoveryContext
  *   チェックが先に走ることを前提に、ここでの例外送出はガードをすり抜けた場合の防御的
  *   フォールバックとして扱う。
  * @param maxNumTokens コンテキスト長（V-8。小コンテキスト・テストプロファイルは128〜256、
- *   §11.2）。既定値は本番運用値未確定のため暫定。
+ *   §11.2）。既定値はP7-C1が定めた暫定値のまま変更していない——本番運用値の確定はP7-C8実機
+ *   プローブの責務であり（計画書§17 V-8・§11.3）、P7-C5はこれを追い越して確定させない
+ *   （ADR-0056の判断根拠を参照）。
  * @param threadCount `Backend.CPU(threadCount = ...)`（V-3実測で存在確認済み）。既定4は
  *   P7-C0実測条件と同一値。
  */
+@OptIn(ExperimentalApi::class)
 class LiteRtLmLocalLanguageModel(
     private val modelPathProvider: () -> String,
     private val maxNumTokens: Int = DEFAULT_MAX_NUM_TOKENS,
     private val threadCount: Int = DEFAULT_THREAD_COUNT
-) : LocalLanguageModel {
+) : LocalLanguageModel, BenchmarkMetricsSource {
 
     override val modelIdentifier: String = "litert-lm:qwen3-0.6b-dynamic-int4-block32"
 
-    override suspend fun generatePlan(context: PlanningContext, samplingPolicy: SamplingPolicy): String {
-        TODO(
-            "P7-C5で実装。samplingPolicy（Fable 5裁定9・ADR-0050、既定Primary/retry時Retry）の" +
-                "topK/temperatureをSamplerConfigへマップし、appendConcisenessConstraint=trueのときのみ" +
-                "data message末尾に固定簡潔化制約文を追記する。Engine/Conversationの遅延生成・" +
-                "ResponseFormat.json(PlanJsonSchema.TEXT)・PlanPromptBuilder.build/" +
-                "buildSystemInstruction/buildFewShotの結果をsendMessageへ渡し、生成された" +
-                "生JSONテキストをそのまま返す（パース・検証はしない。計画書§8.3・§8.4、" +
-                "Fable 5裁定3・ADR-0045）"
-        )
-    }
+    private val promptBuilder = PlanPromptBuilder()
+
+    /** [engineLifecycleMutex]配下でのみ読み書きする遅延生成Engine（R-7）。 */
+    private var engine: Engine? = null
+
+    /** Engineの生成・破棄（アンロード）を直列化する（§13 #8）。 */
+    private val engineLifecycleMutex = Mutex()
+
+    @Volatile
+    private var lastMetrics: InferenceBenchmarkSnapshot? = null
+
+    override fun lastInferenceMetrics(): InferenceBenchmarkSnapshot? = lastMetrics
+
+    override suspend fun generatePlan(context: PlanningContext, samplingPolicy: SamplingPolicy): String =
+        withContext(Dispatchers.IO) {
+            val (activeEngine, modelLoadMs) = obtainEngine()
+
+            var conversation: Conversation? = null
+            try {
+                conversation = activeEngine.createConversation(buildConversationConfig(context, samplingPolicy))
+                val dataMessage = buildDataMessage(context, samplingPolicy)
+
+                val ramSampler = NativeHeapPeakSampler().apply { start() }
+                val response = try {
+                    conversation.sendMessage(
+                        dataMessage,
+                        maxOutputToken = MAX_OUTPUT_TOKEN,
+                        thinkingConfig = DISABLED_THINKING_CONFIG,
+                        responseFormat = ResponseFormat.json(PlanJsonSchema.TEXT)
+                    )
+                } finally {
+                    ramSampler.stop()
+                }
+
+                val benchmarkInfo = runCatching { conversation.getBenchmarkInfo() }.getOrNull()
+                lastMetrics = InferenceBenchmarkSnapshot(
+                    modelLoadMs = modelLoadMs,
+                    firstTokenMs = ((benchmarkInfo?.timeToFirstTokenInSecond ?: 0.0) * MILLIS_PER_SECOND).toLong(),
+                    outputTokens = benchmarkInfo?.lastDecodeTokenCount ?: 0,
+                    tokensPerSecond = benchmarkInfo?.lastDecodeTokensPerSecond ?: 0.0,
+                    peakNativeHeapBytes = ramSampler.peakBytes()
+                )
+
+                extractText(response)
+            } catch (t: OutOfMemoryError) {
+                // §13 #8二次防御: 事前ガード（Gateway側§8.6 #7）をすり抜けた残余ケース。
+                // 内部状態（Engine）を破棄し、次回呼び出しで再生成させる（アンロード）。
+                unloadEngine()
+                throw t
+            } finally {
+                try {
+                    conversation?.close()
+                } catch (t: Throwable) {
+                    // close()は非冪等（V-2実測）。後続呼び出しは新規Conversationを生成するため
+                    // ここでの失敗は次回呼び出しに影響しない。呼び出し元の結果を壊さないよう
+                    // 握り潰す（Engine自体はunloadしていないため利用可能なまま）。
+                }
+            }
+        }
 
     override suspend fun generateRecovery(context: RecoveryContext): AIRecoveryResponse {
         TODO(
@@ -106,11 +175,176 @@ class LiteRtLmLocalLanguageModel(
         )
     }
 
+    /**
+     * [engine]が未生成なら[modelPathProvider]・[maxNumTokens]・[threadCount]から新規生成し
+     * `initialize()`する（R-7、遅延初期化）。既に生成済みならそれを再利用し、ロード時間は`0`を
+     * 返す（[InferenceBenchmarkSnapshot.modelLoadMs]のKDoc「再利用した場合は0」参照）。
+     */
+    private suspend fun obtainEngine(): Pair<Engine, Long> = engineLifecycleMutex.withLock {
+        val existing = engine
+        if (existing != null) return@withLock existing to 0L
+
+        ExperimentalFlags.enableBenchmark = true
+
+        val engineConfig = EngineConfig(
+            modelPath = modelPathProvider(),
+            backend = Backend.CPU(threadCount = threadCount),
+            maxNumTokens = maxNumTokens
+        )
+        val loadStartMs = SystemClock.elapsedRealtime()
+        val created = Engine(engineConfig)
+        created.initialize()
+        val modelLoadMs = SystemClock.elapsedRealtime() - loadStartMs
+        engine = created
+        created to modelLoadMs
+    }
+
+    /** OOM二次防御（§13 #8）。[engine]を破棄し、次回[obtainEngine]で再生成させる。 */
+    private suspend fun unloadEngine() = engineLifecycleMutex.withLock {
+        try {
+            engine?.close()
+        } catch (t: Throwable) {
+            // close()は非冪等（V-2）。アンロード目的の破棄では失敗しても内部参照だけ確実にnull化する。
+        } finally {
+            engine = null
+        }
+    }
+
+    /**
+     * `systemInstruction`＋`initialMessages`（few-shot）＋[samplingPolicy]から導いた
+     * `samplerConfig`を持つ[ConversationConfig]を組み立てる（品質ハーネス§3・§4・§10）。
+     * `prefillPrefaceOnInit = true`でこのprefaceを会話生成時にprefillする（品質ハーネス§3末尾）。
+     */
+    private fun buildConversationConfig(context: PlanningContext, samplingPolicy: SamplingPolicy): ConversationConfig {
+        val fewShotMessages = promptBuilder.buildFewShot(context.locale).flatMap { example ->
+            listOf(Message.user(example.userTurn), Message.model(example.modelTurn))
+        }
+        return ConversationConfig(
+            enableResponseFormat = true,
+            systemInstruction = Contents.of(promptBuilder.buildSystemInstruction(context.locale)),
+            initialMessages = fewShotMessages,
+            samplerConfig = toSamplerConfig(samplingPolicy),
+            thinkingConfig = DISABLED_THINKING_CONFIG,
+            maxOutputToken = MAX_OUTPUT_TOKEN,
+            prefillPrefaceOnInit = true
+        )
+    }
+
+    /**
+     * [PlanPromptBuilder.build]（data message）に、[SamplingPolicy.appendConcisenessConstraint]が
+     * `true`のときのみ固定簡潔化制約文を追記する（品質ハーネス§6「静的制約の追加（2回目のみ）」・
+     * [SamplingPolicy]のKDoc）。
+     */
+    private fun buildDataMessage(context: PlanningContext, samplingPolicy: SamplingPolicy): String {
+        val dataMessage = promptBuilder.build(context)
+        return if (samplingPolicy.appendConcisenessConstraint) {
+            "$dataMessage\n$CONCISENESS_CONSTRAINT_SUFFIX"
+        } else {
+            dataMessage
+        }
+    }
+
+    /**
+     * [SamplingPolicy.topK]／[SamplingPolicy.temperature]をそのまま転記し、[SamplingPolicy]自体が
+     * 持たない`topP`／`seed`（品質ハーネス§4の値、ADR-0056で確定）を付与する。`when`は
+     * [SamplingPolicy]の2値（[SamplingPolicy.Primary]／[SamplingPolicy.Retry]）に対して
+     * 網羅的であり、将来値が増えた場合はコンパイルエラーで気づける。
+     */
+    private fun toSamplerConfig(samplingPolicy: SamplingPolicy): SamplerConfig = when (samplingPolicy) {
+        SamplingPolicy.Primary -> SamplerConfig(
+            topK = samplingPolicy.topK,
+            topP = PRIMARY_TOP_P,
+            temperature = samplingPolicy.temperature,
+            seed = PRIMARY_SEED
+        )
+        SamplingPolicy.Retry -> SamplerConfig(
+            topK = samplingPolicy.topK,
+            topP = RETRY_TOP_P,
+            temperature = samplingPolicy.temperature,
+            seed = RETRY_SEED
+        )
+    }
+
+    /** `LiteRtLmProbeTest.extractText`と同一方式。Textコンテンツのみを連結する。 */
+    private fun extractText(message: Message): String =
+        message.contents.contents.joinToString(separator = "") { content ->
+            (content as? Content.Text)?.text.orEmpty()
+        }
+
+    /**
+     * 推論中のネイティブヒープをバックグラウンドスレッドで定期サンプリングしピークを保持する
+     * （§11.1、P7-C0 `LiteRtLmProbeTest.RamSampler`と同一方式をproduction向けに簡略化）。
+     */
+    private class NativeHeapPeakSampler {
+        private val running = AtomicBoolean(false)
+        private val peak = AtomicLong(0)
+        private var thread: Thread? = null
+
+        fun start() {
+            running.set(true)
+            thread = Thread {
+                while (running.get()) {
+                    val current = Debug.getNativeHeapAllocatedSize()
+                    if (current > peak.get()) peak.set(current)
+                    try {
+                        Thread.sleep(SAMPLING_INTERVAL_MILLIS)
+                    } catch (e: InterruptedException) {
+                        return@Thread
+                    }
+                }
+            }.apply {
+                isDaemon = true
+                start()
+            }
+        }
+
+        fun stop() {
+            running.set(false)
+            thread?.join(SAMPLER_JOIN_TIMEOUT_MILLIS)
+        }
+
+        fun peakBytes(): Long = peak.get()
+
+        private companion object {
+            const val SAMPLING_INTERVAL_MILLIS = 200L
+            const val SAMPLER_JOIN_TIMEOUT_MILLIS = 2_000L
+        }
+    }
+
     companion object {
-        /** §11.2小コンテキスト・テストプロファイルの上限（暫定既定値）。 */
+        /** §11.2小コンテキスト・テストプロファイルの上限（P7-C1が定めた暫定既定値、無変更）。 */
         const val DEFAULT_MAX_NUM_TOKENS: Int = 256
 
         /** P7-C0実測条件（`Backend.CPU(threadCount = 4)`）と同一値。 */
         const val DEFAULT_THREAD_COUNT: Int = 4
+
+        /**
+         * 出力トークン上限（ADR-0056）。確定契約（ADR-0045・0046）でstepあたり
+         * `action_type`／`display_text`の2フィールドのみに削減されたため、P7-C0実測
+         * （6フィールド・1step固定で56 decodeトークン）より小さい単価になる見込みだが、
+         * 安全側に維持しつつmaxItems=8まで許容する値として200を既定とする。
+         */
+        private const val MAX_OUTPUT_TOKEN = 200
+
+        private const val MILLIS_PER_SECOND = 1000.0
+
+        /** 品質ハーネス§4「1回目（既定）」の`SamplerConfig(topK=1, topP=1.0, temperature=0.0, seed=0)`。 */
+        private const val PRIMARY_TOP_P = 1.0
+        private const val PRIMARY_SEED = 0
+
+        /** 品質ハーネス§4「2回目（再試行）」。1回目と異なるseedにする（S-2是正の「条件を変える」の一部）。 */
+        private const val RETRY_TOP_P = 0.95
+        private const val RETRY_SEED = 1
+
+        private val DISABLED_THINKING_CONFIG = ThinkingConfig(enableThinking = false)
+
+        /**
+         * 品質ハーネス§6・[SamplingPolicy]のKDocが指定する固定簡潔化制約文（逐語一致）。
+         * 「1回目の失敗を参照させる動的な是正指示」ではなく、静的な文言のみを追加する
+         * （Gemini G1 CRITICAL #1）。
+         */
+        private const val CONCISENESS_CONSTRAINT_SUFFIX =
+            "Be extra concise. Do not include any time, date, number, address, or duplicate " +
+                "action_type. Output valid JSON only, following the schema exactly."
     }
 }

@@ -1066,6 +1066,60 @@ ADR-0051のとおり、**`LocalAiGateway`のprivateフィールドとして直�
 
 **証拠ファイル**: `build/agent-logs/p7c4-compile.log`（`:app:compileDebugKotlin`／`:app:compileDebugUnitTestKotlin`成功）・`p7c4-green-ModelStorage.log`（11/11 Green）・`p7c4-green-ModelDownloader.log`（10/10 Green）・`p7c4-green-LocalAiGateway.log`（18/18 Green）・`p7c4-full.log`（`:app:testDebugUnitTest --rerun`全体、tests=528/failures=0/errors=0/skipped=1）・`p7c4-lint.log`（`:app:lintDebug --rerun-tasks`、BUILD SUCCESSFUL・error 0）。
 
+### 14.8 P7-C5完了記録（2026-08-10確定・domain-implementer）
+
+**結論**: `LiteRtLmLocalLanguageModel.generatePlan`（F86本体）を実装し、実機（AVD `actionstarter_test` x86_64/API35）で**実推論が成功することを確認した**（`AiResult.Success`・`schemaValid=true`・`sanityPassed=true`）。`AiMetrics`実測配線（新設`BenchmarkMetricsSource`、ADR-0055）・`AppContainer`統合配線（P7-C4で先行配線済みを確認・無変更）も完了。**ただし、P7-C1が定めた`DEFAULT_MAX_NUM_TOKENS=256`のままでは本番プロンプト一式（system instruction＋既定2-shot few-shot＋data message）が実機でネイティブ`FAILED_PRECONDITION`により失敗することを実測し、`maxNumTokens=1024`への引き上げで解消することを確認した**（ADR-0056）。この値自体はP7-C8実機プローブの確定事項として据え置き、本サイクルでは変更していない。`:app:testDebugUnitTest --rerun`でtests=528/failures=0/errors=0/skipped=1（P7-C4ベースラインと完全一致、既存528件の回帰0件）、`:app:lintDebug --rerun-tasks`でBUILD SUCCESSFUL・error 0（warning 22件は全て既存分）。
+
+#### `LiteRtLmLocalLanguageModel`実装内容
+
+- **Engine**: プロセス内で高々1個。`engineLifecycleMutex`（Mutex）配下で遅延生成し（初回`generatePlan`呼び出し時）、以後は再利用する（R-7・T-GW-16）。`ExperimentalFlags.enableBenchmark = true`をEngine生成直前に設定する（P7-C0発見の一次ソース未記載の挙動、`getBenchmarkInfo()`の前提）。
+- **Conversation**: `generatePlan`呼び出しごとに新規生成し`finally`で`close()`する。毎回`systemInstruction`（`PlanPromptBuilder.buildSystemInstruction(locale)`）＋`initialMessages`（`PlanPromptBuilder.buildFewShot(locale)`を`Message.user`/`Message.model`へ変換）のprefaceを`prefillPrefaceOnInit=true`で再prefillする。この設計により「Engineの重みは保持しつつ会話状態は都度リセットする」（KVキャッシュクリア相当）と「retryは新規single-turnセッション」（S-2是正・Gemini G1 CRITICAL #1）の両要求を単一の仕組みで満たした（ADR-0056決定1）。
+- **`SamplingPolicy`→`SamplerConfig`のマッピング**: `topK`／`temperature`は`SamplingPolicy`の値をそのまま転記。`topP`／`seed`（`SamplingPolicy`が持たない品質ハーネス§4の値）はPrimary=`topP=1.0,seed=0`、Retry=`topP=0.95,seed=1`で確定（ADR-0056決定2）。`SamplingPolicy.appendConcisenessConstraint=true`のときのみdata message末尾へ固定簡潔化制約文（品質ハーネス§6の逐語文言）を追記する。
+- **`AiMetrics`実測配線（ADR-0055）**: 新設`ai/BenchmarkMetricsSource.kt`（`BenchmarkMetricsSource`interface・`InferenceBenchmarkSnapshot`）を`LiteRtLmLocalLanguageModel`が追加実装し、`LocalAiGateway`が`(model as? BenchmarkMetricsSource)?.lastInferenceMetrics()`で任意に読み出す設計とした。§16の凍結`LocalLanguageModel`interfaceは無変更。`modelLoadMs`は`SystemClock.elapsedRealtime()`のwall-clock差分（P7-C0が「`BenchmarkInfo.initTimeInSecond`は数値の意味を断定できない」と指摘済みのため不採用、ADR-0056決定3）、`firstTokenMs`／`outputTokens`／`tokensPerSecond`は`BenchmarkInfo`の対応フィールドから、`peakNativeHeapBytes`はP7-C0 `RamSampler`と同一方式のバックグラウンドサンプラから取得する。
+- **`AppContainer`統合配線**: P7-C4時点で`localAiGateway`が`LiteRtLmLocalLanguageModel`を実装として使う配線が**既に完了していた**（`di/AppContainer.kt`の`localAiGateway`プロパティ）ため、本サイクルでの追加変更は不要だった（確認のみ）。AI既定OFF（`AiPreferencesImpl.aiEnabled`既定`false`）は無変更であり、通常フローに影響しない。
+
+#### 実機E2E実測（`app/src/androidTest/java/com/actionstarter/probe/LiteRtLmAdapterE2EProbeTest.kt`、`@Ignore`既定・3メソッド）
+
+正式なT-P7E2E-1〜5（JNI疎通・機内モード・StrictMode・破損モデル・画面回転耐性）は計画書§14.6の記録どおりP7-C7スコープであり、本プローブはこれを代替しない。P7-C5自身の検証として、実装した`generatePlan`本体とGateway統合配線（3段検証パイプライン込み）が実機で動くかを実測した。日本語の合成予定3件（歯科検診／友人の結婚式／チームMTG、PIIなし）で試行。
+
+| 実行 | 設定 | 結果 |
+|---|---|---|
+| `probeAdapterThroughGateway_defaultCatalog` | `maxNumTokens=256`（P7-C1既定）・本番`ModelCatalogEntry.peakRamBytes`=2,890MB（フルコンテキスト実測値）そのまま | 3件とも`Fallback(OUT_OF_MEMORY_PREVENTED)`。§8.6 #7の主防御がAVDの実際の空きメモリ不足を検知し、**推論を一度も開始せず**安全側に停止した（正しい防御動作。ただし`peakRamBytes`がプロファイル非依存の単一値であるため過大判定というギャップも判明、下記「発見」参照） |
+| `probeAdapterThroughGateway_smallContextProfile` | `maxNumTokens=256`のまま・`peakRamBytes`をfixtureで1GiBへ下げOOMガードのみ迂回 | OOMガードは通過したが3件とも`Fallback(UNKNOWN)`、detail=`LiteRtLmJniException: FAILED_PRECONDITION: Chosen prefill work group size exceeds available state entries (73).`（本番プロンプト一式がコンテキスト予算を超過、新規発見） |
+| `probeAdapterThroughGateway_widerContextDiagnostic` | `maxNumTokens=1024`・`peakRamBytes`fixture=1.25GiB | **3件とも`AiResult.Success`**（詳細は下記実測値・生成テキスト参照） |
+
+**AiMetrics実測値**（`probeAdapterThroughGateway_widerContextDiagnostic`、3件連続実行）:
+
+| 予定 | modelLoadMs | firstTokenMs | tokensPerSecond | outputTokens | peakNativeHeapBytes | totalMs |
+|---|---|---|---|---|---|---|
+| 歯科検診（1件目） | 4,073 | 1,878 | 25.73 | 38 | 約536MB | 12,264 |
+| 友人の結婚式（2件目） | **0**（Engine再利用） | 1,556 | 27.53 | 31 | 約545MB | 6,358 |
+| チームMTG（3件目） | **0**（Engine再利用） | 1,534 | 35.22 | 31 | 約542MB | 5,326 |
+
+2・3件目の`modelLoadMs=0`はEngine再利用（R-7・T-GW-16）が実機で機能している直接証拠。**x86_64エミュレータの数値であり、P7-C0の留保どおりGalaxy A実機の性能を一切示唆しない**（絶対値の確定はP7-C8）。
+
+**実際に生成された`display_text`（Semantic Contextualizationの実測。Basic版`step_title_preparation`="出かける準備をする"〔`features/common/StepTitle.kt`、予定種別に関わらず常に同一固定文〕との比較）**:
+
+| 予定 | `action_type` | `display_text`（実生成） | Basic版との対比 |
+|---|---|---|---|
+| 歯科検診 | `prepare_items` | 「歯科検診に手順を計らる」 | Basicの汎用文とは異なり予定名に反応しているが、文法がやや不自然（0.6Bモデルの限界が観測された） |
+| 友人の結婚式 | `commute` | 「結婚式に参加する」 | 自然な日本語で予定固有（Basicの「出かける準備をする」より具体的）。ただしfew-shot模範の「ご祝儀を準備する」のような文化的踏み込みまでは至っていない |
+| チームMTG | `prepare_items` | 「チームMTGの準備」 | 予定名を含むが、`ContentSanityChecker`のコピー閾値（占有率80%）を僅かに下回り（6/8=75%）合格。タイトルとほぼ同一の文言になるリスクの実例 |
+
+3件とも`steps`は1件のみ（few-shot模範が示す3ステップ構成より少ない。既定`SamplingPolicy.Primary`＝実質greedyの保守性か0.6Bモデルの限界かは本実測（n=3）では断定できない）。**総括**: Semantic Contextualizationは表層レベル（予定名を認識した反応）では確認できたが、few-shotが示す「予定の意味を理解した個別具体的な行動」（ご祝儀・切符確認等）の深さには、この少数サンプルでは届いていない。P7-C8の人手評価（品質ハーネス§8）で母数を増やして再評価する必要がある。
+
+#### 発見・申し送り事項（P7-C6/P7-C8向け、ADR-0055・0056に記録済み）
+
+1. **`DEFAULT_MAX_NUM_TOKENS=256`は本番プロンプト一式では実機で機能しない**。`maxNumTokens=1024`への引き上げ、または`shotCount`削減（品質ハーネス§7の0-shot候補）の少なくとも一方が必要。最終値はP7-C8のGalaxy A実測で確定すること。
+2. **`ModelCatalogEntry.peakRamBytes`がコンテキストプロファイル非依存の単一値**であるため、§8.6 #7のOOM事前ガードが小コンテキスト・テストプロファイルの実要求量より過大な閾値で判定してしまう（AVDで実測確認）。プロファイル別`peakRamBytes`の要否をP7-C8で検討すること。
+3. `MEMORY_SAFETY_MARGIN_BYTES=512MB`・タイムアウト仮20,000ms（§8.6冒頭）はいずれもP7-C3からの申し送りのまま未確定（G4-D実機実測待ち、変更なし）。
+
+#### cleanup
+
+`adb push`したモデルは`app/src/androidTest`の`LiteRtLmAdapterE2EProbeTest`が各テストメソッドの`finally`でアプリ内部ストレージ（`noBackupFilesDir/models/`）から`ModelStorage.delete()`により削除する。実測後に`/data/user/0/com.actionstarter/no_backup/`・`shared_prefs/ai_preferences.xml`をroot adb shellで確認し、**残存なし**を確認済み（`connectedDebugAndroidTest`のテストランナー自体がテスト間でアプリデータをクリアするため、二重に保護されている）。ホスト側`/data/local/tmp/Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm`（328MB）はアプリのストレージではないため放置してもアプリ動作に影響しないが、`adb shell rm /data/local/tmp/Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm`で手動削除可能（未実施のまま申し送り）。`AiPreferencesImpl.aiEnabled`はテスト内で`true`へ一時変更後、`finally`で実行前の値（`false`）へ復元済み。
+
+**証拠ファイル**: `build/agent-logs/p7c5-jvm.log`（`:app:testDebugUnitTest --rerun`、tests=528/failures=0/errors=0/skipped=1）・`p7c5-lint.log`（`:app:lintDebug --rerun-tasks`、BUILD SUCCESSFUL・error 0）・`p7c5-e2e.log`（3実行分のLogcat全量＋JUnit結果XML統合）・`p7c5-e2e-result.xml`（最終実行分のJUnit結果、1件・failures=0）・`p7c5-e2e-logcat.log`／`p7c5-e2e-logcat-run2.log`／`p7c5-e2e-logcat-run3.log`（実行別Logcat）。
+
 ---
 
 ## §15. リスク

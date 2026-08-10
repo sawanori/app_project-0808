@@ -101,11 +101,14 @@ import kotlinx.coroutines.withTimeout
  * （T-GW-6）、retry 1回（T-GW-7・8・19・20）、例外→[AiResult.Fallback]写像
  * （T-GW-4・5・9・10・12・13・17）を実装した（T-GW-1〜10・12・13・15・17・19・20・T-AIMET-1。
  * 対象外ID・帰属確定は`LocalAiGatewayTest`のクラスKDoc、および裁定6・8〔ADR-0049〕参照）。
- * [AiMetrics]の`modelLoadMs`／`firstTokenMs`／`outputTokens`／`tokensPerSecond`／
- * `peakNativeHeapBytes`は、実測用の`BenchmarkInfo`を持つ[com.actionstarter.ai.adapter.
- * LiteRtLmLocalLanguageModel]（P7-C5）が未実装のため`0`のプレースホルダとした
- * （`totalMs`のみGateway境界で実測可能なためKotlin側で計測する）。いずれのフィールドも
- * `LocalAiGatewayTest`で具体値を検証されておらず、後方互換に問題はない。
+ * **P7-C5実装済み（ADR-0055）**: [AiMetrics]の`modelLoadMs`／`firstTokenMs`／`outputTokens`／
+ * `tokensPerSecond`／`peakNativeHeapBytes`は、[model]が新設[BenchmarkMetricsSource]を追加実装
+ * している場合に限りそこから得た[InferenceBenchmarkSnapshot]の実測値を使う（[invokeModel]・
+ * [buildMetrics]参照）。[model]がこれを実装しない場合（`LocalAiGatewayTest`の
+ * `FakeLocalLanguageModel`等）は従来どおり`0`のプレースホルダのままであり、既存テストの
+ * 期待値に影響しない（後方互換）。§16の凍結`LocalLanguageModel`interfaceには一切手を加えて
+ * いない（[BenchmarkMetricsSource]のKDoc参照）。`totalMs`は引き続きGateway境界での実測
+ * （`System.nanoTime()`差分）を使う。
  *
  * @param model モデル実装。[LocalLanguageModel]型で受け取ることで§16「モデルは技術検証で
  *   交換可能にする」を維持する（本クラス自身は`com.google.ai.edge.litertlm`を一切importしない。
@@ -243,11 +246,16 @@ class LocalAiGateway(
 
         val primaryAttempt = invokeModel(context, SamplingPolicy.Primary)
         if (primaryAttempt is ModelAttempt.Failed) return primaryAttempt.fallback
-        val primaryValidation = validate((primaryAttempt as ModelAttempt.RawJson).text, context)
+        val primaryRaw = primaryAttempt as ModelAttempt.RawJson
+        val primaryValidation = validate(primaryRaw.text, context)
         if (primaryValidation is ValidationOutcome.Valid) {
             return AiResult.Success(
                 primaryValidation.response,
-                buildMetrics(retried = false, elapsedNanos = System.nanoTime() - startedAtNanos)
+                buildMetrics(
+                    retried = false,
+                    elapsedNanos = System.nanoTime() - startedAtNanos,
+                    benchmark = primaryRaw.benchmark
+                )
             )
         }
 
@@ -255,11 +263,16 @@ class LocalAiGateway(
         // 呼び直す。会話履歴の破棄自体は[model]実装〔P7-C5〕の内部関心事、S-2是正・ADR-0050）。
         val retryAttempt = invokeModel(context, SamplingPolicy.Retry)
         if (retryAttempt is ModelAttempt.Failed) return retryAttempt.fallback
-        val retryValidation = validate((retryAttempt as ModelAttempt.RawJson).text, context)
+        val retryRaw = retryAttempt as ModelAttempt.RawJson
+        val retryValidation = validate(retryRaw.text, context)
         if (retryValidation is ValidationOutcome.Valid) {
             return AiResult.Success(
                 retryValidation.response,
-                buildMetrics(retried = true, elapsedNanos = System.nanoTime() - startedAtNanos)
+                buildMetrics(
+                    retried = true,
+                    elapsedNanos = System.nanoTime() - startedAtNanos,
+                    benchmark = retryRaw.benchmark
+                )
             )
         }
 
@@ -267,7 +280,11 @@ class LocalAiGateway(
     }
 
     private sealed interface ModelAttempt {
-        data class RawJson(val text: String) : ModelAttempt
+        /**
+         * @param benchmark [model]が[BenchmarkMetricsSource]を追加実装している場合のみ非null
+         *   （P7-C5・ADR-0055。[invokeModel]参照）。
+         */
+        data class RawJson(val text: String, val benchmark: InferenceBenchmarkSnapshot?) : ModelAttempt
         data class Failed(val fallback: AiResult.Fallback) : ModelAttempt
     }
 
@@ -275,11 +292,16 @@ class LocalAiGateway(
      * [model]を[policy]で1回呼び出す。[requestTimeoutMillis]で打ち切り、発生し得る例外を
      * §8.6の該当[AiFallbackReason]へ写像する。[CancellationException]（[TimeoutCancellationException]
      * を除く）は握り潰さず再送出する（T-GW-13）。
+     *
+     * **ベンチマーク値の取得（P7-C5・ADR-0055）**: `model.generatePlan`成功直後に
+     * `(model as? BenchmarkMetricsSource)?.lastInferenceMetrics()`を読む。[model]がこの任意
+     * interfaceを実装しない場合は`null`のままであり、[buildMetrics]がプレースホルダへ縮退する。
      */
     private suspend fun invokeModel(context: PlanningContext, policy: SamplingPolicy): ModelAttempt {
         return try {
             val rawJson = withTimeout(requestTimeoutMillis) { model.generatePlan(context, policy) }
-            ModelAttempt.RawJson(rawJson)
+            val benchmark = (model as? BenchmarkMetricsSource)?.lastInferenceMetrics()
+            ModelAttempt.RawJson(rawJson, benchmark)
         } catch (e: TimeoutCancellationException) {
             ModelAttempt.Failed(
                 AiResult.Fallback(AiFallbackReason.TIMEOUT, "No response within ${requestTimeoutMillis}ms (§8.6 #8)")
@@ -319,18 +341,24 @@ class LocalAiGateway(
     }
 
     /**
-     * [modelLoadMs]／[AiMetrics.firstTokenMs]／[AiMetrics.outputTokens]／
-     * [AiMetrics.tokensPerSecond]／[AiMetrics.peakNativeHeapBytes]はP7-C5の`BenchmarkInfo`配線
-     * 待ちのプレースホルダ（`0`）とする（クラスKDoc参照）。[AiMetrics.totalMs]のみGateway境界で
-     * 実測する。
+     * [AiMetrics.modelLoadMs]／[AiMetrics.firstTokenMs]／[AiMetrics.outputTokens]／
+     * [AiMetrics.tokensPerSecond]／[AiMetrics.peakNativeHeapBytes]は[benchmark]
+     * （検証を通過した試行の[BenchmarkMetricsSource]実測値、[runValidationPipeline]参照）が
+     * 非nullならそこから採用し、`null`（[model]が[BenchmarkMetricsSource]を実装しない場合）
+     * なら従来どおりプレースホルダ（`0`）とする（P7-C5・ADR-0055、クラスKDoc参照）。
+     * [AiMetrics.totalMs]は引き続きGateway境界で実測する。
      */
-    private fun buildMetrics(retried: Boolean, elapsedNanos: Long): AiMetrics = AiMetrics(
-        modelLoadMs = 0L,
-        firstTokenMs = 0L,
+    private fun buildMetrics(
+        retried: Boolean,
+        elapsedNanos: Long,
+        benchmark: InferenceBenchmarkSnapshot?
+    ): AiMetrics = AiMetrics(
+        modelLoadMs = benchmark?.modelLoadMs ?: 0L,
+        firstTokenMs = benchmark?.firstTokenMs ?: 0L,
         totalMs = elapsedNanos / NANOS_PER_MILLI,
-        outputTokens = 0,
-        tokensPerSecond = 0.0,
-        peakNativeHeapBytes = 0L,
+        outputTokens = benchmark?.outputTokens ?: 0,
+        tokensPerSecond = benchmark?.tokensPerSecond ?: 0.0,
+        peakNativeHeapBytes = benchmark?.peakNativeHeapBytes ?: 0L,
         retried = retried,
         schemaValid = true,
         sanityPassed = true

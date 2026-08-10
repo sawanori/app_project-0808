@@ -1373,3 +1373,62 @@ P7-C2c（品質ハーネス由来の新設部品へのRed補完サイクル）�
 **検証方法**: `:app:testDebugUnitTest --tests "com.actionstarter.ai.model.ModelDownloaderTest"`実測で10/10 Green（`build/agent-logs/p7c4-green-ModelDownloader.log`）。`:app:testDebugUnitTest --rerun`全体でtests=528/failures=0/errors=0/skipped=1（`build/agent-logs/p7c4-full.log`）。実ネットワークDLを伴うテストは0件（全件fake `HttpRangeClient`経由）。
 
 **再検討トリガー**: P7-C6でSettings画面（F97）が`ModelDownloader`の呼び出し元になる際、進捗UI・キャンセル操作・再DL導線の具体的な配線を設計すること。T-GW-11（容量不足→DL開始しない）はADR-0049裁定6のとおり`ModelDownloader`/Settings領域のテストであり、本ADRの容量ガード実装（`download_insufficientStorage_returnsFailedInsufficientStorage_noConnectionOpened`）がその実装的な裏付けとなる。
+
+---
+
+### ADR-0055: `AiMetrics`実測値配線を`BenchmarkMetricsSource`という任意実装interfaceで行う（`LocalLanguageModel`は無変更のまま）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（domain-implementer判断・報告事項） ／ 決定者: domain-implementer（P7-C5、Fable 5への報告を前提とした実装時判断） ／ 起案agent: domain-implementer ／ 関連仕様§: §57「Local AI性能指標」・§8.5「AiMetrics」（記録トリガー②仕様未定義箇所の補完に該当。§16の凍結`LocalLanguageModel`interfaceには一切手を加えていないため①契約変更には該当しない）
+
+- **ADR番号の付番根拠**: 起票直前に`grep -n "^### ADR-" DECISIONS.md`を再実測し、最新確定ADRがADR-0054（本書1345行）であることを確認した。その次番としてADR-0055を採番する。
+
+**背景**: P7-C3完了記録・P7-C4完了記録がいずれもP7-C5への申し送りとして「`AiMetrics`の`modelLoadMs`／`firstTokenMs`／`outputTokens`／`tokensPerSecond`／`peakNativeHeapBytes`を`BenchmarkInfo`から実測値へ差し替えること」を明記していた。しかし`LocalAiGateway`は`model`を§16で凍結された`LocalLanguageModel`型（`generatePlan(context, samplingPolicy): String`のみ）で保持しており、この型からは`Conversation.getBenchmarkInfo()`由来の実測値を一切取得できない。`LocalLanguageModel`interfaceへ戻り値やメトリクス取得メソッドを追加することは、ADR-0045（戻り値をStringへ変更）・ADR-0050（`samplingPolicy`引数追加）に続く3度目の契約変更になり、いずれも過去にFable 5裁定を要した重い変更である。
+
+**決定**: `LocalLanguageModel`自体は変更せず、新設`interface BenchmarkMetricsSource { fun lastInferenceMetrics(): InferenceBenchmarkSnapshot? }`（`ai/BenchmarkMetricsSource.kt`、`InferenceBenchmarkSnapshot`データクラスを同居）を`ai/`パッケージ直下に新設した。`LiteRtLmLocalLanguageModel`は`LocalLanguageModel`に加えて本interfaceを**追加実装**し、直近の`generatePlan`呼び出しの実測値を保持する。`LocalAiGateway`は`model.generatePlan()`成功直後に`(model as? BenchmarkMetricsSource)?.lastInferenceMetrics()`で**型検査により任意に**読み出し、非nullなら`AiMetrics`へ反映し、`null`（`model`が本interfaceを実装しない場合）なら従来どおり`0`のプレースホルダへ縮退する（`LocalAiGateway.buildMetrics`）。`modelLoadMs`は「Engine再利用時は`0`」という契約（[InferenceBenchmarkSnapshot]のKDoc）とし、モデルロードが実際にプロセス生涯で1回しか起きない（R-7・T-GW-16）という設計を数値としても正直に表現する。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `LocalLanguageModel.generatePlan`の戻り値を`String`から`Pair<String, InferenceBenchmarkSnapshot?>`のような複合型へ再度変更する | §16の凍結interfaceへの4度目の契約変更（ADR-0045・0049・0050に続く）になり、影響範囲が`LocalAiGatewayTest`の`FakeLocalLanguageModel`／`ConcurrencyTrackingFakeModel`を含む既存テストへ及ぶ。P7-C5タスク自体にはこの契約変更を裁定する権限がない（過去3回とも計画書側のFable 5裁定が必要だった） |
+| `LocalAiGateway`のコンストラクタが`model`を`LiteRtLmLocalLanguageModel`の具象型で直接受け取る（`as?`を使わない） | T-AIISO-9（`com.google.ai.edge.litertlm`をimportしてよいのは`ai/adapter/`配下のみ、§16「モデルは技術検証で交換可能にする」）と正面から矛盾する。次点のllama.cpp案（計画書§5.1）へ切り替える際`ai/adapter/`の差し替えだけでは済まなくなる |
+| Gatewayが独自にモデルロード時間・TTFT等を計測する（adapter側の実測値を使わない） | Gateway境界からは`Engine`初期化やdecode速度を直接観測できない（`ai/adapter/`配下の内部実装詳細のため）。`totalMs`（呼び出し全体のwall time）はGateway境界で計測可能だが、それ以外の粒度の細かい指標はadapter内部でしか測れない |
+| プレースホルダ`0`のまま据え置き、P7-C5の対象外として次サイクルへ送る | P7-C3・P7-C4完了記録がいずれも「P7-C5で差し替えること」と明記した申し送り事項であり、かつ本タスク指示が「AiMetrics実測差し替え」を明示的に要求している。据え置く理由がない |
+
+**影響範囲**: 新設`app/src/main/java/com/actionstarter/ai/BenchmarkMetricsSource.kt`（`BenchmarkMetricsSource`interface・`InferenceBenchmarkSnapshot`データクラス）。`app/src/main/java/com/actionstarter/ai/LocalAiGateway.kt`（`ModelAttempt.RawJson`へ`benchmark`フィールド追加・`invokeModel`が`as?`で読み出し・`buildMetrics`のシグネチャ変更、KDoc更新）。`app/src/main/java/com/actionstarter/ai/adapter/LiteRtLmLocalLanguageModel.kt`（`BenchmarkMetricsSource`を追加実装）。**`LocalLanguageModel.kt`・`LocalAiGatewayTest.kt`はいずれも無変更**（`FakeLocalLanguageModel`等が本interfaceを実装しないため`as?`は常に`null`となり、既存T-GW-*群の期待値に影響しない）。
+
+**検証方法**: `:app:testDebugUnitTest --rerun`実測でtests=528/failures=0/errors=0/skipped=1（変更前後で完全一致、`build/agent-logs/p7c5-jvm.log`）。`:app:lintDebug --rerun-tasks`はBUILD SUCCESSFUL・error 0、warning 22件は全て既存分（`build/agent-logs/p7c5-lint.log`）。実機E2E（`app/src/androidTest/java/com/actionstarter/probe/LiteRtLmAdapterE2EProbeTest.kt`の`probeAdapterThroughGateway_widerContextDiagnostic`）で`AiMetrics.modelLoadMs`＝4,073ms（1件目）／`0`ms（2・3件目、Engine再利用の実証）、`firstTokenMs`＝1,534〜1,878ms、`tokensPerSecond`＝25.7〜35.2、`peakNativeHeapBytes`＝約536〜545MBが実測プレースホルダでない値として得られたことを確認した（`build/agent-logs/p7c5-e2e.log`）。
+
+**再検討トリガー**: Phase 9で`generateRecovery`を実装する際、同種のベンチマーク配線が必要になれば`BenchmarkMetricsSource`をそのまま再利用できる設計にしてある（`lastInferenceMetrics()`は`generatePlan`／`generateRecovery`のどちらの直近呼び出しかを区別しないため、両方を実装する場合は用途を再検討すること）。
+
+---
+
+### ADR-0056: `LiteRtLmLocalLanguageModel`の実装詳細（Engine/Conversationライフサイクル・`SamplerConfig`のtopP/seed・出力トークン上限）を確定し、`maxNumTokens`の実測制約を記録する
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（domain-implementer判断・報告事項） ／ 決定者: domain-implementer（P7-C5、Fable 5への報告を前提とした実装時判断） ／ 起案agent: domain-implementer ／ 関連仕様§: §16「Model Adapter方式」・品質ハーネス§4「サンプリング設計」・§7「速度×品質トレードオフ」（記録トリガー②仕様未定義箇所の補完、および③新事実発覚に該当。`LiteRtLmLocalLanguageModel`のpublicコンストラクタシグネチャは無変更のため①契約変更には該当しない）
+
+- **ADR番号の付番根拠**: ADR-0055と同一バッチ起票。起票直前の`grep`再実測（ADR-0055参照）によりADR-0055の次番としてADR-0056を採番した。
+
+**背景**: `LiteRtLmLocalLanguageModel`のP7-C1 scaffold KDocおよび品質ハーネス§4・§10は、`SamplerConfig`の`topP`／`seed`具体値、Engine/Conversationのライフサイクル方式、出力トークン上限を「P7-C5の実装詳細」として明示的に未確定のまま残していた。P7-C5はこれらを確定させる必要があった。加えて、実機（AVD）E2Eプローブの過程で、P7-C1が定めた`DEFAULT_MAX_NUM_TOKENS=256`が本番の`PlanPromptBuilder`（system instruction＋既定2-shot few-shot＋data message）と組み合わせるとネイティブ層のエラーで推論自体が失敗するという、計画書・品質ハーネスのいずれにも実測記録がなかった制約を発見した。
+
+**決定**:
+1. **Engine/Conversationのライフサイクル**: `Engine`はプロセス内で高々1個（`engineLifecycleMutex`配下の遅延生成、R-7・T-GW-16「2回目以降は再ロードせず再利用する」）。`Conversation`は`generatePlan`呼び出しごとに新規生成し`finally`で`close()`する。「KVキャッシュのみクリア」（既存KDoc）と「retryは新規single-turnセッション」（S-2是正・Gemini G1 CRITICAL #1）の両要求は、Conversationを毎回作り直すこの単一の設計で同時に満たされると判断した（`systemInstruction`＋`initialMessages`のprefaceを`prefillPrefaceOnInit=true`で毎回再prefillする）。
+2. **`SamplerConfig`の`topP`／`seed`**: `SamplingPolicy.Primary`→`topP=1.0, seed=0`、`SamplingPolicy.Retry`→`topP=0.95, seed=1`（品質ハーネス§4の推奨値表をそのまま採用。`seed`はPrimaryと異なる値であることのみが要件〔S-2是正「条件を変える」〕のため、具体的な数値としては1を選んだ）。
+3. **`modelLoadMs`の情報源**: `Conversation.getBenchmarkInfo().initTimeInSecond`ではなく`SystemClock.elapsedRealtime()`のwall-clock差分を採用した。P7-C0実測（`LiteRtLmProbeTest`のKDoc）が「`initTimeInSecond`は自前のwall-clockロード時間や試験全体の経過時間と桁が一致しない、数値の意味を断定できない」と明記済みであり、この不確実な値を本番`AiMetrics`の情報源にしないため。`firstTokenMs`／`outputTokens`／`tokensPerSecond`は`BenchmarkInfo`の対応フィールド（`timeToFirstTokenInSecond`／`lastDecodeTokenCount`／`lastDecodeTokensPerSecond`）をそのまま採用した（これらはP7-C0のKDocで「要注意」と指摘されていない）。
+4. **出力トークン上限**: `MAX_OUTPUT_TOKEN=200`（暫定）。確定契約（ADR-0045・0046）でstepあたり`action_type`／`display_text`の2フィールドのみに削減されており、P7-C0実測（6フィールド・1step固定で56 decodeトークン）より単価が下がる見込みだが、`maxItems=8`まで許容する安全側の値とした。
+5. **`DEFAULT_MAX_NUM_TOKENS`（P7-C1が定めた256）は変更しない**。理由: 本番運用値の確定は計画書§17 V-8・§11.3がP7-C8実機プローブの責務と明記しており、P7-C5がこれを追い越して確定させることは計画のサイクル分解（§14）と整合しない。ただし**この暫定値のまま`AppContainer`の実配線（本番`PlanPromptBuilder`一式）と組み合わせると、実機（AVD）で`LiteRtLmJniException: FAILED_PRECONDITION: Chosen prefill work group size exceeds available state entries (73)`により推論そのものが失敗することを実測した**（`app/src/androidTest/java/com/actionstarter/probe/LiteRtLmAdapterE2EProbeTest.kt`の`probeAdapterThroughGateway_smallContextProfile`、`build/agent-logs/p7c5-e2e.log`）。同一条件で`maxNumTokens`のみ1024へ引き上げた診断実行（`probeAdapterThroughGateway_widerContextDiagnostic`）では3件とも成功した。この事実を確定値化せず「P7-C6/C8への申し送り」として記録するにとどめる（決定6参照）。
+6. **P7-C6/C8への申し送り（本ADRが確定させない事項）**: (a) `DEFAULT_MAX_NUM_TOKENS`の本番値は256のままでは実機で機能しない可能性が高く、少なくとも1024相当への引き上げ、または`shotCount`削減（品質ハーネス§7が既に0-shotを候補として挙げている）のいずれかが必要——最終値はP7-C8のGalaxy A実測で確定すること。(b) `ModelCatalogEntry.peakRamBytes`がコンテキストプロファイル非依存の単一値であるため、§8.6 #7のOOM事前ガードが小コンテキスト・テストプロファイルの実要求量より過大な閾値で判定してしまう構造的なギャップがある（AVDで実測確認済み）。プロファイル別`peakRamBytes`の要否をP7-C8で検討すること。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `DEFAULT_MAX_NUM_TOKENS`を実機E2Eの実測結果を受けてP7-C5の時点で1024へ確定的に変更する | 計画書§14がP7-C8（実機プローブ＋Refactor）を「本番運用値の確定」ゲートとして明示的に置いており（§17 V-8「P7-C0の必須測定項目」・§11.3「本実測が完了するまで...確定していない」）、P7-C5が単独でこれを追い越すのは計画のサイクル分解を無視する越権になる。AVD（x86_64エミュレータ）1台の実測だけでGalaxy A実機の値を確定させることは§11.2の留保（速度・メモリの絶対値はエミュレータでは意味を持たない）にも反する |
+| `BenchmarkInfo.initTimeInSecond`を`modelLoadMs`の情報源として採用する（実装を単純化） | P7-C0が「数値の意味を断定できない」と明記した値を本番メトリクスとして使うのは知的誠実性に反する。P7-C0自身のwall-clock計測手法（`SystemClock.elapsedRealtime()`）を踏襲する方が実測として説明可能 |
+| `Conversation`もEngineと同様プロセス内で使い回す（毎回新規生成しない） | retryが要求する「新規single-turnセッション」（会話履歴を持たない）と、通常呼び出し間でのプロンプト内容の入れ替え（毎回異なる`PlanningContext`）の両方を満たすには、結局`sendMessage`前に会話状態をリセットする処理が必要になり、`Conversation`インスタンス自体を作り直すより複雑になる。V-2実測（`close()`非冪等）を踏まえても、Conversationの生成・close 1回はEngineロードよりコストが小さい（実測: 2・3件目`totalMs`5〜7秒に対し`modelLoadMs`は初回のみ4,073ms） |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/adapter/LiteRtLmLocalLanguageModel.kt`（全面実装）。新設`app/src/androidTest/java/com/actionstarter/probe/LiteRtLmAdapterE2EProbeTest.kt`（P7-C5自身の実機検証プローブ、`@Ignore`既定）。**`DEFAULT_MAX_NUM_TOKENS`の値自体は変更していない**（決定5参照）。
+
+**検証方法**: `:app:compileDebugKotlin`成功（実際のAAR 0.15.0のバイトコードに対してコンパイルが通ることを`SamplerConfig`／`ConversationConfig`／`ResponseFormat`等のAPI形状の一次確認とした）。`:app:testDebugUnitTest --rerun`でtests=528/failures=0/errors=0/skipped=1（`build/agent-logs/p7c5-jvm.log`）。`:app:lintDebug --rerun-tasks`でBUILD SUCCESSFUL・error 0（`build/agent-logs/p7c5-lint.log`）。実機E2E3パターン（`build/agent-logs/p7c5-e2e.log`）: (1)本番`peakRamBytes`のまま→3件とも`Fallback(OUT_OF_MEMORY_PREVENTED)`、(2)`maxNumTokens=256`のまま→3件とも`Fallback(UNKNOWN)`（ネイティブ`FAILED_PRECONDITION`）、(3)`maxNumTokens=1024`→3件とも`AiResult.Success`（`schemaValid=true`・`sanityPassed=true`、実際に生成された`display_text`をログへ記録）。
+
+**再検討トリガー**: P7-C8実機プローブ完了後、決定6(a)(b)の申し送り事項を本ADRの「決定」欄へ追記して確定させること。決定4のTTFT/tok/s実測値がGalaxy A実機でエミュレータ実測（`tokensPerSecond`=25.7〜35.2、x86_64のため参考値）と大きく乖離する場合、`MAX_OUTPUT_TOKEN`（決定4）の再検討も合わせて行うこと。
