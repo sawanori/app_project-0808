@@ -1003,3 +1003,305 @@ androidComponents {
 **検証方法**: T-P11F-1〜8（5画面×基本表示＋Done/5min-later非重複＋1.0x/1.5xノード集合一致＋ja×1.5x複合）。全JVMスイート412 tests・failures 0（`build/agent-logs/p11c3-green-final.log`、`--rerun`で2回連続実測・安定）。
 
 **再検討トリガー**: 実機fontScale=1.5目視確認（G4-E、§8.7）で本Robolectricベースの検証が見落とした視覚的破綻が発見された場合、追加のレイアウト調整または本ADRの検証手法自体の見直しを検討すること。
+
+---
+
+### ADR-0043: Local LLMランタイムにLiteRT-LM 0.15.0を採用し、既定モデルはQwen3-0.6B（INT4 block-32）、単一`:app`モジュールを継続する
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（`docs/plans/phase7-local-llm-foundation.md`§0・§5.1・§5.2・§8.2、Fable 5裁定U-2／U-4、G1通過） ／ 決定者: Fable 5 ／ 起案agent: android-planner（計画書§5・§8.2起筆、WebFetch/Context7による一次ソース確認）→domain-implementer（P7-C0でGo/No-Go実測・GO判定、P7-C1で正式起票） ／ 関連仕様§: §42「特定Runtimeを仕様として固定しない」・§17「モデル名を製品仕様として固定しない」・ADR-0002「Phase 7でネイティブ依存が増大した時点で分割要否を再検討する」（記録トリガー③仕様推奨からの逸脱にはあたらないが④依存バージョンの変更・⑥Phaseゲート変更に該当）
+- **ADR番号の付番根拠**: 起票直前に`grep -n "^### ADR-" DECISIONS.md`を再実測し、最新確定ADRがADR-0042（本書985行）であることを確認した。`docs/plans/phase7-local-llm-foundation.md`§14 P7-C1行が「ADR-0043（ランタイム/モデル選定・単一モジュール継続）」を明示的に指定しているため、ADR-0042の次番としてADR-0043を採番した。
+
+**背景**: 仕様§42はLocal AI候補として「MediaPipe LLM Inference API／llama.cpp（JNI）／MLC-LLM／ONNX Runtime Mobile／AICore・Gemini Nano」を挙げつつ「特定Runtimeを仕様として固定しない」と定める。計画書§5.1は上記候補にLiteRT-LMを加えた6候補を、①構造化出力（JSON強制）の実現手段（本アプリの用途が「固定スキーマの短いJSONを返すだけ」であるため最優先軸）②Qwen対応の成熟度③ミッドレンジCPU実行④統合工数⑤ライセンス⑥メンテ活性の6軸で比較した。加えてADR-0002は「Phase 7でネイティブ依存が増大した時点」を単一`:app`モジュール継続可否の再検討トリガーとして明示的に指定しており、Phase 7は文字どおりこのトリガーに該当する。
+
+**決定**:
+1. **ランタイム**: `com.google.ai.edge.litertlm:litertlm-android:0.15.0`（Maven AAR）を採用する。根拠: (a) Kotlinから`ResponseFormat.json(schema)`＋`ConversationConfig(enableResponseFormat=true)`で直接JSON Schema制約付きdecodingを呼び出せる一次ソース確認済みの唯一の候補である一方、次点のllama.cpp（GBNF文法・GGUF）は公式Maven AARが存在せずNDK/CMake/JNIの自前構築が必要になる（計画書§5.1）。(b) P7-C0のスパイク実測（2026-08-10、AVD `actionstarter_test` x86_64/API35）で`ResponseFormat.json(schema)`が2回連続実行ともスキーマ完全準拠のJSONを生成することを確認し、Go/No-Go判定はGO方向（判定確定はFable 5、計画書§14 P7-C0実測結果）。(c) AAR同梱ABIがarm64-v8a＋x86_64の2種のみ（調査実測・P7-C0で自プロジェクト実測により再確認済み、V-1）であり、本プロジェクトのAVD（x86_64）・Galaxy A実機（arm64-v8a）の両方をカバーする。バージョンは`0.15.0`に固定し自動更新しない（`ResponseFormat`が公式Webドキュメント未掲載でAPI変更リスクがあるため、R-2）。**この決定はP7-C0で④（`ResponseFormat`実機動作）が不成立だった場合にのみ次点のllama.cpp案へ切り替える条件付き決定であり（U-2）、P7-C0はGO方向で確定した。**
+2. **既定モデル**: `ModelCatalog`（F87）の既定エントリは`litert-community/Qwen3-0.6B`の`Qwen3-0.6B_dynamic_wi4b32_afp32.litertlm`（INT4 block-32・ctx4096・Apache-2.0）とする。サイズ344,437,808バイト（328.5MiB）・SHA-256 `e3e290109da4388d65a17510a0c66af91c8039f52d2c465868dbc43c09a776cf`は、開発者（domain-implementer）がP7-C0でHugging Faceから自らダウンロードした個体を`sha256sum`で計算した値であり、これを正の値として`ModelCatalog`へ焼き込む（U-6：HF側`x-linked-etag`ヘッダの値と一致確認済みだが、この一致は補助的傍証にとどめ無条件には信頼しない）。**モデルの最終選択は未確定である**: P7-C8実機プローブ（Galaxy A系、Qwen3-0.6B／Qwen3-1.7B／Gemma3-1B の3者比較）の結果を日本語品質（MIFEvalJa）・decode速度・ピークRAMの数値としてユーザーへ提示したうえで確定する建付け（U-4）。本ADRが記録するのは「P7-C1時点の`ModelCatalog`既定値」であり、製品仕様としてのモデル名固定ではない（§17）。
+3. **単一`:app`モジュールを継続する**（ADR-0002の再検討トリガーへの回答）。理由: 採用したLiteRT-LMはMaven AAR依存のみでNDK・CMake・JNI・vendoringをプロジェクトへ一切持ち込まないため、ADR-0002が警戒した「ネイティブビルドによるビルド時間増大」が発生しない（計画書§8.2）。**次点のllama.cpp案へ切り替える場合のみ`:llm`モジュール分離が必要になり、その場合は本ADRを改訂する。**
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| llama.cpp（GGUF・GBNF文法制約、次点案） | 公式Maven AARが存在せず`examples/llama.android`のvendoring＋CMake/NDK/JNI自前構築が必要（統合工数④で大差）。GGUFのモデル交換性の高さ・MITライセンス・メンテ活発さは上回るが、P7-C0でLiteRT-LMの`ResponseFormat`が実機で機能したため切替条件（U-2）が発生しなかった |
+| MLC LLM | AndroidはOpenCLのみでCPU/Vulkanバックエンド未提供、Adreno＋`_1`レイアウトでprefill時20〜50秒のUIフリーズの既知不具合があり③ミッドレンジCPU実行が致命的。正式リリースも存在しない（`v0.1.dev0`のみ） |
+| ONNX Runtime GenAI | Java版APIに構造化出力の強制手段（`OgaGeneratorParamsSetGuidance`のJavaバインディング）が未実装。公式AARが`--use_guidance`なしでビルドされている |
+| MediaPipe LLM Inference API | 公式サポートモデル表にQwenが含まれない。maintenance-onlyモードへ移行しJavaクラスに`@Deprecated`付与済みで、Google自身がLiteRT-LMへの移行を推奨している |
+| MNN / MNN-LLM | 構造化出力の強制手段が皆無（grammar/gbnf/json_schemaいずれも実装・配布物に存在しない）。件数制約をretryで代替する設計は§20「Schema validation必須」と両立しない |
+| Gemma 4 E2B / Gemma 3 1B を既定モデルにする | Gemma 4は日本語品質最高（MIFEvalJa 0.646）だがGoogle自身が最低8GB RAMを要求しGalaxy Aクラスの大半を切り捨てる。Gemma 3 1Bは高速・省メモリだが日本語MIFEvalJa 0.323と実用域に届かない。いずれもP7-C8実機プローブでの数値提示・ユーザー判断（U-4）を経ずに確定させることは§17「日本語だけで選定しない」の趣旨にも反する |
+| Phase 7時点で`:llm`モジュールへ分割する | 採用ランタイムがAAR依存のみでネイティブビルドを持ち込まないため、分割による恩恵（ビルド時間短縮等）が現時点で発生しない。不要な複雑性を先取りしない |
+
+**影響範囲**: `app/build.gradle.kts`（`implementation(libs.google.ai.edge.litertlm.android)`）・`gradle/libs.versions.toml`（`litertlmAndroid = "0.15.0"`）・`app/src/main/java/com/actionstarter/ai/model/ModelCatalog.kt`（既定エントリ`QWEN3_0_6B_INT4_BLOCK32`）・`app/src/main/java/com/actionstarter/ai/adapter/LiteRtLmLocalLanguageModel.kt`（F86実装先）。単一モジュール継続のため新規Gradleモジュールの追加なし。
+
+**検証方法**: P7-C0スパイク実測（`build/agent-logs/p7c0-*.log`、`app/src/androidTest/java/com/actionstarter/probe/LiteRtLmProbeTest.kt`）で`ResponseFormat.json(schema)`のGO判定を確認済み。P7-C1では依存をバージョンカタログへ正式化し`:app:compileDebugKotlin`／`:app:compileDebugUnitTestKotlin`成功・全JVMスイート417 tests・failures 0・skipped 1（導入前ベースラインと完全一致、`build/agent-logs/p7c1-compile.log`／`p7c1-regression.log`）を確認した。モデルの最終確定はP7-C8実機プローブ（§11.3）の実測を要する。
+
+**再検討トリガー**: (a) P7-C8実機プローブでQwen3-0.6Bが実用に耐えない性能・メモリ特性だった場合、既定モデルをQwen3-1.7BまたはGemma系へ変更し本ADRを改訂する（U-4）。(b) 将来llama.cpp等ネイティブビルドを要するランタイムへ切り替える場合、`:llm`モジュール分割の要否を本ADRの枠内で再検討する。(c) LiteRT-LMが0.15.0から更新される場合、`ResponseFormat`等の非公式API（公式Webドキュメント未掲載）の破壊的変更有無を確認してからバージョンを上げる（R-2）。
+
+---
+
+### ADR-0044: AI隔離ガードT-AIISO-6は`ai/model/ModelDownloader.kt`1ファイルに限定した許可リストを持つ（既存3ガードの「許可リストなし」設計からの例外）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（`docs/plans/phase7-local-llm-foundation.md`§9本文・§9.3・注記、Fable 5裁定U-9、Gemini G1 CRITICAL #1反映、G1通過） ／ 決定者: Fable 5 ／ 起案agent: android-planner（計画書§9本文・§9.3起筆、Geminiクロスレビューで迂回穴を指摘されG1で反映）→domain-implementer（P7-C1で正式起票） ／ 関連仕様§: §10「Calendar/Location/Behavioral Historyを外部LLMへ送らない」・§58〜§60「Telemetryはカレンダー本文等を送信しない」（記録トリガー③仕様推奨からの逸脱：既存ガード3本の「許可リストなし」という設計方針からの意図的な逸脱のため）
+
+- **ADR番号の付番根拠**: ADR-0043と同一バッチ起票。起票直前の`grep`再実測（ADR-0043参照）によりADR-0043の次番としてADR-0044を採番した。
+
+**背景**: 既存のAI隔離ガード3本（`PlanningLlmIsolationTest`／`RecoveryLlmIsolationTest`／`NotificationLlmIsolationTest`、T-BPE-28／T-BRE-32／T-NOTIF-9）は、いずれも「対象ディレクトリ直下の`.kt`を非再帰列挙→禁止語の単純部分文字列マッチ→**許可リストなし**」という設計で統一されている（計画書§9.1）。Phase 7は`ai/model/ModelDownloader.kt`（F88）がモデルファイルのHTTPダウンロードのため正当にネットワークAPI（`java.net.`／`HttpURLConnection`／`URL(`）を参照する必要があり、これは`ai/`配下の他の全ファイル（推論経路）には一切許されない例外である。加えてGeminiクロスレビュー（G1、`model: "gemini-3.5-flash"`）のCRITICAL #1指摘により、「生のネットワークAPIを直接使わない」だけでは不十分で、自プロジェクトが`ai/`の外に持つ通信ラッパークラス（`com.actionstarter.services.routing`配下の`UrlConnectionHttpPostClient`等）を`ai/`から呼び出して迂回する経路も同じ強度で塞ぐ必要があることが判明した（計画書§9本文）。
+
+**決定**: T-AIISO-6を「`ai/`配下（再帰）で、①ネットワークAPI（`java.net.`／`HttpURLConnection`／`URL(`）、②`com.actionstarter.services.routing`配下のimport/参照、のいずれかを参照してよいのは`ai/model/ModelDownloader.kt`の1ファイルのみ」と定義し、これを本プロジェクト初の「許可リストを持つ隔離ガード」として承認する。許可リストの肥大化を防ぐため、以下を本プロジェクトの恒久的な規律として記録する:
+1. 許可対象は**単一ファイル名の完全一致**（`ModelDownloader.kt`）に限定し、ワイルドカードやディレクトリ単位の許可は用いない。
+2. 将来ネットワークアクセスが必要なクラスが増える場合でも、許可リストへの追加は既定で行わない。まずモデルDL機能自体を`ModelDownloader`へ集約する設計変更を優先的に検討し、それでも真に複数ファイルへの分散が必要な場合のみ、本ADRを改訂したうえで許可リストへ追加する（Fable 5承認必須）。
+3. 既存3本のガード（T-BPE-28／T-BRE-32／T-NOTIF-9）は許可リストなしの設計を維持する（本ADRはT-AIISO-6のみのスコープであり、既存ガードの設計方針を変更しない）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| 許可リストを持たず、`ai/`配下すべてでネットワークAPI参照を禁止する | `ModelDownloader`（F88、§18「アプリ内ダウンロード方式を基本とする」）がモデルDLを実装できなくなり、仕様§18の要求を満たせない |
+| 許可リストを`ai/model/`パッケージ全体（ディレクトリ単位）にする | `ModelCatalog`／`ModelVerifier`／`ModelStorage`／`DeviceCapability`（いずれも`ai/model/`配下）は推論経路に近く、ネットワークアクセスを許すべきでない。ディレクトリ単位の許可は許可リストの実質的な肥大化であり、§10「外部LLMへ送らない」の構造的担保が弱まる |
+| ネットワークAPIの直接参照は禁止するが`services.routing`配下のラッパー経由は許可する | Gemini G1 CRITICAL #1が指摘した迂回経路そのものであり、`ai/`の外にある既存HTTP手段を経由すれば実質的にどこからでも送信できてしまう。本ADRが最も重視する「§10外部送信禁止の構造的担保」を無意味にする |
+
+**影響範囲**: `app/src/test/java/com/actionstarter/ai/**`（T-AIISO-6の新設。P7-C2で実装）。既存3本の隔離ガード（T-BPE-28／T-BRE-32／T-NOTIF-9）は許可リスト方針を変更しない（穴A〜Cの改修はP7-C7、計画書§14）。
+
+**検証方法**: T-AIISO-6（`ai/`配下再帰走査、`ModelDownloader.kt`以外がネットワークAPI／`services.routing`参照を持たないことを確認、P7-C2でRed→P7-C7でGreen）。§10 L1（構造）・L2（`StrictMode.penaltyDeath`）・L3（機内モード）の3層検証のうちL1を本ADRが直接担保する。
+
+**再検討トリガー**: 将来、モデルDL以外の`ai/`配下の機能で正当なネットワークアクセスが必要になった場合（例: リモートモデルカタログの動的取得）、許可リストへファイルを追加するのではなく、まず当該機能を`ModelDownloader`または新設の単一専用ファイルへ集約できないかを優先的に検討したうえで、Fable 5承認を得て本ADRを改訂すること。
+
+---
+
+### ADR-0045: LLM出力責務分界の再定義とLocalLanguageModel.generatePlan()契約変更（Semantic Contextualization・AIPlanResponse縮小）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（`docs/plans/phase7-quality-harness.md`§0/§2/§5・UQ-1、P7契約確定サイクルのFable 5裁定1・3） ／ 決定者: Fable 5 ／ 起案agent: test-writer（P7-C2完了記録で統合ギャップを発見・報告）→domain-implementer（P7契約確定サイクルで正式起票） ／ 関連仕様§: §13「数値計算は必ず通常コード」・§14「Meaning→Action」・§15「時刻演算をLLMに渡さない」・§16（LocalLanguageModel interface）・§20「Schema validation必須」・§21「action_type/display_text分離」（記録トリガー①interface契約の変更・②仕様未定義箇所の補完に該当）
+
+- **ADR番号の付番根拠**: 起票直前に`grep -n "^### ADR-" DECISIONS.md`を再実測し、最新確定ADRがADR-0044（本書1041行）であることを確認した。P7契約確定タスクの指示（Fable 5裁定1・3、TEAMS §5契約変更フロー）に基づきADR-0044の次番としてADR-0045から起票する。
+
+**背景**: `docs/plans/phase7-quality-harness.md`（品質ハーネス、G1通過）はSemantic Contextualization設計原則を提示し、LLM出力を「分類（`event_type`/`action_type`）」と「予定固有の文脈化された行動文生成（`display_text`）」の2つに最小化することを推奨した（品質ハーネス§0/§2/§5、UQ-1）。P7-C2完了記録（本書§14.3〔`docs/plans/phase7-local-llm-foundation.md`〕相当）は差し戻し事項3として「`LocalLanguageModel.generatePlan()`が`AIPlanResponse`（パース済み）を返す契約と、`SchemaValidator.validate()`が`rawJson: String`を受け取る契約との間の統合ギャップ」を報告していた。Fable 5は品質ハーネスのタスク最小化提案とこの統合ギャップの両方を一体で解決する裁定を下した。
+
+**決定**:
+1. `LocalLanguageModel.generatePlan()`の戻り値を`AIPlanResponse`から`String`（LLM生JSONテキスト）へ変更する（§16契約変更、TEAMS §5フロー）。
+2. `AIPlanResponse`/`AIPlanStepResponse`のフィールドを縮小する: `AIPlanStepResponse`は`actionType`/`displayText`の2フィールドのみとし、`estimated_minutes`/`priority`/`skippable`/`type`を完全に除去する。
+3. 除去したフィールドが表していた数値・判断（所要分・優先度・省略可否・ステップ種別）は、`action_type`からKotlin側が決定的にマップする（Phase 8 `LocalAIPlanningEngine`の責務、計画書§18申し送りへ追記する）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `generatePlan()`の戻り値を`AIPlanResponse`のまま維持し、`SchemaValidator`側に`AIPlanResponse`受け入れ用の別経路を追加する | 統合ギャップの本質的解決にならない。「誰が`AIPlanResponse`を生JSON文字列へ再シリアライズするか」という不要な往復コストが残り、LLM生出力への検証を「パース後のオブジェクトの再検証」という迂遠な形にしてしまう |
+| `estimated_minutes`/`priority`/`skippable`をLLM出力に残しつつ「参考値」として扱う（品質ハーネス§2の折衷案） | 品質ハーネスがP7-C2/C3未確定時点で提示した折衷案であり、Fable 5裁定1によりP7-C2/C3の裁定が下った今、折衷を維持する理由がない。LLM出力面積の最小化（捏造面・トークン消費の削減）という品質ハーネスの核心的動機を活かせない |
+| `type`フィールドを残す（ステップ種別はLLMに判定させる） | §13「数値計算は必ず通常コード」の趣旨はステップ種別のような決定的に導出可能な分類にも及ぶと解釈し、`action_type`から一意に定まる情報をLLMにもう一度出力させることはトークン浪費かつハルシネーション面を広げるだけで得るものがない |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/LocalLanguageModel.kt`（interface契約）、`app/src/main/java/com/actionstarter/ai/AIPlanResponse.kt`（データクラス縮小）、`app/src/main/java/com/actionstarter/ai/adapter/LiteRtLmLocalLanguageModel.kt`（実装先の契約更新）、`app/src/test/java/com/actionstarter/ai/LocalAiGatewayTest.kt`（fakeモデルの戻り値型・フィクスチャ更新）、`app/src/test/java/com/actionstarter/ai/schema/SchemaValidatorTest.kt`（フィールド縮小に伴うケース調整）。
+
+**検証方法**: `:app:compileDebugKotlin`／`:app:compileDebugUnitTestKotlin`成功（`build/agent-logs/p7-contract-compile.log`）、`:app:testDebugUnitTest --rerun`でtests=476／failures=51／errors=0／skipped=1（`build/agent-logs/p7-contract-regression.log`。既存417件の回帰0、新規59件のうち51件が意図的Red・8件born-green）。
+
+**再検討トリガー**: P7-C3で`SchemaValidator`/`PlanJsonSchema`を実装する際、上記契約が実際にLiteRT-LMの`ResponseFormat.json()`と整合することを実機/エミュレータで再確認する。Phase 8で`LocalAIPlanningEngine`が`action_type`→`ExecutionStepType`/`StepPriority`/`estimatedMinutes`の決定的マップを実装する際、本ADRの「除去フィールドの行き先」を参照すること。
+
+---
+
+### ADR-0046: event_type/action_typeのenum語彙を確定する（8値・7値、実機プローブでの再検証条項付き）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（実機プローブP7-C8での再検証条項付き） ／ 決定者: Fable 5 ／ 起案agent: domain-implementer ／ 関連仕様§: §21「内部意味は英語ID」・§17「モデル名を製品仕様として固定しない」（語彙も同様の再検証余地を持たせる。記録トリガー②仕様未定義箇所の補完に該当）
+
+- **ADR番号の付番根拠**: ADR-0045と同一バッチ起票。起票直前の`grep`再実測（ADR-0045参照）によりADR-0045の次番としてADR-0046を採番した。
+
+**背景**: P7-C2完了記録は差し戻し事項2として「正仕様書§21に`event_type`/`action_type`の確定enum語彙（値の列挙）が存在せず、P7-C2時点では確定できない」ことを報告していた（§21が定めるのは命名規約が英語IDであるべきという方針のみで、`business_meeting`という1例と`check_equipment`という1例を除き閉じた語彙が示されていない）。品質ハーネスは`event_type`の5値例（business_meeting/medical/social/travel/other）とfew-shot例に現れる複数のaction_type例（finish_current_task/prepare_documents/leave/prepare_gift/check_ticket/get_ready等）を提示していたが、これも「確定」ではなく例示にとどまっていた。
+
+**決定**: 以下の語彙をPhase 7の確定値として採用する。
+1. `event_type`（8値）: `business_meeting`, `medical`, `social`, `meal`, `travel`, `errand`, `personal`, `other`
+2. `action_type`（7値）: `finish_current_task`, `prepare_items`, `get_ready`, `gather_belongings`, `leave`, `commute`, `arrive`（Basic版のBasicPlanningEngineのstep意味論に対応させ、Kotlin側がこれで`skippable`/`priority`/種別を決定的にマップする）
+3. Kotlin側の実装として`com.actionstarter.ai.schema.PlanEventType`／`com.actionstarter.ai.schema.PlanActionType`の2 enumを新設し、`PlanJsonSchema.TEXT`のenum制約・`SchemaValidator`のmembership検証双方の単一情報源とする。
+4. `display_text`はenum制約の対象外（自由文のまま）とし、Semantic Contextualizationの自由度を維持する。
+5. 本語彙は実機プローブ（P7-C8）で過不足を再検証する条項を付す（§17「モデル名を製品仕様として固定しない」と同じ精神——語彙も製品仕様として硬直的に固定しない）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| 語彙確定を見送り、P7-C3実装時に開発者が自己判断で決める | TEAMS §5「契約変更はFable 5承認必須」の原則に反する。enum語彙はスキーマ制約・検証ロジックの両方に直接影響する契約そのものであり、P7-C2完了記録も明示的にFable 5確認事項として差し戻していた |
+| Basic版のstep意味論（`BasicPlanningEngine`の`semanticId`）をそのまま`action_type`語彙に流用する | Basic版の`semanticId`は決定的な固定文言生成用の内部IDであり、LLMのSemantic Contextualization（予定固有の文脈化された行動）を表現する語彙としては粒度が異なる。Basic版のステップ意味に「対応」させつつも独立した語彙集合として新設した |
+| `action_type`の語彙をP7-C0の`LiteRtLmProbeTest`が使った暫定値（例:`prepare_item`等）のまま採用する | P7-C0自身が「プローブ用の暫定値」と明記しており、P7-C1完了記録も正式な契約確定の根拠として使うことを明示的に避けていた |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/schema/PlanJsonSchema.kt`（`PlanEventType`/`PlanActionType` enum新設）、`app/src/test/java/com/actionstarter/ai/schema/SchemaValidatorTest.kt`（T-SCH-2・T-SCH-5・T-RF-1のenum参照更新）。
+
+**検証方法**: T-SCH-2（全`event_type`×`action_type`組み合わせの検証通過）・T-RF-1（`PlanJsonSchema.TEXT`のenum配列が`PlanEventType`/`PlanActionType.JSON_VALUES`と一致）でP7-C3以降回帰ロックする。P7-C8実機プローブで実際のLLM出力語彙との過不足を確認する。
+
+**再検討トリガー**: P7-C8実機プローブで語彙の過不足（LLMが頻繁にenum外の値を出力する、または特定のenum値が実用上不要と判明する等）が見つかった場合、本ADRを改訂する。
+
+---
+
+### ADR-0047: ContentSanityChecker新設と3段検証パイプラインを確定する（SchemaValidatorの責務純化・重複action_type検出の移管）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み ／ 決定者: Fable 5 ／ 起案agent: domain-implementer ／ 関連仕様§: §20「Schema validation必須」・§34（捏造禁止、品質ハーネス引用）・§13/§15（記録トリガー①interface契約の変更・②仕様未定義箇所の補完に該当）
+
+- **ADR番号の付番根拠**: ADR-0045と同一バッチ起票。起票直前の`grep`再実測（ADR-0045参照）によりADR-0046の次番としてADR-0047を採番した。
+
+**背景**: 品質ハーネス§6は「①形式検証→②内容sanity検証→③retry」の3段構成を提案し（UQ-3で「分離を推奨」）、P7-C2完了記録は「重複`action_type`検出（`uniqueItems`相当）の担当が①か②か未確定」という論点を残していた（品質ハーネス§10 `SchemaValidator`行）。またADR-0045の`generatePlan()`契約変更により、`SchemaValidator`/`ContentSanityChecker`の間の入出力の流れを明文化する必要が生じた。
+
+**決定**:
+1. 検証パイプラインを`LLM生JSON(String) → SchemaValidator.validate(rawJson)[①形式] → ContentSanityChecker.check(response, context)[②内容] → LocalAiGatewayがAIPlanResponseを保持`と確定する。
+2. `SchemaValidator`は①形式検証＋パースに専念する（enum・件数・長さ・`additionalProperties`）。`SchemaValidationResult.Valid(response: AIPlanResponse)`のまま、raw Stringは別途保持しない。
+3. `com.actionstarter.ai.schema.ContentSanityChecker`（新設、TODO本体）を追加し、以下を②の責務として集約する: display_text長さ上限の再確認、禁止語/プレースホルダ検出、捏造検出（数字・時刻・URL）、titleコピー検出（緩和版：title6文字未満は免除、完全一致または80%以上占有のみ不合格）、locale整合、**重複action_type検出**。
+4. 重複action_type検出は①（`SchemaValidator`）ではなく②（`ContentSanityChecker`）の責務と確定する（`ResponseFormat.json()`のLLGuidanceが`uniqueItems`をenforceしないため後段Kotlin検証が必須だが、担当は②側とする）。
+5. `AiFallbackReason.SCHEMA_INVALID`は①・②いずれの不合格も集約して表す（②専用の新規理由コードは追加しない）。
+6. `ContentSanityChecker`は本サイクルでは`LocalAiGateway`のコンストラクタへ配線しない（P7-C5で配線。理由はADR-0048参照）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| 重複`action_type`検出を`SchemaValidator`（①）に残す | ①は「decode時の文法制約を独立に再検証する形式検証層」という一貫した責務定義を持つ。重複検出は個々のフィールド制約ではなく複数stepにまたがる意味的な整合性チェックであり、②「内容sanity」の性質に近い。品質ハーネスUQ-3の「形式/内容の責務分離」原則に従い②へ寄せた |
+| `ContentSanityChecker`を`SchemaValidator`のメソッドとして統合する（別クラスにしない） | 品質ハーネスUQ-3が「分離を推奨」と結論しFable 5が採用済み。単一クラスに統合すると「decode制約の独立再検証」と「LLM出力の意味的な妥当性判定」という異なる性質の責務が混在し、責務の肥大化・テストの複雑化を招く |
+| ②専用の`AiFallbackReason`（例:`CONTENT_INVALID`）を新設する | 品質ハーネス§6のフロー図が「①または②失敗→retry1回→なお失敗→`Fallback(SCHEMA_INVALID)`」と明示しており、呼び出し側（UI等）にとって①②の失敗はいずれも「AI提案の生成に失敗した」という同一の意味を持つ。理由コードを分けても呼び出し側の分岐が増えるだけで実益がない |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/schema/ContentSanityChecker.kt`（新設）、`app/src/main/java/com/actionstarter/ai/schema/SchemaValidator.kt`（責務確定のKDoc更新）、`app/src/main/java/com/actionstarter/ai/LocalAiGateway.kt`（パイプラインKDoc更新）、`app/src/main/java/com/actionstarter/ai/AiFallbackReason.kt`（`SCHEMA_INVALID` KDoc更新）、`app/src/test/java/com/actionstarter/ai/schema/SchemaValidatorTest.kt`（T-SCH-21削除）。
+
+**検証方法**: `SchemaValidatorTest`からT-SCH-21（重複`action_type`検出）を削除し、対応する検証は将来の`ContentSanityCheckerTest`（未作成、P7-C3以降へ申し送り）へ引き継ぐ。`:app:testDebugUnitTest --rerun`で回帰0を確認済み（tests=476／failures=51／errors=0／skipped=1）。
+
+**再検討トリガー**: P7-C5で`LocalAiGateway`へ`ContentSanityChecker`を配線する際、本ADRのパイプライン順序（①→②→retry）を実装が正しく反映しているかをT-GW-*系のGreen化で確認すること。`ContentSanityChecker`の具体的な検出閾値（80%占有等）はP7-C8実機プローブでの人手評価結果次第で再検討の余地がある（品質ハーネス§8）。
+
+---
+
+### ADR-0048: LocalAiGateway依存4型（ModelStorage/ModelVerifier/DeviceCapability/AiPreferences）をinterface化する
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み ／ 決定者: Fable 5 ／ 起案agent: domain-implementer ／ 関連仕様§: 本プロジェクトの既存DI境界規約（`CalendarService`・`RoutingService`・`LocationService`・`GeocodingService`等、いずれもinterfaceベース）との一貫性（記録トリガー①interface契約の変更に該当）
+
+- **ADR番号の付番根拠**: ADR-0045と同一バッチ起票。起票直前の`grep`再実測（ADR-0045参照）によりADR-0047の次番としてADR-0048を採番した。
+
+**背景**: P7-C2完了記録は差し戻し事項4として「`LocalAiGateway`の4つの具象クラス依存（`ModelStorage`/`ModelVerifier`/`DeviceCapability`/`AiPreferences`）が、本プロジェクトの他の全DI境界（`CalendarService`/`RoutingService`/`NotificationService`/`GeocodingService`/`HttpPostClient`、いずれもinterface）と設計が異なる」ことを報告し、「P7-C5でfake注入性を高める設計変更（interface抽出等）を検討するか、Robolectric実状態操作を正式な方式として採用するかの判断が必要」としていた。
+
+**決定**: `ModelStorage`／`ModelVerifier`／`DeviceCapability`／`AiPreferences`の4型を具象クラスからinterfaceへ変更し、実装を`ModelStorageImpl`／`ModelVerifierImpl`／`DeviceCapabilityImpl`／`AiPreferencesImpl`へ分離する。interfaceは元の型名をそのまま引き継ぎ（既存の`LocalAiGateway`コンストラクタ引数の型シグネチャ・`ai/model/ModelDownloader`の型参照は無変更で成立する）、`AppContainer.kt`の構築箇所（`localAiGateway` by lazy ブロック）のみ`XxxImpl`への構築対象変更を行う。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| Robolectric実Context操作を正式な方式として採用し、interface化しない | 本プロジェクトの他の全DI境界がinterfaceでfake差し替え可能という一貫した規約から本コンポーネント群だけが逸脱したままになる。モック不要な軽量fakeでのテストという選択肢を将来にわたって閉ざす |
+| 4型すべてを1つの大きなinterfaceへ統合する | 各型が担う責務（ファイル管理・検証・端末判定・設定永続化）が明確に異なり、統合すると単一責任原則に反する。既存の4クラス分割（P7-C1 scaffold）の設計自体は妥当であり、interface化のみを行う |
+| interface名を`IModelStorage`等の接頭辞付きにする | 本プロジェクトの既存interface（`CalendarService`・`RoutingService`等）はいずれも接頭辞なしの命名規約であり、一貫性を優先して元の型名をそのままinterfaceへ引き継いだ |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/model/ModelStorage.kt`・`ModelVerifier.kt`・`DeviceCapability.kt`、`app/src/main/java/com/actionstarter/ai/AiPreferences.kt`（いずれもinterface＋Impl分離）、`app/src/main/java/com/actionstarter/di/AppContainer.kt`（`localAiGateway`構築箇所の型名変更のみ、結線ロジック自体は無変更）、`app/src/test/java/com/actionstarter/ai/model/DeviceCapabilityTest.kt`・`ModelVerifierTest.kt`、`app/src/test/java/com/actionstarter/ai/LocalAiGatewayTest.kt`（構築呼び出しの型名変更）。
+
+**検証方法**: `:app:compileDebugKotlin`成功（`AppContainer.kt`含む本番コード全体のコンパイル）、`:app:compileDebugUnitTestKotlin`成功、`:app:testDebugUnitTest --rerun`で回帰0確認。`AppContainerTest`（T-P4DI-1／T-P6DI-1、`calendarService`/`planningEngine`/`recoveryEngine`とmockファイル非存在のみを検証）は本ADRの変更対象（`localAiGateway`）に触れないため無変更・無影響。
+
+**再検討トリガー**: P7-C4／P7-C5でこれら4型の本体を実装する際、Robolectric実状態操作を続けるか軽量fakeへ切り替えるかは、実装したロジックの複雑度（Robolectric shadowでしか再現できない挙動があるか）を見て判断すること（本ADRはinterface化という前提を確定するのみで、フィクスチャ方式そのものの選択は含まない）。
+
+---
+
+### ADR-0049: retry契約の是正・AiMetrics.sanityPassed追加・PlanPromptBuilder few-shot契約追加、およびP7-C2差し戻し論点（T-GW-11/14/18）の帰属確定
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み ／ 決定者: Fable 5 ／ 起案agent: domain-implementer ／ 関連仕様§: §20「Validation失敗→retry1回→Basic Engine」・§60（Analytics許可リスト）（記録トリガー①interface契約の変更〔PlanPromptBuilderメソッド追加・AiMetricsフィールド追加〕・②仕様未定義箇所の補完に該当）
+
+- **ADR番号の付番根拠**: ADR-0045と同一バッチ起票。起票直前の`grep`再実測（ADR-0045参照）によりADR-0048の次番としてADR-0049を採番した（本バッチADR-0045〜0049で5件。次ADR番号はADR-0050）。
+
+**背景**: 品質ハーネス§0は基盤計画S-2「retryは同一プロンプト・temperature=0.0・seed固定での1回再生成」が論理的に無効（決定的retryは同一失敗を再現する）と指摘し、「新規single-turnセッション＋微小摂動＋静的制約」への是正を提案していた（UQ-2、Gemini G1 CRITICAL #1でさらに精緻化）。また品質ハーネスUQ-5は`AiMetrics.sanityPassed`の追加を、§10は`PlanPromptBuilder.buildSystemInstruction`/`buildFewShot`の追加をそれぞれ提案していた。加えてP7-C2完了記録は差し戻し事項5〜7として、T-GW-11（§12.5配置の妥当性）・T-GW-14（Analyticsコラボレータ追加の承認要否）・T-GW-18（フィクスチャ完成待ち）の3件をFable 5確認事項として残していた。
+
+**決定**:
+1. **retry契約の是正**: retryは「新規single-turnセッション（1回目の失敗出力を含む会話履歴を破棄）＋微小摂動（temperature 0.1〜0.2, topK=5程度）＋静的な簡潔化制約文の追加」と確定する（マルチターン自己修正は採らない）。retryの発生判断・呼び出し回数の制御は`LocalAiGateway`（Gateway起点で`model.generatePlan()`を最大2回呼ぶ、既存T-GW-7/T-GW-8の設計を維持）が担い、2回目呼び出し時にどのサンプリング条件を使うかは`LiteRtLmLocalLanguageModel`（P7-C5実装）の内部関心事とする。この2層の役割分担をKDocへ明記した。
+2. **`AiMetrics.sanityPassed: Boolean`を追加**する（品質ハーネスUQ-5）。§60許可リストの範囲内（非PII bool値）。
+3. **`PlanPromptBuilder`へ`buildSystemInstruction(locale)`／`buildFewShot(locale, shotCount)`を追加**する（品質ハーネス§10、既存`build`の署名は変更しない）。`buildFewShot`の戻り値型は品質ハーネスが提案する`List<com.google.ai.edge.litertlm.Message>`ではなく、ランタイム非依存の`PromptExample`（新設データクラス）とする——`com.google.ai.edge.litertlm`のimportを`ai/adapter/`配下に限定する既存のT-AIISO-9規律（§8.1）を優先したため。
+4. **T-GW-11はLocalAiGatewayでなくModelDownloader/Settings領域の責務と確定**する（P7-C2の判断を追認）。
+5. **Analytics collaboratorは追加しない**。T-GW-14はPhase 10（`AnalyticsStore`導入）／Phase 12（Analytics実装）とともに実装することを確定し、`LocalAiGateway`のコンストラクタへのワークアラウンド的な追加は行わない。
+6. **T-GW-18はP7-C4（ModelStorageファイルレイアウト規約確定時）まで据え置く**ことを確定する。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| retryの2回目サンプリング条件を`LocalLanguageModel`interfaceへパラメータとして追加する（例:`generatePlan(context, isRetry: Boolean)`） | §16の`LocalLanguageModel`は「凍結」（計画書全体で繰り返し明記）interfaceであり、本タスクの裁定（1〜8）はいずれもこのinterfaceへ新規パラメータを追加することを明示的に指示していない。パラメータ追加は裁定の対象外の設計変更に当たるため見送り、adapter内部状態での解決余地をP7-C5へ残した |
+| `buildFewShot`の戻り値型を品質ハーネス案どおり`List<Message>`にする | `com.google.ai.edge.litertlm`をimportしてよいのは`ai/adapter/`配下のみという既存規律（§8.1・T-AIISO-9、計画書§9.3で確定済みの構造的制約）と直接衝突する。`ai/prompt/`パッケージがランタイム型に依存すると、次点のllama.cpp案への切替時に`ai/adapter/`の差し替えだけでは済まなくなり、§16「モデルは技術検証で交換可能にする」という上位契約を壊す |
+| T-GW-14のために`LocalAiGateway`のコンストラクタへ`analyticsRecorder: ((AiFallbackReason) -> Unit)? = null`のような任意コラボレータを先回りで追加する | 本タスクの制約「`AppContainer`は裁定5のinterface化に必要な最小変更のみ可」を超える。Analytics基盤（Phase 10/12）の設計と無関係に器だけ先行させると、実際のAnalytics実装時に器の再設計が必要になるリスクがある（YAGNI） |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/LocalAiGateway.kt`（`AiMetrics.sanityPassed`追加、パイプラインKDoc更新）、`app/src/main/java/com/actionstarter/ai/adapter/LiteRtLmLocalLanguageModel.kt`（retry契約のKDoc明記）、`app/src/main/java/com/actionstarter/ai/prompt/PlanPromptBuilder.kt`（`buildSystemInstruction`/`buildFewShot`/`PromptExample`新設）、`app/src/test/java/com/actionstarter/ai/AiMetricsTest.kt`（期待フィールド集合更新）、`app/src/test/java/com/actionstarter/ai/LocalAiGatewayTest.kt`（T-GW-11/14/18対象外理由のKDoc更新）。
+
+**検証方法**: `AiMetricsTest.fieldNames_matchConfirmedAllowList`（9フィールドへ更新、born-green維持）。`PlanPromptBuilderTest`は既存7件（T-PRM-1〜7、`build`のみ対象）を無変更のままRed維持していることを確認済み（`buildSystemInstruction`/`buildFewShot`の新規Redテストは本サイクルの対象外、次サイクルへ申し送り）。
+
+---
+
+### ADR-0050: `LocalLanguageModel.generatePlan()`へ`samplingPolicy: SamplingPolicy`引数を追加し、`SamplingPolicy` enumを新設する（Fable 5裁定9、ADR-0049の一部却下判断を覆す）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み ／ 決定者: Fable 5（追加裁定9） ／ 起案agent: test-writer（P7-C2c、品質ハーネス由来の新設部品へのRed補完サイクル） ／ 関連仕様§: §16（`LocalLanguageModel` interface）・§20「Validation失敗→retry1回→Basic Engine」・品質ハーネス§4「サンプリング設計」・§6「3段検証＋再試行1回」（記録トリガー①interface契約の変更に該当）
+
+- **ADR番号の付番根拠**: 起票直前に`grep -n "^### ADR-" DECISIONS.md`を再実測し、最新確定ADRがADR-0049（本書1188行）であることを確認した。ADR-0049の背景欄が「次ADR番号はADR-0050」と明記済みのため、その次番としてADR-0050を採番する。
+
+**背景**: 品質ハーネス§10は`LocalAiGateway`のretry是正として「2回目呼び出し時にどのサンプリング条件を使うか」を要求していたが、ADR-0049はこれを「retryの発生判断・呼び出し回数の制御は`LocalAiGateway`が担い、2回目呼び出し時にどのサンプリング条件を使うかは`LiteRtLmLocalLanguageModel`（P7-C5実装）の内部関心事とする」と裁定し、**`LocalLanguageModel`interfaceへのパラメータ追加は明示的に却下**していた（ADR-0049「代替案と却下理由」表1行目、理由:「§16の`LocalLanguageModel`は凍結interfaceであり、裁定1〜8はいずれもこのinterfaceへ新規パラメータを追加することを明示的に指示していない」）。この却下により、`LiteRtLmLocalLanguageModel`のKDocには「Gateway起点の『これは何回目の呼び出しか』をどう本クラスへ伝えるかは未確定のまま残す」という未解決の設計課題が残置されていた（`docs/plans/phase7-local-llm-foundation.md`§14.4申し送り5）。
+
+P7-C2c（品質ハーネス由来の新設部品へのRed補完サイクル）の指示として、Fable 5が追加裁定9を下し、この却下判断を明示的に覆した。理由: adapter内部でのカウンタ追跡（ADR-0049が想定した代替案）は、adapterが「検証の成否」という本来Gatewayの関心事に属する情報を推測して持つことになり責務が曖昧になる。Gatewayが検証結果に基づき使用する[SamplingPolicy]を型で明示的に指定する設計の方が、責務分担（Gateway=方針決定、adapter=方針に従うだけ）がより明確である。
+
+**決定**:
+1. `SamplingPolicy` enumを`ai/`パッケージ直下へ新設する（`Primary(topK=1, temperature=0.0, appendConcisenessConstraint=false)`・`Retry(topK=5, temperature=0.15, appendConcisenessConstraint=true)`の2値、品質ハーネス§4準拠）。ランタイム非依存（`com.google.ai.edge.litertlm`をimportしない）とし、T-AIISO-9規律と衝突しない。
+2. `LocalLanguageModel.generatePlan`のシグネチャを`generatePlan(context: PlanningContext, samplingPolicy: SamplingPolicy = SamplingPolicy.Primary): String`へ変更する（§16契約変更、TEAMS §5フロー）。
+3. `LocalAiGateway`が1回目=`SamplingPolicy.Primary`、検証パイプライン（`SchemaValidator`→`ContentSanityChecker`）不合格による2回目=`SamplingPolicy.Retry`で`model.generatePlan`を呼び分ける契約とする（この呼び分けはGatewayの責務。adapterは検証を知らず渡された方針に従うだけ）。
+4. `LiteRtLmLocalLanguageModel`は渡された`SamplingPolicy`の`topK`／`temperature`を実際の`SamplerConfig`へマップし、`appendConcisenessConstraint=true`のときのみdata message末尾に固定簡潔化制約文を追記する（マップの具体値・実装自体はP7-C5、本ADRはscaffold契約のみ確定する）。
+5. `AppContainer`は変更不要と確認する（`generatePlan`の呼び出し箇所が存在せず、既定値`SamplingPolicy.Primary`で解決されるため）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| ADR-0049の判断を維持し、`LiteRtLmLocalLanguageModel`が内部カウンタで「これは何回目の呼び出しか」を追跡する | Gateway側が既に検証結果（①②合否）を知っているにもかかわらず、adapter側でそれを「呼び出し回数」という間接的な代理指標から再推測させる設計になる。Gatewayが並行呼び出しをMutexで直列化する設計（T-GW-15）と組み合わさると、内部カウンタの状態管理がGatewayのライフサイクルと暗黙に同期していなければならず、責務境界が曖昧になる |
+| `samplingPolicy`を`Boolean`（`isRetry`）で表現する | ADR-0049が却下理由に挙げた案そのもの。加えて、`Boolean`では品質ハーネス§4が定めるtopK/temperatureの具体値・簡潔化制約フラグをadapter側に暗黙の対応表として持たせる必要があり、契約が型で表現されず可読性・テスト容易性の両方で劣る |
+| `SamplingPolicy`の`topK`/`temperature`に加えて`topP`/`seed`もscaffoldへ含める | 品質ハーネス§4は`topP`/`seed`の具体値にも言及するが、これらはLiteRT-LMの`SamplerConfig`への実際のマッピング（P7-C5の実装詳細）に属し、Gateway/interfaceレベルの契約としては`topK`/`temperature`/`appendConcisenessConstraint`で十分。過剰な先回りはP7-C5の設計自由度を不必要に縛る（YAGNI） |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/SamplingPolicy.kt`（新設）、`app/src/main/java/com/actionstarter/ai/LocalLanguageModel.kt`（`generatePlan`シグネチャ変更・KDoc更新）、`app/src/main/java/com/actionstarter/ai/adapter/LiteRtLmLocalLanguageModel.kt`（overrideシグネチャ追随・KDoc更新）、`app/src/main/java/com/actionstarter/ai/LocalAiGateway.kt`（パイプラインKDoc更新、本体`TODO()`は無変更）、`app/src/main/java/com/actionstarter/ai/schema/ContentSanityChecker.kt`・`app/src/main/java/com/actionstarter/ai/prompt/PlanPromptBuilder.kt`（「Redテスト未作成」というKDoc記述の是正）、`app/src/test/java/com/actionstarter/ai/SamplingPolicyTest.kt`（新設）、`app/src/test/java/com/actionstarter/ai/schema/ContentSanityCheckerTest.kt`（新設）、`app/src/test/java/com/actionstarter/ai/prompt/PlanPromptBuilderTest.kt`（QH-8・QH-14相当8件追加）、`app/src/test/java/com/actionstarter/ai/LocalAiGatewayTest.kt`（フェイクのoverride署名追随、T-GW-19・T-GW-20追加）。`AppContainer.kt`は変更なし。
+
+**検証方法**: `:app:compileDebugKotlin`／`:app:compileDebugUnitTestKotlin`成功（`build/agent-logs/p7c2c-compile.log`）。新設・更新4クラスの個別実行で50件中46件Red（45件`NotImplementedError`＋既存T-GW-13由来の`AssertionError`1件、本ADRと無関係）・4件born-green（`build/agent-logs/p7c2c-red.log`）。`:app:testDebugUnitTest --rerun`でtests=505／failures=76／errors=0／skipped=1、既存476件の回帰0（`build/agent-logs/p7c2c-regression.log`）。詳細は`docs/plans/phase7-local-llm-foundation.md`§14.5参照。
+
+**再検討トリガー**: P7-C3以降のGreen実装で`LocalAiGateway`が実際にPrimary→Retryの呼び分けを実装する際、T-GW-19・T-GW-20がその実装を正しく回帰ロックしているかを確認すること。P7-C5で`LiteRtLmLocalLanguageModel`が`SamplingPolicy`を実際の`SamplerConfig`へマップする際、`topP`/`seed`の具体値をどう決定するかは本ADRの対象外として残る（次ADRで確定すること）。
+
+---
+
+### ADR-0051: `LocalAiGateway`のP7-C3 Green実装スコープを確定する（`ContentSanityChecker`直接配線・`modelStorage`/`modelVerifier`チェックのP7-C4延期）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（domain-implementer判断・報告事項、タスク指示「配線がAppContainer等の凍結ファイルに波及するなら延期して報告」の枠内） ／ 決定者: domain-implementer（P7-C3、Fable 5への報告を前提とした実装時判断） ／ 起案agent: domain-implementer ／ 関連仕様§: §20「Schema validation必須」・§8.6発動条件表・ADR-0047（3段検証パイプライン）・ADR-0048（4型のinterface化）（記録トリガー②仕様未定義箇所の補完に該当。既存interfaceのシグネチャは無変更のため①契約変更には該当しない）
+
+- **ADR番号の付番根拠**: 起票直前に`grep -n "^### ADR-" DECISIONS.md`を再実測し、最新確定ADRがADR-0050（本書1218行）であることを確認した。その次番としてADR-0051を採番する。
+
+**背景**: P7-C3（Green実装）のタスク指示は、`ContentSanityChecker`の`LocalAiGateway`への実配線を「Gatewayの3段検証Greenに必要なら計画書§14 P7-C3の範囲で配線し、判断を報告——配線がAppContainer等の凍結ファイルに波及するなら延期して報告」という条件付きで許可していた（ADR-0047は当初この配線をP7-C5としていた）。実装に着手したところ、以下2点の設計判断が必要になった。
+
+1. **`ContentSanityChecker`／`SchemaValidator`の配線方法**: 両クラスはいずれもコンストラクタ引数を持たない状態レス（純粋関数的）クラスであり、`LocalAiGatewayTest`もこれらをfakeへ差し替える手段を一切要求していない（fakeで差し替える必要があるのは§16凍結interfaceの`LocalLanguageModel`のみ）。
+2. **`modelStorage`（F90・§8.6 #11「モデル未導入」）・`modelVerifier`（F89・§8.6 #12「ロード前再検証」）チェックの配線可否**: `LocalAiGatewayTest`の`installedModelStorage()`ヘルパーは、同テストのクラスKDoc（P7-C2c時点で既に記載済み）が明記するとおり`notInstalledModelStorage()`と**同一の未初期化`ModelStorageImpl`インスタンス**を返す「意図表明のみのプレースホルダ」である。`ModelStorageImpl`のファイル配置規約はP7-C4で確定する契約（ADR-0048）であり、本サイクルの対象範囲外。`modelStorage.installedModelPath()`を`generatePlan()`から呼び出すと、この未実装呼び出しが**「導入済み」を意図したフィクスチャも含め全T-GW-*ケースで無条件に`NotImplementedError`を送出**し、5系統フォールバック（T-GW-1・4〜10・12・13・15・17・19・20、14件）が1件もGreen化できなくなることが実装検証で判明した。
+
+**決定**:
+1. **`ContentSanityChecker`・`SchemaValidator`は`LocalAiGateway`のコンストラクタへ注入せず、private フィールドとして直接インスタンス化する**（`private val schemaValidator = SchemaValidator()`・`private val contentSanityChecker = ContentSanityChecker()`）。この設計により、両クラスの利用開始に`AppContainer.kt`の変更は一切不要となった（凍結ファイルへの波及なし。タスク指示の条件を満たし配線を実施）。
+2. **`modelStorage.installedModelPath()`（§8.6 #11）・`modelVerifier`によるロード前再検証（§8.6 #12）は、`LocalAiGateway.generatePlan()`の実行パスから本サイクルでは意図的に除外する**。`modelStorage`／`modelVerifier`はコンストラクタ引数として維持し（テストが構築時に渡すためシグネチャは変更不可）、P7-C4で`ModelStorage`のファイル配置規約が確定した時点でP7-C5がこの2ステップを実装する受け皿として残す。
+3. 上記2の結果として、**T-GW-3**（モデル未導入→`Fallback(MODEL_NOT_INSTALLED)`）は本サイクルではGreen化の対象外とする。失敗の性質は`NotImplementedError`（`LocalAiGateway`最上位の`TODO()`起因）から`AssertionError`（`installedModelStorage()`使用時に`model.generatePlan`が実行され`AiResult.Success`が返るため、`Fallback`を期待するアサーションに反する）へ変わるが、依然としてRedのままである。**T-GW-18**（ロード前再検証失敗→`MODEL_CORRUPTED`）はADR-0049裁定8により元々P7-C4まで据え置き確定済みであり（テストメソッド自体が未作成）、本決定と整合する。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `modelStorage.installedModelPath()`の呼び出しを`try/catch`で`NotImplementedError`のみ捕捉し「導入済みとみなして続行」する | 「未実装であること」を「モデルが導入済みであること」の代理シグナルとして扱う設計であり、意味的に誤り（本番環境で`ModelStorageImpl`が正しく実装された後もこの`catch`節が予期せず生き残るリスクがあるサイレント障害の温床）。§95.6「サイレントに握り潰さない」の精神に反する |
+| `ModelStorageImpl.installedModelPath()`を本サイクルで最小実装する（例: `noBackupFilesDir/models/`配下に1件でもファイルがあれば非null） | ファイル配置規約（`.part`拡張子・原子的リネーム・複数モデル対応時の命名等）はP7-C4のスコープとして明示的に計画書へ切り出されており、本タスクの対象範囲（1〜8の列挙）にも含まれない。`LocalAiGatewayTest`自身のKDocも「本ヘルパーは...P7-C4・P7-C5が上記2点の内部規約を確定させた時点で...実際にファイルを配置する形へ更新する必要がある」と将来更新を明示しており、テスト側の意図に反してまで自己判断でファイルI/Oを組み立てることは「計画書のケースが曖昧でテスト化できない場合は差し戻し報告」という同テストの既定方針（T-GW-11/14/18で採用済み）と整合しない |
+| `SchemaValidator`／`ContentSanityChecker`を`LocalAiGateway`のコンストラクタへデフォルト引数付きで追加する（`schemaValidator: SchemaValidator = SchemaValidator()`等） | `AppContainer.kt`の呼び出し側が名前付き引数のみを使用しているため技術的には無変更で成立するが、状態を持たない純粋関数的クラスをテストがfake差し替えを一切要求していない以上、コンストラクタへ公開する動機がない（YAGNI）。privateフィールドとして直接保持する方が依存グラフが単純になる |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/LocalAiGateway.kt`（`generatePlan`本体実装、`schemaValidator`／`contentSanityChecker`のprivateフィールド追加）。`app/src/main/java/com/actionstarter/di/AppContainer.kt`は**無変更**（本ADRの主要な結論の1つ）。`app/src/test/java/com/actionstarter/ai/LocalAiGatewayTest.kt`は無変更（既存フィクスチャそのままでT-GW-1・4〜10・12・13・15・17・19・20がGreen化、T-GW-3のみ引き続きRed）。
+
+**検証方法**: `:app:testDebugUnitTest --tests "com.actionstarter.ai.LocalAiGatewayTest"`実測で16件中15件Green・1件（T-GW-3）Red（`AssertionError`、`build/agent-logs/p7c3-green-LocalAiGateway.log`）。`:app:testDebugUnitTest --rerun`全体でtests=505／failures=1（T-GW-3のみ）／errors=0／skipped=1、既存417件（416 pass+1 skip）の回帰0（`build/agent-logs/p7c3-full.log`、JUnit XML集計で失敗クラスが`LocalAiGatewayTest`1件のみであることを確認済み）。
+
+**再検討トリガー**: P7-C4で`ModelStorage`のファイル配置規約が確定した時点で、`LocalAiGateway.generatePlan()`へ§8.6 #11（`modelStorage.installedModelPath()`チェック）・#12（`modelVerifier`ロード前再検証）を配線し、`LocalAiGatewayTest`の`installedModelStorage()`ヘルパーを実際にファイルを配置する形へ更新してT-GW-3をGreen化すること（`LocalAiGatewayTest`自身のKDocが既に明記している更新要求）。同時にT-GW-18（ADR-0049裁定8）のフィクスチャ完成も検討すること。
+
+---
+
+### ADR-0052: `AiPreferencesImpl`の最小実装をP7-C6からP7-C3へ前倒しする（`LocalAiGateway`のGreen化に必要な最小範囲）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（domain-implementer判断・報告事項） ／ 決定者: domain-implementer（P7-C3、Fable 5への報告を前提とした実装時判断） ／ 起案agent: domain-implementer ／ 関連仕様§: §19「AI OFFが既定」（記録トリガー②仕様未定義箇所の補完に該当。`AiPreferences`interface自体〔ADR-0048〕・KDocが指定する実装内容には一切矛盾しないため新規の仕様判断は伴わない）
+
+- **ADR番号の付番根拠**: ADR-0051と同一バッチ起票。起票直前の`grep`再実測（ADR-0051参照）によりADR-0051の次番としてADR-0052を採番した。
+
+**背景**: 計画書§14サイクル表はF92（`AiPreferences`）をP7-C6（Green: settings）の担当としているが、`LocalAiGateway.generatePlan()`が実行時に確認する順序の最初のステップ（§8.6 #10「AI OFF判定」）は`preferences.aiEnabled`を読む。P7-C1完了時点の`AiPreferencesImpl.aiEnabled`は`TODO()`（P7-C6実装予定）のままであり、これを未実装のまま残すと、`LocalAiGatewayTest`の**全16ケース**（AI ONを期待するケースもAI OFFを期待するケースも等しく）が最初のガードで`NotImplementedError`となり、本タスクが対象とする「5系統フォールバック」「3段検証パイプライン」「retry呼び分け」のいずれも実測・Green化できないことが実装検証で判明した。
+
+**決定**: `AiPreferencesImpl.aiEnabled`（get/set）・`selectedModelId`（get/set）の2プロパティを、既存のTODOコメントが一字一句指定する実装（`SharedPreferences.getBoolean(KEY_AI_ENABLED, DEFAULT_AI_ENABLED)`／`.edit().putBoolean(KEY_AI_ENABLED, value).apply()`、`getString`/`putString`の対も同型）どおりにP7-C3の範囲内で実装する。両プロパティとも設計上の曖昧さを一切伴わない（`AiPreferences`interfaceのKDoc・`AiPreferencesImpl`のコンストラクタKDocが実装内容を既に確定済みであり、P7-C3で新たに決める事項がない）ため、ContentSanityCheckerのGateway配線（ADR-0051）と同じ「Greenに必要な最小実装」の扱いとする。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `AiPreferencesImpl`を`TODO()`のまま残し、`LocalAiGatewayTest`全16ケースをP7-C6まで意図的にRed維持する | 本タスクの主目的（LocalAiGatewayの5系統フォールバック・3段検証パイプライン・retry呼び分けをJVMでGreen化する）が一切達成できなくなる。5系統フォールバックはT-GW-1・4〜10・12・13・15・17・19・20の14件に跨っており、これらすべてを次サイクルへ丸ごと先送りすることは本タスクの趣旨（実装可能な範囲を最大化する）に反する |
+| `LocalAiGateway`内で`preferences.aiEnabled`の代わりに独自のフォールバック値（例: `try { preferences.aiEnabled } catch (e: NotImplementedError) { true }`）を使う | ADR-0051が却下した「`NotImplementedError`を制御フローの代理シグナルとして扱う」パターンと同種の問題を抱える。本番で`AiPreferencesImpl`が正しく実装された後も検出されにくいサイレント障害の温床になり得る |
+| `AiPreferences`をP7-C3専用のfake実装（`FakeAiPreferences`等）に差し替えるようテスト側の変更を提案する | 本タスクは「テスト側の変更禁止（テストが誤りと判断したら変更せず報告）」を明示しており、`LocalAiGatewayTest`は`AiPreferencesImpl`を直接構築する設計を意図的に採っている（クラスKDoc「Robolectric実Context・実SharedPreferences・実shadowで状態を制御する既存方式は維持」）。テストの意図を尊重し、本番実装側を完成させる方を選んだ |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/AiPreferences.kt`（`AiPreferencesImpl.aiEnabled`／`selectedModelId`のTODO本体を実装）。P7-C6が対象とする他のF92/F97関連（Settings画面・`T-SET-*`）には触れていない。
+
+**検証方法**: `:app:testDebugUnitTest --tests "com.actionstarter.ai.LocalAiGatewayTest"`実測でT-GW-2（AI OFF→`Fallback(AI_DISABLED)`、`model.generatePlanCallCount==0`）を含む16件中15件がGreen化したことを確認（`build/agent-logs/p7c3-green-LocalAiGateway.log`）。`:app:lintDebug`はBUILD SUCCESSFUL・error 0（`SharedPreferences.edit`のKTX化を促す警告1件のみ、既存`SharedPreferencesExecutionScheduleStore`と同型のため許容、`build/agent-logs/p7c3-lint.log`）。
+
+**再検討トリガー**: P7-C6でSettings画面（F97）を実装する際、T-SET-1（初回起動時`aiEnabled==false`）・T-SET-2（トグルON永続化）が本実装で正しく満たされることを確認すること（本ADRの実装は`AiPreferences`interfaceの契約どおりであり、T-SET-1〜2の期待値と矛盾しないと判断済みだが、P7-C6側での再確認を推奨する）。
+
+**再検討トリガー**: P7-C5実装時、adapterがGateway起点の「これは何回目の呼び出しか」をどう判断するか（内部カウンタ等）を確定した時点で、本ADRの該当箇所（決定1）を実装詳細として追記すること。T-GW-14はPhase 10の`AnalyticsStore`設計時に本ADRを参照し、コラボレータの正式な注入方式を設計すること。

@@ -8,6 +8,12 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.actionstarter.ActionStarterApplication
 import com.actionstarter.BuildConfig
+import com.actionstarter.ai.AiPreferencesImpl
+import com.actionstarter.ai.LocalAiGateway
+import com.actionstarter.ai.adapter.LiteRtLmLocalLanguageModel
+import com.actionstarter.ai.model.DeviceCapabilityImpl
+import com.actionstarter.ai.model.ModelStorageImpl
+import com.actionstarter.ai.model.ModelVerifierImpl
 import com.actionstarter.features.departure.DepartureViewModel
 import com.actionstarter.features.eventselection.EventSelectionViewModel
 import com.actionstarter.features.execution.ExecutionViewModel
@@ -223,6 +229,51 @@ class AppContainer(
         context = context,
         foregroundGate = (context as ActionStarterApplication).foregroundGate
     )
+
+    /**
+     * F96実配線の入口（計画書§7.2・§14 P7-C1）。Phase 7完成条件（`ai/`が単体で完結して動く、
+     * 仕様§71・計画書§0）を満たすための唯一の新規プロパティ。[planningEngine]／
+     * [recoveryEngine]の右辺は本サイクルでは無変更（計画書§2.2「Phase 7はAI配線をしない」・
+     * `AppContainerTest`のT-P4DI-1／T-P6DI-1を維持）。
+     *
+     * **`by lazy`必須（R-7・T-P7DI-2）**: 本クラスはeager初期化（クラスKDoc参照）だが、
+     * LLMランタイムを素で足すと起動時に重い初期化が走る。`by lazy`により初回アクセスまで
+     * 生成を遅延させ、起動を重くしない。
+     *
+     * **P7-C1時点の暫定配線（本体はTODO()のみ・TDD厳守）**:
+     * [LiteRtLmLocalLanguageModel]の`modelPathProvider`は
+     * [com.actionstarter.ai.model.ModelStorage.installedModelPath]を都度参照する（未導入時は
+     * 例外——実際のガードは[LocalAiGateway]内の§8.6 #11チェックが先に走る想定。
+     * [LiteRtLmLocalLanguageModel]のKDoc参照）。Analytics収集用コラボレータは未配線
+     * （[LocalAiGateway]のKDoc「Analytics記録の設計は未確定」参照、Fable 5裁定7・ADR-0049で
+     * Phase 10/12へ据え置き確定）。
+     *
+     * **4型のinterface化（Fable 5裁定5、2026-08-10、ADR-0048）**: `ModelStorage`／
+     * `ModelVerifier`／`DeviceCapability`／`AiPreferences`は具象クラスからinterfaceへ変更され、
+     * 実装は`XxxImpl`（[ModelStorageImpl]・[ModelVerifierImpl]・[DeviceCapabilityImpl]・
+     * [AiPreferencesImpl]）へ分離された。本プロパティは実装クラスを構築して
+     * [LocalAiGateway]のinterface型パラメータへ渡す（本コンテナ側の結線ロジック自体は
+     * 無変更、コンストラクタ呼び出しの型名のみがinterface化に伴い変わった）。
+     */
+    val localAiGateway: LocalAiGateway by lazy {
+        val modelStorage = ModelStorageImpl(context)
+        LocalAiGateway(
+            model = LiteRtLmLocalLanguageModel(
+                modelPathProvider = {
+                    checkNotNull(modelStorage.installedModelPath()) {
+                        "LiteRtLmLocalLanguageModel: no model installed (LocalAiGateway should " +
+                            "have guarded MODEL_NOT_INSTALLED before reaching here)"
+                    }
+                }
+            ),
+            modelStorage = modelStorage,
+            modelVerifier = ModelVerifierImpl(),
+            deviceCapability = DeviceCapabilityImpl(context),
+            preferences = AiPreferencesImpl(
+                context.getSharedPreferences(AiPreferencesImpl.PREFS_NAME, Context.MODE_PRIVATE)
+            )
+        )
+    }
 
     /**
      * `ActionStarterNavHost`（統合サイクル・integration owner所有）から呼び出される単一

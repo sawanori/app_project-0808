@@ -348,6 +348,16 @@ ADR-0002 は「Phase 7でネイティブ依存が増大した時点で分割要�
 
 ### 8.4 スキーマ（§20・§21準拠）と2層強制
 
+**契約確定（Fable 5裁定1・2、2026-08-10、ADR-0045・ADR-0046。P7契約確定サイクル）**: 下記は
+本節のドラフト時点（G1通過時）の案であり、その後P7-C2完了記録の差し戻し事項1・2・3を経て
+Fable 5が確定させた最終契約は**品質ハーネス（`docs/plans/phase7-quality-harness.md`）の
+Semantic Contextualization設計原則を採用**し、`estimated_minutes`／`priority`／`skippable`／
+`type`を**LLM出力から完全に除去**した。確定後のスキーマ・詳細な裁定内容は
+`app/src/main/java/com/actionstarter/ai/schema/PlanJsonSchema.kt`のKDoc、および
+DECISIONS.md ADR-0045〜ADR-0047を正とする。以下は当時の設計意図の記録として残す
+（本文中の`estimated_minutes`/`priority`/`skippable`/`type`を含むスキーマ案は**もはや現行
+契約ではない**）。
+
 `AIPlanResponse` / `AIPlanStepResponse` の既存フィールドに1:1対応させる。**絶対時刻フィールドは持たせない（§15）。**
 
 ```text
@@ -362,10 +372,25 @@ steps             : array, minItems 1, maxItems 8
 additionalProperties : false（全階層）
 ```
 
-**第1層（decode時）**: 上記スキーマ文字列を `ResponseFormat.json(...)` として `sendMessage` に渡し、constrained decoding で**構文とenumを生成時点で強制**する。**日本語 MIFEvalJa 0.425 の0.6B級モデルで §20 を成立させる中核**であり、これなしに小型モデルでスキーマ準拠JSONを安定生成することは期待できない。
-**第2層（Kotlin側）**: `SchemaValidator` が**ランタイムの制約を信用せず独立に**再検証する（件数・enum・範囲・重複ID・`required` の `skippable=true` 矛盾・UUID変換）。**「constrained decodingがあるから検証不要」としないことを設計原則として固定する**（信頼境界。§20「Schema validation必須」）。
+**確定後の契約（ADR-0045・ADR-0046。現行）**:
 
-**トークン予算（decode 一桁 tok/s 前提の必須制約）**: 上記スキーマで steps 8件を出力すると概ね数百トークンとなり、decode 8〜13 tok/s では数十秒に達する。`ConversationConfig.maxOutputToken` に上限を設け、**実運用の既定 steps 件数は 5 程度に抑える**方向で P7-C0 の実測（V-4: thinking無効時の実出力トークン数）を踏まえて確定する。
+```text
+event_type   : string, enum固定（PlanEventType、8値: business_meeting/medical/social/meal/
+               travel/errand/personal/other）
+steps        : array, minItems 1, maxItems 8
+  action_type : string, enum固定（PlanActionType、7値: finish_current_task/prepare_items/
+                get_ready/gather_belongings/leave/commute/arrive）
+  display_text: string, minLength 1, maxLength 60（enum非制約の自由文。Semantic
+                Contextualizationの唯一の自由度）
+additionalProperties: false（全階層）
+```
+`type`／`estimated_minutes`／`priority`／`skippable`はLLM出力から除去し、`action_type`から
+Kotlin側（Phase 8 `LocalAIPlanningEngine`）が決定的にマップする（§18申し送り参照）。
+
+**第1層（decode時）**: 上記スキーマ文字列を `ResponseFormat.json(...)` として `sendMessage` に渡し、constrained decoding で**構文とenumを生成時点で強制**する。**日本語 MIFEvalJa 0.425 の0.6B級モデルで §20 を成立させる中核**であり、これなしに小型モデルでスキーマ準拠JSONを安定生成することは期待できない。
+**第2層（Kotlin側）**: `SchemaValidator`（①形式検証）が**ランタイムの制約を信用せず独立に**再検証し（件数・enum・長さ・`additionalProperties`）、新設`ContentSanityChecker`（②内容sanity、ADR-0047）が捏造検出・titleコピー検出・locale整合・重複`action_type`検出を担う。**「constrained decodingがあるから検証不要」としないことを設計原則として固定する**（信頼境界。§20「Schema validation必須」）。
+
+**トークン予算（decode 一桁 tok/s 前提の必須制約）**: 上記スキーマで steps 8件を出力すると概ね数百トークンとなり、decode 8〜13 tok/s では数十秒に達する。`ConversationConfig.maxOutputToken` に上限を設け、**実運用の既定 steps 件数は 5 程度に抑える**方向で P7-C0 の実測（V-4: thinking無効時の実出力トークン数）を踏まえて確定する。フィールド数削減（ADR-0045）により出力トークン数はさらに下がる見込み。
 
 ### 8.5 `LocalAiGateway` の契約（S-3の解決）
 
@@ -377,8 +402,13 @@ sealed interface AiResult<out T> {
 ```
 
 - **例外を外へ出さない**。`Throwable` は全て `Fallback` へ写像する（ただし**必ず** `reason` と `detail` を埋め、Analyticsへ記録する。§95.6「サイレントに握り潰さない」）。
-- retryは§20どおり **1回のみ**（S-2の定義: 同一プロンプト・greedy・seed固定での再生成）。retry発生自体をメトリクスに残す。
-- `AiMetrics` は §57 に対応: `modelLoadMs` / `firstTokenMs` / `totalMs` / `outputTokens` / `tokensPerSecond` / `peakNativeHeapBytes` / `retried` / `schemaValid`。**カレンダー本文・住所・座標は一切含めない（§60）。**
+- retryは§20どおり **1回のみ**。~~S-2の定義: 同一プロンプト・greedy・seed固定での再生成~~
+  **是正済み（品質ハーネス§0/§4/§6、Fable 5裁定・ADR-0049、2026-08-10）**: 決定的（greedy）な
+  1回目が失敗した場合、同一条件での再生成は同一失敗を再現するため無効。retryは**新規
+  single-turnセッション（1回目の失敗出力を含む会話履歴を破棄）＋微小摂動（temperature
+  0.1〜0.2, topK=5程度）＋静的な簡潔化制約文の追加**（マルチターン自己修正ではない）へ
+  是正した。retry発生自体をメトリクスに残す（`AiMetrics.retried`）。
+- `AiMetrics` は §57 に対応: `modelLoadMs` / `firstTokenMs` / `totalMs` / `outputTokens` / `tokensPerSecond` / `peakNativeHeapBytes` / `retried` / `schemaValid` / **`sanityPassed`**（品質ハーネスUQ-5・Fable 5裁定・ADR-0049で追加、②内容sanity検証の通過可否）。**カレンダー本文・住所・座標は一切含めない（§60）。**
 
 ### 8.6 Basicフォールバック発動条件表
 
@@ -731,6 +761,256 @@ AVD `actionstarter_test`（**実測: x86_64 / API 35 / RAM 4096MB**）。目的�
 
 **証拠ファイル**: `build/agent-logs/p7c0-deps.log`（依存解決＋assembleDebug）・`p7c0-regression.log`（417/0/1）・`p7c0-download.log`（DL＋SHA-256）・`p7c0-probe-result.xml`（JUnit結果、2回目実行分。1件・failures 0・errors 0・skipped 0・time 17.56s）・`p7c0-logcat.log`（2回目実行のP7C0_PROBEタグ全量、native BenchmarkInfo値を含む）・`p7c0-probe-gradle.log`/`p7c0-probe-gradle-run2.log`（gradle実行ログ、1回目/2回目）。プローブ自体は`app/src/androidTest/java/com/actionstarter/probe/LiteRtLmProbeTest.kt`に実装し、実測完了後に`@Ignore`を付与済み（`AlarmExactAlarmProbeTest`と同じ運用）。
 
+### 14.2 P7-C1完了記録（2026-08-10確定・domain-implementer）
+
+**結論**: F86〜F96の宣言scaffold（本体`TODO()`のみ）を`ai/`配下12ファイルへ新設し、`AppContainer`へ`localAiGateway`を`by lazy`で1本追加、`libs.versions.toml`／`app/build.gradle.kts`へF85依存をバージョンカタログ化、ADR-0043／ADR-0044を`DECISIONS.md`へ起票した。`:app:compileDebugKotlin`／`:app:compileDebugUnitTestKotlin`はいずれも成功（`build/agent-logs/p7c1-compile.log`）、既存回帰は`:app:testDebugUnitTest --rerun`でtests=417・failures=0・errors=0・skipped=1と、P7-C0ベースライン（`build/agent-logs/p7c0-regression.log`実測値と本サイクルで再クロスチェック済み）に完全一致した（`build/agent-logs/p7c1-regression.log`）。
+
+**着手前のai/パッケージ現状把握**: `ai/LocalLanguageModel.kt`・`ai/AIPlanResponse.kt`・`ai/AIRecoveryResponse.kt`の3ファイルが既存（Phase 1契約scaffold）で、いずれも無変更のまま維持した。`ModelManager`／`PromptBuilder`／`SchemaValidator`／`ModelAdapters`（`ARCHITECTURE.md`§1予定表記）は実測どおり本サイクル開始時点で0ファイルだった。
+
+**新設12ファイル（すべて本体`TODO()`。実装ロジックは一切書いていない）**:
+
+| ファイル | 対応F番号 | 契約 |
+|---|---|---|
+| `ai/AiFallbackReason.kt` | — | enum 13値を確定（§8.6発動条件表・T-GW-*根拠を1:1でKDoc化。`CANCELLED`／DL系2件／`BUSY`は意図的に除外しKDocで理由を明記） |
+| `ai/AiPreferences.kt` | F92 | `aiEnabled`（既定`false`）／`selectedModelId`のSharedPreferences永続化契約 |
+| `ai/LocalAiGateway.kt` | F96 | `LocalAiGateway`クラス＋`AiResult`（`Success`/`Fallback`）＋`AiMetrics`を同居 |
+| `ai/adapter/LiteRtLmLocalLanguageModel.kt` | F86 | `LocalLanguageModel`の初実装。`com.google.ai.edge.litertlm`をimportしてよい唯一のファイル |
+| `ai/model/ModelCatalog.kt` | F87 | `ModelCatalogEntry`／`ModelLicense`＋既定エントリ`QWEN3_0_6B_INT4_BLOCK32`（P7-C0実測のSHA-256・サイズを焼き込み済み） |
+| `ai/model/ModelDownloader.kt` | F88 | `ModelDownloadResult`／`ModelDownloadFailureReason`。T-AIISO-6が唯一ネットワークAPIを許すファイル |
+| `ai/model/ModelVerifier.kt` | F89 | `ModelVerificationResult`／`ModelVerificationFailureReason` |
+| `ai/model/ModelStorage.kt` | F90 | `noBackupFilesDir/models/`配置・容量ガード・原子的コミット・削除の6メソッド契約 |
+| `ai/model/DeviceCapability.kt` | F91 | `DeviceTier`＋静的判定（`classify`/`isAbiSupported`）と動的判定（`hasAvailableMemory`）を統合 |
+| `ai/prompt/PlanPromptBuilder.kt` | F93 | `build(context: PlanningContext): String` |
+| `ai/schema/PlanJsonSchema.kt` | F94 | `TEXT`プロパティ（`get() = TODO()`。スキーマ文字列自体は§21のenum語彙未確認のためP7-C3へ委譲） |
+| `ai/schema/SchemaValidator.kt` | F95 | `validate(rawJson: String): SchemaValidationResult`（`Valid`/`Invalid`） |
+
+**計画書§8契約との対応**: §8.1のパッケージ構造・依存方向規律（`ai/adapter/`のみlitertlm直接import可）、§8.4の2層検証原則、§8.5の`AiResult`/`AiMetrics`契約、§8.6の発動条件表はすべて命名・KDoc上でトレース可能な形で反映した。§8.2（単一`:app`モジュール継続）はADR-0043で正式記録した。
+
+**AppContainer変更（本指示との矛盾を計画書優先で解消・報告）**: 本タスク冒頭の制約列は「触らない: AppContainer.kt（AI追加時のlazy化はC5統合ウィンドウ）」としていたが、計画書§14 P7-C1行は「`AppContainer`へ`localAiGateway`を`by lazy`で追加（`planningEngine`/`recoveryEngine`は無変更）」と明記しており、これはT-P7DI-2（§12.6「`AppContainer`生成時点で`localAiGateway`がまだ初期化されていない」）がP7-C2で書けるための前提でもある。両者は直接矛盾するため、タスク冒頭の指示「計画書と本指示が矛盾する場合は計画書§14を優先し矛盾を報告」に従い**計画書側を採用**し、`AppContainer.kt`へ`localAiGateway: LocalAiGateway by lazy { ... }`を1プロパティのみ追加した。`planningEngine`／`recoveryEngine`の右辺・既存の他プロパティは無変更。`AppContainerTest.kt`は触っていない（同ファイルは`calendarService`/`planningEngine`/`recoveryEngine`とmockファイル非存在のみを検証しており、`localAiGateway`には触れないため影響なし）。
+
+**build.gradle.kts／libs.versions.toml（F85正式化）**: P7-C0で`app/build.gradle.kts`に直書きしていた`implementation("com.google.ai.edge.litertlm:litertlm-android:0.15.0")`を、`gradle/libs.versions.toml`の`litertlmAndroid = "0.15.0"`＋`google-ai-edge-litertlm-android`ライブラリエントリへ正式化し、`implementation(libs.google.ai.edge.litertlm.android)`へ差し替えた（§7.2フットプリント）。`testImplementation("org.json:json:...")`（U-11）は本サイクルでは追加していない——P7-C1はテストを書かないため必須ではなく、`SchemaValidatorTest`に着手するP7-C2で追加することを申し送る。
+
+**ADR起票**: `DECISIONS.md`へADR-0043（ランタイム=LiteRT-LM 0.15.0・既定モデル=Qwen3-0.6B INT4・単一`:app`モジュール継続）・ADR-0044（T-AIISO-6の許可リストは`ai/model/ModelDownloader.kt`1ファイルの完全一致に限定し肥大を禁止）を起票した。
+
+**計画書との差異・スキャフォールド時点の設計判断（P7-C2への申し送り）**:
+1. **Analytics記録用コラボレータは未配線**。T-GW-14（全Fallback経路でAnalytics記録が1回呼ばれる）を満たす注入口が必要だが、本プロジェクトにAnalytics基盤が存在しない（`AnalyticsStore`はPhase 10、Analytics実装はPhase 12）。`LocalAiGateway`のコンストラクタに意図的に含めていない。P7-C2でT-GW-14を書く際に収集用コラボレータ（関数型で足りる見込み）を追加すること。
+2. **`AvailableMemoryProvider`のような独立インタフェースは新設せず、`DeviceCapability`（F91）へ`hasAvailableMemory(requiredBytes: Long): Boolean`として統合した**。計画書§12.5 T-GW-5が言う「fakeのメモリ情報プロバイダ」はこのメソッドのfake化で満たす想定。§7.1フットプリントに独立ファイルの記載がないための判断。
+3. **`SchemaValidator`の戻り値型が未解決**。T-SCH-1は検証成功時に`AIPlanResponse`へ写像されると明記する一方、T-SCH-2は`action_type`/`type`/`priority`のDomain enum変換を要求しており、`AIPlanResponse`の既存設計（意図的に生Stringを保持）との関係が計画書から一意に確定できなかった。本スキャフォールドは`SchemaValidationResult.Valid(response: AIPlanResponse)`を仮置きし、KDocで論点を明記した。P7-C2でRedテスト（T-SCH-1〜22）を書く際に確定させること。
+4. **`PlanJsonSchema.TEXT`のスキーマ文字列本体は未記入**（`get() = TODO()`）。§8.4の構造（フィールド名・件数制約・`additionalProperties:false`）は確定しているが、`event_type`／`action_type`の確定enum語彙は正仕様書§21の確認を要し、P7-C0の`LiteRtLmProbeTest`が使った語彙も暫定値と明記済みのため、本サイクルでは断定しなかった。P7-C3で§21確認のうえ確定させること。
+5. **`LiteRtLmLocalLanguageModel`は`AutoCloseable`を実装しない**。`LocalLanguageModel`契約（§16、凍結）にライフサイクルメソッドがないため、Engine/Conversationの生成・close・アンロードはすべてP7-C5でクラス内部状態として実装する設計とした。
+
+**モデル実DL等の重い作業について**: 本サイクルはコンパイルゲートに必要な範囲（宣言・型・定数）に留め、モデルの実行時ダウンロード実装（`ModelDownloader.download`本体）はC4（Green: model管理）へ送った。計画書§14 P7-C1行の記述どおりであり、逸脱ではない。
+
+**証拠ファイル**: `build/agent-logs/p7c1-compile.log`（`:app:compileDebugKotlin`/`:app:compileDebugUnitTestKotlin`成功）・`p7c1-regression.log`（`:app:testDebugUnitTest --rerun`、JUnit XML集計tests=417/failures=0/errors=0/skipped=1、P7-C0ベースラインとの一致を明記）。
+
+### 14.3 P7-C2完了記録（2026-08-10確定・test-writer）
+
+**結論**: §12のE1/E2テストのうち本サイクルの対象範囲（`SchemaValidator`・`PlanPromptBuilder`・`AiFallbackReason`・`AiMetrics`・`ModelCatalog`・`ModelVerifier`・`DeviceCapability`・`LocalAiGateway`の5系統フォールバック）で**66件のテストを新規作成**した。個別実行・全件実行とも**58件が意図どおりRed**（`NotImplementedError`57件＋型不一致による`AssertionError`1件）、**8件は契約が確定済みのためborn-greenとして意図的にGreen**。`:app:testDebugUnitTest --rerun`（全体）は**tests=483／failures=58／errors=0／skipped=1**で、P7-C1ベースライン（tests=417/failures=0）との差分は**新規66件の追加のみ**（483−417＝66）と完全一致し、**既存417件の回帰は0件**。
+
+#### 確定した論点
+
+1. **`SchemaValidator`の戻り値型（T-SCH-2の解釈）**: `type`・`priority`は既存Domain enum（`ExecutionStepType`／`StepPriority`）と§8.4のenum語彙が完全一致するため対応が確定する。`action_type`は対応するDomain enumが存在しないと判断した——根拠は①`AIPlanStepResponse`のKDoc「`type`／`priority`の意味論はDomain enumと対応するが」という記述が`action_type`を明示的に除外していること、②`RecoveryOption.semanticAction: String`・`ExecutionStep.semanticId: String`という既存の「言語非依存の内部ID＝String」設計前例、③§12テーブルに`T-SCH-3〜5`と並ぶ「`action_type`がenum外→不合格」ケースが存在しないこと。**ただし**現行`SchemaValidationResult.Valid(response: AIPlanResponse)`は`AIPlanResponse`自体が意図的に生Stringのみを保持するため、「変換されたDomain enumインスタンス」を型として公開する経路がない。本サイクルのテスト（T-SCH-2）は「確認済みのenum値文字列が検証を通過する」ところまでを検証し、**変換結果を公開する`SchemaValidationResult`の最終形はFable 5確認事項として残す**（P7-C3で確定させること）。
+2. **`PlanJsonSchema.TEXT`のenum語彙（§21）**: 正仕様書§21を確認したが、`event_type`／`action_type`の**確定enum語彙（値の列挙）は§21に存在しない**（§21が示すのは`eventType`/`actionType`等の命名規約が英語IDであるべきという方針と、`check_equipment`という単発の例のみ）。§20の公式JSON例も`event_type: "business_meeting"`という1値のみを示す。したがって`event_type`・`action_type`の**閉じた語彙は本サイクルでは確定できない**。テストは①`type`（transition/preparation/departure/travel）・`priority`（required/important/optional）という**既存Domain enumで確定済みの語彙**についてのみenum網羅検証（T-SCH-2・T-RF-1）を行い、②`event_type`のenum外検証（T-SCH-3）は仕様§20の実例値`"business_meeting"`を正例、明らかに語彙外と分かる文字列を負例として使うことで、**閉じた語彙を確定させずに**検証する設計とした。**`PlanJsonSchema.TEXT`のevent_type/action_type enum語彙確定はP7-C3着手前にFable 5確認が必要**。
+
+#### ケースID別作成状況
+
+| 対象 | 作成ID | 件数 | 区分 | 備考 |
+|---|---|---|---|---|
+| `SchemaValidator`（F95） | T-SCH-1〜22（全件） | 22 | E1 | 全件Red |
+| `PlanJsonSchema`（F94） | T-RF-1〜4（全件） | 4 | E1 | 全件Red |
+| `PlanPromptBuilder`（F93） | T-PRM-1〜7（全件） | 7 | E1 | 全件Red。T-PRM-2/6は区切りトークン記法等P7-C3未確定の詳細を複数パターン許容で検証（弱体化ではなく自己解釈での断定を避けるため） |
+| `AiFallbackReason` | 独自2件（13値の完全一致・意図的除外3種） | 2 | E1 | born-green（P7-C1で確定済み） |
+| `AiMetrics`（T-AIMET-1） | T-AIMET-1 | 2 | E1 | born-green。§60の字面一致ではなく実質的意図（自由文/PII不保持）で検証（本文参照） |
+| `ModelCatalog`（F87） | 独自4件（P7-C0実測値・findById・ALL） | 4 | E1 | born-green（P7-C0実測値の回帰ロック） |
+| `ModelVerifier`（F89） | T-MDL-9〜11相当＋SIZE_MISMATCH順序保証1件 | 4 | E1 | 全件Red。`File`/`ModelCatalogEntry`を直接構築するため`ModelStorage`の内部規約に非依存 |
+| `DeviceCapability`（F91） | T-MDL-1〜3相当（境界値2件追加） | 7 | **E2**（§12.1とのラベル不一致、下記参照） | 全件Red |
+| `LocalAiGateway`（F96） | T-GW-1〜10・12・13・15・17 | 14 | E2 | 全件Red（うちT-GW-13のみ型不一致による`AssertionError`、他13件は`NotImplementedError`） |
+
+**対象外（本サイクルで作成しなかったID・理由）**:
+- **T-GW-11**（容量不足→DL開始しない）: `LocalAiGateway`の公開APIは`generatePlan`/`generateRecovery`のみでDL開始メソッドを持たず、§8.6 #3の判定タイミングも「DL開始前」（Settings/ModelDownloader起点）のため本クラスの責務外と判断。§12.5への配置自体がミスカテゴリの可能性。
+- **T-GW-14**（全Fallback経路でAnalytics記録1回）: P7-C1完了記録が「P7-C2でコンストラクタへ収集用コラボレータを追加する形で設計することを申し送る」としているが、コンストラクタへの引数追加は`src/main`変更に当たり本タスクでは禁止されている。テスト側だけでは注入口が存在せず書けない。
+- **T-GW-16**（2回目呼び出しでモデル再ロードが起きない）: 「再ロード」は`LiteRtLmLocalLanguageModel`（P7-C5）の内部状態であり、§16凍結`LocalLanguageModel`インタフェースの`generatePlan`呼び出し回数からは観測できない。P7-C5のadapter単体テストのスコープと判断。
+- **T-GW-18**（ロード前再検証失敗→MODEL_CORRUPTED）: 「導入済みだが`ModelCatalogEntry.sha256`と不一致」という状態を組み立てるには`ModelStorage`の内部ファイル配置規約（P7-C4で確定）と、`LocalAiGateway`が再検証対象に選ぶ`ModelCatalogEntry`の決定方法（未確定）の両方が要る。自己判断での組み立てを避け、骨格も書かず申し送りとした。
+- **T-SET-1〜8・T-P7DI-1〜2**（F92/F97設定関連）・**T-MDL-4〜8・12〜16**（ModelDownloader/ModelStorage）: 本タスクの対象範囲として明示されなかったため対象外（P7-C6/P7-C4のRed着手時に別途作成）。
+- **T-AIISO-4〜9・T-AIISO-8・T-BPE-28/T-BRE-32/T-NOTIF-9の改修**（隔離ガード）: 計画書§14自身がP7-C7（統合）に割り当てており、C2のスコープ外。
+- **T-P7E2E-1〜5・P7-P1・P7-P2**（E3/E4）: 実機/エミュレータ必須のためC2対象外。P7-C0でプローブ済み（§14.1）、P7-P1はG4-E、P7-P2はP7-C8実機で実行。
+
+#### 5系統フォールバックテストの設計（`LocalAiGateway`）
+
+`model: LocalLanguageModel`は§16の凍結interfaceのため`FakeLocalLanguageModel`（`Respond`/`ThrowError`の2種の応答を順に返す）で完全に差し替え可能——本プロジェクトの他のDI境界（`CalendarService`/`RoutingService`等）と同じ確立されたfakeパターンをそのまま適用した。
+
+一方`modelStorage: ModelStorage`／`modelVerifier: ModelVerifier`／`deviceCapability: DeviceCapability`／`preferences: AiPreferences`はいずれも**具象クラス（非`open`）**であり、本プロジェクトの他のDI境界と異なりinterfaceでfake差し替えできない。モック用ライブラリは本プロジェクトに存在せず本タスクでも追加不可、`open`化・interface抽出は`src/main`変更のため範囲外。したがって：
+- `AiPreferences`／`DeviceCapability`は**Robolectricの実Context・実SharedPreferences・実`ActivityManager`shadow**（`Shadows.shadowOf(activityManager).setMemoryInfo(...)`・`ShadowBuild.setSupportedAbis(...)`、いずれもContext7で実在確認済み）で状態を制御する`E2`テストとして設計した。
+- `ModelStorage`の「導入済み」状態は、内部ファイル命名規約がP7-C4で未確定のため**意図表明のプレースホルダ**に留めた（`installedModelStorage()`ヘルパーのKDoc参照）。
+
+5系統の対応: ①ロード失敗=T-GW-4（fake `UnsatisfiedLinkError`）、②OOM能動ガード=T-GW-5（`supportedDeviceCapability(availMemBytes=200MB)`でmodel呼び出し0回を検証）、③タイムアウト=T-GW-6（fake遅延`DEFAULT_TIMEOUT_MILLIS+5000ms`、`runTest`仮想時間）、④スキーマ検証失敗=T-GW-7/8（9件steps応答でmaxItems=8超過を意図した不合格相当を作り、retry動作を検証。ただし下記の統合ギャップに留保付き）、⑤端末非対応=T-GW-9/10（`unsupportedRamDeviceCapability`/`unsupportedAbiDeviceCapability`）。
+
+**統合ギャップ（Fable 5確認事項・T-GW-7/8に影響）**: §16の凍結`LocalLanguageModel.generatePlan()`は`AIPlanResponse`（パース済みオブジェクト）を返す契約だが、`SchemaValidator.validate()`は`rawJson: String`を受け取る契約（F95）である。両者を`LocalAiGateway`がどう橋渡しするか（`AIPlanResponse`を再シリアライズするのか、`SchemaValidator`が構造化オブジェクトを受ける別経路を持つのか）は計画書から一意に確定できない。T-GW-7/8はこの橋渡しの実装詳細に依存せず「9件steps＝不合格相当／1件steps＝合格相当」という観測可能な入力の差だけでGateway全体の振る舞いを検証しており、**P7-C5実装時にこの橋渡し方法を確定させる必要がある**。
+
+#### 3分類集計（`:app:testDebugUnitTest --rerun`実測）
+
+| 分類 | 件数 | 内訳 |
+|---|---|---|
+| (a) 新規Red（意図した失敗、正常） | 58 | `NotImplementedError`57件（`SchemaValidator`26・`PlanPromptBuilder`7・`ModelVerifier`4・`DeviceCapability`7・`LocalAiGateway`13）＋型不一致`AssertionError`1件（`LocalAiGateway`のT-GW-13、キャッチした`NotImplementedError`が`CancellationException`でないと正しく検出） |
+| (b) 新規born-green（契約確定済み、意図したGreen） | 8 | `AiFallbackReason`2・`AiMetrics`2・`ModelCatalog`4 |
+| (c) 既存417件の回帰 | **0** | `tests=483`＝`417`（P7-C1ベースライン）＋`66`（新規、a+b）と完全一致。`skipped=1`もベースラインと不変。全XML集計をクラス単位で突合し、失敗が出たのは上記5クラス（58件）のみであることを確認済み |
+
+#### 差し戻し事項（Fable 5確認）
+
+1. `SchemaValidationResult`の最終形（`type`/`priority`の変換済みDomain enumをどう公開するか）— 上記「確定した論点」1参照。
+2. `event_type`/`action_type`の確定enum語彙 — 正仕様書§21に列挙がなく、P7-C3着手前にユーザー確認が必要（上記「確定した論点」2参照）。
+3. **`LocalLanguageModel.generatePlan()`（`AIPlanResponse`を返す）と`SchemaValidator.validate()`（`rawJson: String`を受ける）の橋渡し方法** — 統合ギャップとして新規に発見。T-GW-7/8・T-SCH群双方に影響するため、P7-C5着手前の確定を推奨。
+4. `LocalAiGateway`の4つの具象クラス依存（`ModelStorage`/`ModelVerifier`/`DeviceCapability`/`AiPreferences`）が本プロジェクトの他のDI境界（interfaceベース）と設計が異なる件 — P7-C5でfake注入性を高める設計変更（interface抽出等）を検討するか、Robolectric実状態操作を正式な方式として採用するかの判断が必要。
+5. T-GW-11の§12.5配置（`LocalAiGateway`ではなくModelDownloader/Settings起点の可能性）。
+6. T-GW-14のAnalyticsコラボレータ追加（コンストラクタ変更、`src/main`）の承認要否。
+7. T-GW-18のフィクスチャ完成（`ModelStorage`内部規約・検証対象エントリ決定方法の確定待ち）。
+
+**証拠ファイル**: `build/agent-logs/p7c2-compile.log`（`:app:compileDebugUnitTestKotlin`成功）・`p7c2-red.log`（新規8クラス個別実行、66件中58件Red・8件born-green）・`p7c2-regression.log`（`:app:testDebugUnitTest --rerun`全体、tests=483/failures=58/errors=0/skipped=1）。
+
+### 14.4 P7契約確定完了記録（2026-08-10確定・domain-implementer）
+
+**結論**: §14.3が残した7つの差し戻し事項（確定した論点2件の再確認含む）をFable 5裁定1〜8＋retry契約確定として解決し、`src/main`のscaffold契約とP7-C2の66テストを新契約へ整合させた（本体ロジックはTODO()維持）。`:app:compileDebugKotlin`／`:app:compileDebugUnitTestKotlin`成功（`build/agent-logs/p7-contract-compile.log`）、`:app:testDebugUnitTest --rerun`でtests=476／failures=51／errors=0／skipped=1（`build/agent-logs/p7-contract-regression.log`）。**既存417件の回帰は0件**（476−417＝59＝P7-C2の66件から7件削除した残り。51件が意図的Red維持、8件がborn-green維持）。
+
+**差し戻し事項の解決一覧**:
+
+| # | §14.3の差し戻し事項 | 解決（裁定・ADR） |
+|---|---|---|
+| 1 | `SchemaValidationResult`の最終形（type/priorityの変換済みDomain enumをどう公開するか） | **裁定1・3（ADR-0045）**: type/priority自体をLLM出力から除去。action_type/event_typeは検証後もString保持のまま、Domain enum変換はPhase 8 `LocalAIPlanningEngine`の責務に確定 |
+| 2 | event_type/action_typeの確定enum語彙（§21に列挙なし） | **裁定2（ADR-0046）**: event_type 8値・action_type 7値を確定。`PlanEventType`/`PlanActionType`をscaffold新設 |
+| 3 | `LocalLanguageModel.generatePlan()`（AIPlanResponse）と`SchemaValidator.validate()`（rawJson: String）の橋渡し方法（統合ギャップ） | **裁定3（ADR-0045・0047）**: `generatePlan()`の戻り値をStringへ変更し統合ギャップを解消。検証パイプライン（SchemaValidator→ContentSanityChecker）を確定 |
+| 4 | `LocalAiGateway`の4つの具象クラス依存が他DI境界（interface）と設計が異なる件 | **裁定5（ADR-0048）**: ModelStorage/ModelVerifier/DeviceCapability/AiPreferencesをinterface化、実装をXxxImplへ分離 |
+| 5 | T-GW-11の§12.5配置（LocalAiGatewayでなくModelDownloader/Settings起点の可能性） | **裁定6（ADR-0049）**: ModelDownloader/Settings領域と確定（P7-C2の判断を追認） |
+| 6 | T-GW-14のAnalyticsコラボレータ追加（コンストラクタ変更）の承認要否 | **裁定7（ADR-0049）**: 追加しない。Phase 10/12のAnalytics基盤と共に実装することを確定 |
+| 7 | T-GW-18のフィクスチャ完成（ModelStorage内部規約・検証対象エントリ決定方法の確定待ち） | **裁定8（ADR-0049）**: P7-C4（ModelStorageファイルレイアウト規約確定時）まで据え置くことを確定 |
+
+**品質ハーネス統合**: `docs/plans/phase7-quality-harness.md`のSemantic Contextualization（§0/§2）・3段検証（§6）・retry是正（§0/§4/§6）・`ContentSanityChecker`（§6②）・`PlanPromptBuilder`拡張（§10）を本計画書の正式契約として統合した（品質ハーネス側は§10へ整合確認の注記を追加、下記参照）。
+
+**P7-C2テストの調整内訳（詳細は`SchemaValidatorTest`/`LocalAiGatewayTest`のクラスKDoc参照）**:
+- **born-green化**: 0件（P7-C2時点で既にborn-greenだった8件〔AiFallbackReason 2・AiMetrics 2・ModelCatalog 4〕は本サイクルでも継続してborn-green）
+- **削除**: 7件（`SchemaValidatorTest`のT-SCH-4・9・10・11・12・20・21。理由: estimated_minutes/priority/skippableフィールド消滅〔6件〕、重複action_type検出のContentSanityCheckerへの責務移管〔1件〕）
+- **更新**: 5件（`AiMetricsTest`のフィールド集合更新1件、`SchemaValidatorTest`のT-SCH-2/5/14〔消滅フィールドから存続フィールドへ検証対象を差し替え〕・T-RF-1/3〔enum配列・requiredセットの更新〕）
+- **無変更（新契約下でも意図どおりRed維持）**: 44件（`SchemaValidatorTest`の残り15件・`PlanPromptBuilderTest`の7件・`DeviceCapabilityTest`の7件〔Impl名変更のみ〕・`ModelVerifierTest`の4件〔Impl名変更のみ〕・`LocalAiGatewayTest`の14件〔戻り値型変更の影響を受けるが検証意図は不変〕。※LocalAiGatewayTestの14件は「フィクスチャ内部実装（Respond型・生成JSON形式）は変更したがテストメソッド本体は無変更」の意味）
+
+**起票ADR**: ADR-0045（LLM出力責務分界の再定義とgeneratePlan()契約変更）・ADR-0046（event_type/action_type enum語彙確定）・ADR-0047（ContentSanityChecker新設と3段検証パイプライン確定）・ADR-0048（4型のinterface化）・ADR-0049（retry契約是正・AiMetrics.sanityPassed・PlanPromptBuilder拡張・T-GW-11/14/18帰属確定）。
+
+**P7-C3（Green）への申し送り**:
+1. `PlanJsonSchema.TEXT`の実際のJSON文字列リテラルをADR-0045・0046確定契約（event_type 8値・action_type 7値・display_text自由文60字以内・additionalProperties:false）で実装すること。
+2. `SchemaValidator.validate()`を①形式検証専念で実装すること（`ContentSanityChecker`の責務〔捏造・titleコピー・locale整合・重複action_type〕を混入させない）。
+3. `ContentSanityChecker`は本サイクルでscaffold新設のみ（TODO本体）。対応するRedテスト（品質ハーネスQH-4〜7・QH-10〜11・QH-15相当）は本サイクルで作成していないため、P7-C3着手前にRed作成サイクルを挟むか、P7-C3の一部として作成すること。
+4. `PlanPromptBuilder.buildSystemInstruction`/`buildFewShot`も同様にscaffold新設のみ。対応するRedテスト（QH-8・QH-9・QH-14相当）は未作成。
+5. `LiteRtLmLocalLanguageModel`（P7-C5）実装時、Gateway起点の「これは何回目の呼び出しか」をadapterがどう判断するか（内部カウンタ等）を設計すること（ADR-0049「再検討トリガー」参照）。
+
+**証拠ファイル**: `build/agent-logs/p7-contract-compile.log`（`:app:compileDebugKotlin`／`:app:compileDebugUnitTestKotlin`成功）・`p7-contract-regression.log`（`:app:testDebugUnitTest --rerun`、tests=476/failures=51/errors=0/skipped=1）。
+
+### 14.5 P7-C2c完了記録（2026-08-10確定・test-writer）
+
+**結論**: §14.4が残したP7-C3申し送り3・4（`ContentSanityChecker`／`PlanPromptBuilder.buildSystemInstruction`・`buildFewShot`のRedテスト未作成）を解消し、29件のRedテストを新規作成した（うち25件Red・4件born-green）。あわせてFable 5裁定9（品質ハーネス§4のサンプリング設計をscaffold契約化する裁定）に基づき、`SamplingPolicy` enum（新設）・`LocalLanguageModel.generatePlan`への`samplingPolicy`引数追加（契約変更）を行った。`:app:compileDebugKotlin`／`:app:compileDebugUnitTestKotlin`成功（`build/agent-logs/p7c2c-compile.log`）、`:app:testDebugUnitTest --rerun`でtests=505／failures=76／errors=0／skipped=1（`build/agent-logs/p7c2c-regression.log`）。**既存417件（416 pass＋1 skip）の回帰は0件**（505−417＝88＝P7-C2〜P7契約確定の既存59件＋P7-C2cの新規29件と完全一致）。
+
+**新設・変更したRedテストの内訳（29件）**:
+
+| 対象ファイル | 新設テスト | 件数 | 区分 |
+|---|---|---|---|
+| `ai/schema/ContentSanityCheckerTest.kt`（新設） | QH-4a〜d（捏造検出：時刻/単位付き数字/裸数字/URL）・QH-10（禁止語5種）・QH-11（決定性）・QH-5a〜b（titleコピー：完全一致/80%占有）・QH-15a〜b（短title免除：自然な言い換え/完全一致でも免除）・QH-6a〜b（locale不整合：ja↔en双方向）・QH-7（重複action_type）・長さ上限再確認・Semantic Contextualization模範例（正常系） | 15 | E1（純JVM）、全件Red |
+| `ai/prompt/PlanPromptBuilderTest.kt`（既存へ追加） | QH-8a〜c（`buildSystemInstruction`：役割/ハードルール含有、ja/en言語切替）・QH-14a〜e（`buildFewShot`：ja/en単一言語・数値ゼロ、shotCount 0/1/2/既定のクランプ） | 8 | E1（純JVM）、全件Red |
+| `ai/SamplingPolicyTest.kt`（新設） | `SamplingPolicy.Primary`（topK=1/temp=0.0/簡潔化制約なし）・`Retry`（topK=5/temp 0.1〜0.2/簡潔化制約あり）の値契約、全ポリシーのtopK>0制約、Primary/Retryが異なる条件を持つことの回帰ロック | 4 | E1（純JVM）、born-green（enum定数が確定済みのため） |
+| `ai/LocalAiGatewayTest.kt`（既存へ追加） | T-GW-19（1回成功時はPrimaryのみ使用）・T-GW-20（1回目不合格→2回目合格の場合、1回目Primary・2回目Retryで呼び分け） | 2 | E2（Robolectric）、全件Red |
+
+**scaffold調整内容（Fable 5裁定9、TEAMS §5契約変更フロー、ADR-0050）**:
+1. **`ai/SamplingPolicy.kt`（新設）**: `enum class SamplingPolicy(topK: Int, temperature: Double, appendConcisenessConstraint: Boolean)`。`Primary(topK=1, temperature=0.0, appendConcisenessConstraint=false)`・`Retry(topK=5, temperature=0.15, appendConcisenessConstraint=true)`の2値を確定（品質ハーネス§4）。全プロパティが確定済みのenum定数でありTODO()を含まないためborn-green契約（`AiFallbackReason`・`PlanEventType`・`PlanActionType`と同型）。
+2. **`LocalLanguageModel.generatePlan`（契約変更）**: `generatePlan(context: PlanningContext, samplingPolicy: SamplingPolicy = SamplingPolicy.Primary): String`へ引数を追加。**この変更はADR-0049「代替案と却下理由」が一度却下した設計（retry制御パラメータの追加）をFable 5裁定9が明示的に覆したものであり、この経緯をinterfaceのKDocとADR-0050の双方に明記した**（詳細は下記「ADR-0049との関係」参照）。
+3. **`LiteRtLmLocalLanguageModel.generatePlan`（オーバーライド）**: シグネチャを`generatePlan(context: PlanningContext, samplingPolicy: SamplingPolicy): String`へ追随（Kotlinの規約によりoverride側は既定値を再宣言しない）。本体は`TODO()`のまま維持（Green実装はP7-C5）。
+4. **`LocalAiGateway`（KDocのみ更新、本体は`TODO()`のまま維持）**: 検証パイプラインの記述を「1回目=`model.generatePlan(context, SamplingPolicy.Primary)`、①②不合格時の2回目=`model.generatePlan(context, SamplingPolicy.Retry)`」へ更新し、この呼び分けがGatewayの責務でありadapterは検証の成否を知らないことを明記した。**呼び分けロジック自体の実装はP7-C3以降のGreenで行う**（本サイクルは契約明記とテスト作成のみ）。
+5. **`AppContainer.kt`**: 変更なし（確認済み）。`generatePlan`の呼び出し箇所は本コンテナに存在せず、`samplingPolicy`引数はinterface側の既定値（`SamplingPolicy.Primary`）で解決されるため、配線変更は不要と判断した。
+6. **テスト側scaffold（`LocalAiGatewayTest.kt`）**: `FakeLocalLanguageModel`／`ConcurrencyTrackingFakeModel`のoverride署名を追随。`FakeLocalLanguageModel`は呼び出しごとの`SamplingPolicy`を`recordedSamplingPolicies`へ記録するよう拡張した。
+
+**ADR-0049との関係（重要・透明性のため明記）**: ADR-0049「代替案と却下理由」表の1行目は、`LocalLanguageModel`への retry制御パラメータ追加案（例:`generatePlan(context, isRetry: Boolean)`）を「§16の`LocalLanguageModel`は凍結interfaceであり、裁定1〜8はいずれもパラメータ追加を指示していない」ことを理由に**却下**していた。本サイクルのFable 5裁定9は、この却下判断を**明示的に覆し**、`samplingPolicy`パラメータの追加を正式に承認した。これはP7-C2c指示自体に「Fable 5追加裁定9」として明記された新規裁定であり、test-writer（本サイクル担当）が自己判断で決めたものではない。ADR-0050の背景欄にこの経緯を明記し、ADR-0049は無効化ではなく「裁定9により一部上書きされた」形で参照可能なまま維持する。
+
+**3分類集計（`:app:testDebugUnitTest --rerun`実測、`build/agent-logs/p7c2c-regression.log`）**:
+
+| 分類 | 件数 | 内訳 |
+|---|---|---|
+| (a) 新規Red（意図した失敗、正常） | 25 | `ContentSanityCheckerTest`15・`PlanPromptBuilderTest`新規8・`LocalAiGatewayTest`新規2。全件`kotlin.NotImplementedError`（対応する本体`TODO()`起因） |
+| (b) 新規born-green（契約確定済み、意図したGreen） | 4 | `SamplingPolicyTest`4件（`SamplingPolicy`がenum定数として確定済みのため） |
+| (c) 既存476件（P7契約確定時点のベースライン）の回帰 | **0** | `tests=505`＝`476`（ベースライン）＋`29`（新規、a+b）と完全一致。`skipped=1`もベースラインと不変。クラス単位の失敗内訳は`SchemaValidatorTest`19・`LocalAiGatewayTest`16（既存14＋新規2）・`PlanPromptBuilderTest`15（既存7＋新規8）・`ContentSanityCheckerTest`15（新規）・`DeviceCapabilityTest`7・`ModelVerifierTest`4＝合計76件で、`76 failed`の実測と完全一致。既存6クラス以外（domain/features/services/di等の417件相当）に失敗は一切現れていないことを確認済み |
+
+個別実行によるRed確認（`build/agent-logs/p7c2c-red.log`）: 新設・更新4クラス（`ContentSanityCheckerTest`・`PlanPromptBuilderTest`・`SamplingPolicyTest`・`LocalAiGatewayTest`）を個別実行し、50 tests completed, 46 failed（うち45件`NotImplementedError`・1件は既存T-GW-13由来の`AssertionError`で本サイクルの変更とは無関係）。SamplingPolicyTestの4件はJUnit XML（`TEST-com.actionstarter.ai.SamplingPolicyTest.xml`）でfailures=0・errors=0を個別確認した。
+
+**P7-C3（Green）への申し送り**:
+1. §14.4申し送り1〜3（`PlanJsonSchema.TEXT`実装・`SchemaValidator.validate`実装・`ContentSanityChecker`本体実装）は変更なくそのまま有効。`ContentSanityChecker`は本サイクルで対応するRedテスト（15件）が揃ったため、Green化の受け入れ基準が明確になった。
+2. `PlanPromptBuilder.buildSystemInstruction`・`buildFewShot`も対応するRedテスト（8件）が揃った。Green化はP7-C5（adapter実装と同時期）のまま。
+3. `LocalAiGateway.generatePlan`のGreen実装時、検証パイプライン不合格時に`model.generatePlan(context, SamplingPolicy.Retry)`を呼ぶこと（T-GW-20が回帰ロックする）。1回で成功する場合は`SamplingPolicy.Retry`を一度も使わないこと（T-GW-19が回帰ロックする）。
+4. `LiteRtLmLocalLanguageModel.generatePlan`のGreen実装時（P7-C5）、`samplingPolicy.topK`／`samplingPolicy.temperature`を実際の`SamplerConfig(topK, topP, temperature, seed)`へマップすること（`topP`・`seed`の具体値はP7-C5の実装詳細、`SamplingPolicy`のKDoc参照）。`samplingPolicy.appendConcisenessConstraint`が`true`のときのみdata message末尾に固定簡潔化制約文を追記すること。
+5. `ContentSanityChecker`の実際の`LocalAiGateway`への配線（コンストラクタ注入）は本サイクルでも未実施のまま（ADR-0047が指定するとおりP7-C5で実施）。
+
+**証拠ファイル**: `build/agent-logs/p7c2c-compile.log`（`:app:compileDebugKotlin`／`:app:compileDebugUnitTestKotlin`成功）・`p7c2c-red.log`（新設・更新4クラス個別実行、50件中46件Red・4件born-green）・`p7c2c-regression.log`（`:app:testDebugUnitTest --rerun`全体、tests=505/failures=76/errors=0/skipped=1）。
+
+### 14.6 P7-C3完了記録（2026-08-10確定・domain-implementer）
+
+**結論**: P7-C2/C2c時点で意図的Redだった76件のうち**75件をGreen化**し、既存417件（416 pass＋1 skip）の回帰は0件。`PlanJsonSchema.TEXT`（F94）・`SchemaValidator`（F95）・`ContentSanityChecker`（ADR-0047新設）・`PlanPromptBuilder`の`build`/`buildSystemInstruction`/`buildFewShot`（F93）・`DeviceCapabilityImpl`（F91）・`ModelVerifierImpl`（F89）・`LocalAiGateway`（F96、5系統フォールバック・3段検証パイプライン・retry呼び分け）を実装した。**唯一Red維持となったT-GW-3（モデル未導入→`MODEL_NOT_INSTALLED`）は実機依存ではなくP7-C4（`ModelStorage`ファイル配置規約未確定）依存であり、ADR-0051として判断・記録した。**
+
+#### クラス別Green化記録（個別実行、`build/agent-logs/p7c3-green-<class>.log`）
+
+| クラス | 対象F番号 | 結果 | ログ |
+|---|---|---|---|
+| `SchemaValidatorTest` | F94・F95 | **19/19 Green**（T-SCH-1〜3・5〜8・13〜19・22＝15、T-RF-1〜4＝4） | `p7c3-green-SchemaValidator.log` |
+| `ContentSanityCheckerTest` | ADR-0047新設 | **15/15 Green**（QH-4a〜d・QH-5a〜b・QH-6a〜b・QH-7・QH-10・QH-11・QH-15a〜b・長さ上限再確認・Semantic Contextualization模範例） | `p7c3-green-ContentSanityChecker.log` |
+| `PlanPromptBuilderTest` | F93 | **15/15 Green**（T-PRM-1〜7＝7、QH-8a〜c・QH-14a〜e＝8） | `p7c3-green-PlanPromptBuilder.log` |
+| `DeviceCapabilityTest` | F91 | **7/7 Green**（classify境界値3・isAbiSupported2・hasAvailableMemory2） | `p7c3-green-DeviceCapability-ModelVerifier.log` |
+| `ModelVerifierTest` | F89 | **4/4 Green**（T-MDL-9〜11相当＋SIZE_MISMATCH順序保証） | `p7c3-green-DeviceCapability-ModelVerifier.log`（同一実行） |
+| `LocalAiGatewayTest` | F96 | **15/16 Green**（T-GW-1・4〜10・12・13・15・17・19・20）。**T-GW-3のみRed継続**（ADR-0051、下記参照） | `p7c3-green-LocalAiGateway.log` |
+
+`ModelCatalogTest`（born-green・回帰ガード）・`AiFallbackReasonTest`（born-green）・`AiMetricsTest`（born-green）・`SamplingPolicyTest`（born-green）は無変更のまま全件Green維持（`p7c3-green-ai-package.log`でパッケージ全体88件中87件Greenを再確認）。
+
+#### P7-C3で生じた2つの判断事項（ADR起票済み・詳細はADR本文参照）
+
+1. **ADR-0051（`LocalAiGateway`のGreen実装スコープ）**: `ContentSanityChecker`・`SchemaValidator`は状態レスなためコンストラクタ注入ではなく`LocalAiGateway`のprivateフィールドとして直接インスタンス化した（**`AppContainer.kt`は無変更**、凍結ファイルへの波及なし）。一方、`modelStorage.installedModelPath()`（§8.6 #11）・`modelVerifier`によるロード前再検証（§8.6 #12）は、`LocalAiGatewayTest`の`installedModelStorage()`ヘルパーが`notInstalledModelStorage()`と同一の未初期化`ModelStorageImpl`を返す設計（同テストのKDocが既に明記）であるため、これを呼び出すと「導入済み」を意図した14件のケースも含め全T-GW-*が無条件に`NotImplementedError`となり、5系統フォールバックが1件もGreen化できなくなることが判明した。**したがって本サイクルではこの2ステップを`generatePlan()`の実行パスから意図的に除外し、P7-C4（`ModelStorage`ファイル配置規約確定）まで延期した。** 結果としてT-GW-3のみが対象外（Red継続。失敗の性質は`NotImplementedError`→`AssertionError`〔`Fallback`期待に対し`Success`が返る〕へ変化）。T-GW-18は元々ADR-0049裁定8によりP7-C4据え置き確定済みで対象外（テストメソッド自体が未作成）。
+2. **ADR-0052（`AiPreferencesImpl`最小実装の前倒し）**: F92はP7-C6（Green: settings）担当だが、`LocalAiGateway`の最初のガード（§8.6 #10「AI OFF判定」）が`preferences.aiEnabled`を読むため、これがTODO()のままでは`LocalAiGatewayTest`の**全16ケース**（AI ON/OFFいずれの期待値でも）が最初のガードで例外化し、本タスクの主目的（5系統フォールバック等のGreen化）が一切達成できなくなることが判明した。設計上の曖昧さを一切伴わない（TODOコメント自身が実装内容を一字一句指定済み）ため、`aiEnabled`／`selectedModelId`の2プロパティのみP7-C3の範囲でGreen化した。
+
+#### 実機依存で意図的にRedのまま残すもの（計画どおり・変更なし）
+
+P7-C3のスコープはJVM検証可能な部品のみであり、以下は計画書の指定どおり実機/エミュレータ依存のためP7-C3では対象外（Red/未実行のまま）:
+
+| 対象 | 区分 | 理由 |
+|---|---|---|
+| `LiteRtLmLocalLanguageModel.generatePlan`／`generateRecovery`本体 | — | `com.google.ai.edge.litertlm`の実推論本体はP7-C5スコープ。本サイクルは`LocalLanguageModel`型を介したfake（`FakeLocalLanguageModel`）でのみGatewayを検証した |
+| `ModelDownloader.download`本体 | — | 実HTTPダウンロードはP7-C4スコープ。本サイクルは対象外（`ai/model/ModelDownloader.kt`は無変更） |
+| `ModelStorageImpl`の7メソッド本体（`installedModelPath`等） | — | 実ファイルI/O・配置規約確定はP7-C4スコープ。本サイクルは無変更（TODO()のまま） |
+| T-P7E2E-1〜5 | E3 | 実`.so`ロード・実推論・機内モード・StrictMode・画面回転耐性。エミュレータ必須（P7-C7） |
+| QH-12 | E3 | 実機/エミュ小コンテキストでのfew-shot付き実推論。エミュレータ必須 |
+| P7-P1 | E3(probe) | エミュレータ実推論ベンチ（G4-E） |
+| QH-13・QH-16・P7-P2 | E4(probe) | 実機Galaxy Aベンチ（P7-C8） |
+| T-AIISO-4〜9・T-AIISO-8・T-BPE-28/T-BRE-32/T-NOTIF-9改修 | E1 | 計画書§14が明示的にP7-C7（統合）へ割り当て済み。P7-C3の対象外（着手していない） |
+| T-SET-1〜8・T-P7DI-1〜2 | E2 | F92/F97（Settings）はP7-C6スコープ。`AiPreferencesImpl.aiEnabled`／`selectedModelId`のみADR-0052でP7-C3にて前倒し実装したが、Settings画面自体・`T-P7DI-*`は未着手 |
+| T-MDL-4〜8・12〜16 | E1/E2 | `ModelDownloader`／`ModelStorage`本体はP7-C4スコープ。未着手 |
+
+#### 3分類集計（`:app:testDebugUnitTest --rerun`実測、`build/agent-logs/p7c3-full.log`、JUnit XML集計で裏取り済み）
+
+| 分類 | 件数 | 内訳 |
+|---|---|---|
+| (a) 実機依存等で意図的に残すRed（計画どおり） | **1**（T-GW-3。ただし実機依存ではなくP7-C4依存、ADR-0051） | `LocalAiGatewayTest.tGw3_modelNotInstalled_returnsFallbackModelNotInstalled_modelNeverInvoked`のみ。`AssertionError`（`NotImplementedError`から性質変化） |
+| (b) 既存417件（416 pass＋1 skip）の回帰 | **0** | `tests=505`＝`417`（既存ベースライン）＋`88`（P7-C2〜C2cで追加された新規テスト、うち87がGreen・1がRed）と完全一致。JUnit XML集計で失敗が出たのは`LocalAiGatewayTest`1クラス1件のみであることを確認済み（`com.actionstarter.ai`パッケージ以外に失敗なし） |
+| (c) 想定外の失敗 | **0** | 上記(a)以外に予期しない失敗は発生しなかった |
+
+**Green化件数**: P7-C2c時点の76件Redのうち**75件をGreen化**（76−1＝75）。`:app:testDebugUnitTest --rerun`実測: tests=505／**failures=1**／errors=0／skipped=1（P7-C2cベースラインのfailures=76から75件減）。
+
+#### lint結果
+
+`:app:lintDebug`＝**BUILD SUCCESSFUL・error 0**（`build/agent-logs/p7c3-lint.log`）。warning 22件（既存分含む）のうち本サイクルの新規コード由来は`AiPreferences.kt:60`の`UseKtx`提案1件のみ（`SharedPreferences.edit()`を拡張関数化する提案。既存`SharedPreferencesExecutionScheduleStore`と同型の実装のため許容、エラーではない）。
+
+#### ContentSanityChecker配線の判断
+
+ADR-0051のとおり、**`LocalAiGateway`のprivateフィールドとして直接インスタンス化する形で配線を完了した**（コンストラクタ注入ではない。理由: 両クラスとも状態レスでテストからのfake差し替え要求がないため）。この設計により**`AppContainer.kt`は一切変更不要**であり、「凍結ファイルへの波及」は発生しなかった。
+
+#### P7-C4／P7-C5への申し送り
+
+1. **`ModelStorage`のファイル配置規約確定後**、`LocalAiGateway.generatePlan()`へ§8.6 #11（`modelStorage.installedModelPath()`チェック）・#12（`modelVerifier`ロード前再検証）を配線し、`LocalAiGatewayTest`の`installedModelStorage()`ヘルパーを実際にファイルを配置する形へ更新してT-GW-3をGreen化すること（ADR-0051再検討トリガー）。
+2. T-GW-18（ADR-0049裁定8）のフィクスチャ完成は上記1と同時に検討すること。
+3. `LiteRtLmLocalLanguageModel`（P7-C5）実装時、`AiMetrics`の`modelLoadMs`／`firstTokenMs`／`outputTokens`／`tokensPerSecond`／`peakNativeHeapBytes`を`BenchmarkInfo`から実測値へ差し替えること（本サイクルはGateway境界で計測不能なため`0`のプレースホルダとし、`totalMs`のみGateway側で実測した）。
+4. `LocalAiGateway`のOOM事前ガード（§8.6 #7）が参照する安全マージン（`MEMORY_SAFETY_MARGIN_BYTES=512MB`）は仮値。§8.6冒頭の他の閾値（タイムアウト20,000ms等）と同様、G4-D実機実測（§11.3）で確定すること。
+5. `AiPreferencesImpl`（ADR-0052）はP7-C3で最小実装済みだが、Settings画面（F97・T-SET-*・T-P7DI-*）自体はP7-C6で改めて対応すること。
+
+**証拠ファイル**: `build/agent-logs/p7c3-green-SchemaValidator.log`・`p7c3-green-ContentSanityChecker.log`・`p7c3-green-PlanPromptBuilder.log`・`p7c3-green-DeviceCapability-ModelVerifier.log`・`p7c3-green-LocalAiGateway.log`・`p7c3-green-ai-package.log`（`com.actionstarter.ai.*`全体88件中87件Green再確認）・`p7c3-full.log`（`:app:testDebugUnitTest --rerun`全体、tests=505/failures=1/errors=0/skipped=1）・`p7c3-lint.log`（`:app:lintDebug`、BUILD SUCCESSFUL・error 0）。
+
 ---
 
 ## §15. リスク
@@ -754,6 +1034,13 @@ AVD `actionstarter_test`（**実測: x86_64 / API 35 / RAM 4096MB**）。目的�
 ## §16. Fable 5 確認事項（U-1〜U-14・**裁定済み**）
 
 **Fable 5がPass1/Pass2レビューにより本表「裁定」列のとおり確定した（2026-08-10）。U-1〜U-10・U-12〜U-14は推奨案どおり承認、U-11のみ推奨から変更（Gemini G1 CRITICAL #5反映）。全14項目裁定済みのためG1通過条件を満たす。**
+
+**本表はG1時点（2026-08-10午前）の確認事項でクローズ済み。P7-C2完了後の契約確定ラウンド
+（品質ハーネス統合、同日）でのFable 5裁定1〜8＋retry契約確定は§14.4に記録し、
+DECISIONS.md ADR-0045〜ADR-0049へ起票した。番号体系を分けたのは、U-番号が基盤計画単独の
+G1レビュー起源であるのに対し、裁定1〜8は基盤計画＋品質ハーネスの統合確定という異なる
+文脈のラウンドであるため（新規U-番号を追加すると2つの独立したレビューラウンドが
+同一連番に混在し追跡性が下がる）。**
 
 | ID | 確認事項 | 推奨案 | 裁定（Fable 5・2026-08-10） |
 |---|---|---|---|

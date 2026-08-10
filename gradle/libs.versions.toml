@@ -16,6 +16,15 @@ androidxTestUiautomator = "2.3.0"
 # （2026-08-09、計画メモ§0）: minCompileSdk=1 / minAndroidGradlePluginVersion=1.0.0
 # のため compileSdk 35・AGP 8.13.2（ADR-0007）のまま導入可能（ADR-0011型リスクなし）。
 playServicesLocation = "21.4.0"
+# Phase 7 P7-C0/C1（計画書§14 P7-C0・F85・U-2・R-2）: LiteRT-LM Kotlin API。P7-C0で
+# ResponseFormat.json(schema)のGO判定を実測済み（コミット8967693）。バージョンは0.15.0に
+# 固定し自動更新しない（`ResponseFormat`が公式Webドキュメント未掲載でAPI変更リスクがあるため）。
+litertlmAndroid = "0.15.0"
+# Phase 7 P7-C2（計画書§7.2・§12.1・U-11・Gemini G1 CRITICAL #5）: SchemaValidatorのテストを
+# Robolectric不要のE1（純JVM）で実行するためのpure Java org.json実装。本番コードは引き続き
+# Android SDK同梱のorg.jsonを使用し、本依存はtestImplementationのみに限定する（U-11裁定）。
+# バージョンはMaven Central実測（2026-08-10、search.maven.org）で確認した最新安定版。
+orgJson = "20250517"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -37,6 +46,8 @@ androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
 androidx-test-uiautomator = { group = "androidx.test.uiautomator", name = "uiautomator", version.ref = "androidxTestUiautomator" }
 google-play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
+google-ai-edge-litertlm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version.ref = "litertlmAndroid" }
+org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

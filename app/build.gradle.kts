@@ -94,15 +94,22 @@ dependencies {
     // Phase 3 P3-C1（計画書§6.4#2・§7.1・F22）: 現在地取得。AARメタデータ実測済み
     // （gradle/libs.versions.toml参照）。
     implementation(libs.google.play.services.location)
-    // Phase 7 P7-C0（計画書§14 P7-C0・§0・U-2）: LiteRT-LM Go/No-Go判定プローブ用。
-    // 廃止系`litertlm`ではなく`litertlm-android`（現行AAR）を使用。バージョンは0.15.0に固定（R-2）。
-    implementation("com.google.ai.edge.litertlm:litertlm-android:0.15.0")
+    // Phase 7 P7-C0/C1（計画書§14・§0・U-2・F85）: LiteRT-LM Kotlin API。P7-C0はraw座標文字列で
+    // Go/No-Go実測（GO判定・コミット8967693）。P7-C1でgradle/libs.versions.tomlのバージョン
+    // カタログへ正式化した（計画書§7.2フットプリント）。廃止系`litertlm`ではなく
+    // `litertlm-android`（現行AAR）を使用。バージョンは0.15.0に固定（R-2）。
+    implementation(libs.google.ai.edge.litertlm.android)
 
     testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.junit4)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.compose.ui.test.junit4)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Phase 7 P7-C2（計画書§7.2・§12.1・U-11・Gemini G1 CRITICAL #5）: SchemaValidatorTest等が
+    // Robolectric非経由（E1・純JVM）でorg.jsonの実クラス（Android同梱スタブではなく）を使える
+    // ようにする。本番実装（P7-C3）はAndroid SDK同梱のorg.jsonを使い続け、この依存はテスト
+    // スコープのみに限定する。
+    testImplementation(libs.org.json)
 
     // C6: `src/androidTest`（instrumented E2E、`e2e/MainUxFlowTest.kt`。実行はG4-E待ち）の
     // コンパイルに必要な依存。C3bまで未解決だった申し送り事項（計画書§15 C6行）を解消する。
