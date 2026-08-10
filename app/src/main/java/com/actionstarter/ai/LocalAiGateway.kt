@@ -2,8 +2,9 @@ package com.actionstarter.ai
 
 import com.actionstarter.ai.model.DeviceCapability
 import com.actionstarter.ai.model.DeviceTier
-import com.actionstarter.ai.model.ModelCatalog
+import com.actionstarter.ai.model.ModelCatalogEntry
 import com.actionstarter.ai.model.ModelStorage
+import com.actionstarter.ai.model.ModelVerificationResult
 import com.actionstarter.ai.model.ModelVerifier
 import com.actionstarter.ai.schema.ContentSanityChecker
 import com.actionstarter.ai.schema.ContentSanityResult
@@ -60,8 +61,8 @@ import kotlinx.coroutines.withTimeout
  * 1. [preferences].aiEnabled（false → [AiFallbackReason.AI_DISABLED]、§8.6 #10）
  * 2. [deviceCapability]のRAM／ABI判定（不適合 → [AiFallbackReason.UNSUPPORTED_DEVICE]／
  *    [AiFallbackReason.UNSUPPORTED_ABI]、§8.6 #1・#2）
- * 3. **[modelStorage]導入済みチェック・[modelVerifier]ロード前再検証は本サイクルでは未配線
- *    （P7-C4延期・判断事項、下記「modelStorage/modelVerifierチェックの延期」参照）**
+ * 3. **[modelStorage]導入済みチェック（§8.6 #11）・[modelVerifier]ロード前再検証（§8.6 #12）**。
+ *    P7-C4（ADR-0053・ADR-0054）で配線済み。[checkInstalledModel]参照
  * 4. [deviceCapability]の現在の空きメモリ確認（不足 → ロード・推論を実行せず即座に
  *    [AiFallbackReason.OUT_OF_MEMORY_PREVENTED]、§8.6 #7、Gemini G1 CRITICAL #3・主防御）
  * 5. [model]呼び出し（`model.generatePlan(context, SamplingPolicy.Primary)`。
@@ -71,25 +72,22 @@ import kotlinx.coroutines.withTimeout
  *    [model]をもう一度呼び出す（retry 1回、S-2是正・品質ハーネス§4/§6・Fable 5裁定9・
  *    ADR-0050）→再度不合格なら[AiFallbackReason.SCHEMA_INVALID]、§8.6 #9・§20
  *
- * **modelStorage/modelVerifierチェックの延期（P7-C3・判断事項）**: `LocalAiGatewayTest`の
- * `installedModelStorage()`ヘルパーは`notInstalledModelStorage()`と**同一の未初期化
- * `ModelStorageImpl`インスタンスを返す**（同テストのKDoc「本ヘルパーは...同じ未初期化の
- * ModelStorageImplを返す（意図表明のみのプレースホルダ）...P7-C4・P7-C5が上記2点の内部規約を
- * 確定させた時点で、本ヘルパーを実際にファイルを配置する形へ更新する必要がある」と明記済み）。
- * `ModelStorageImpl.installedModelPath()`はP7-C4スコープでファイル配置規約が未確定のため、
- * これを呼び出すと（"installed"想定のフィクスチャも含め）全T-GW-*ケースで無条件に
- * `NotImplementedError`となり、5系統フォールバック（T-GW-1・4〜10・12・13・15・17・19・20、
- * 14件）が1件もGreen化できなくなる。**したがって本サイクルは§8.6 #11（モデル未導入）・
- * #12（ロード前再検証）のチェックをGatewayの実行パスから意図的に除外し、P7-C4で
- * `ModelStorage`のファイル配置規約が確定した時点で配線する。** この結果:
- * - **T-GW-3**（モデル未導入→`MODEL_NOT_INSTALLED`）は`notInstalledModelStorage()`と
- *   `installedModelStorage()`が区別不能なため本サイクルでは対象外（Red継続、失敗形態が
- *   `NotImplementedError`から`AssertionError`〔Success期待に反しFallback等が返らない〕へ変わる）。
- * - **T-GW-18**（ロード前再検証失敗→`MODEL_CORRUPTED`）はADR-0049裁定8により元々P7-C4まで
- *   据え置き確定済み（テストメソッド自体が未作成のため対象外）。
- * [modelStorage]／[modelVerifier]はコンストラクタ引数として維持する（テストが構築時に渡すため
- * シグネチャ変更は不可、かつP7-C4がファイル配置規約を確定した時点でP7-C5がこの2ステップを
- * 実装で埋める設計上の受け皿として残す）。
+ * **modelStorage/modelVerifierチェックの配線（P7-C4、ADR-0053・ADR-0054、ADR-0051の再検討
+ * トリガーへの回答）**: P7-C3は`ModelStorage`のファイル配置規約が未確定だったため、この2ステップを
+ * `generatePlan`の実行パスから意図的に除外していた（ADR-0051）。P7-C4で配置規約（`ModelStorage`の
+ * `installedEntry`／`installedModelPath`が`catalog`〔既定[com.actionstarter.ai.model.
+ * ModelCatalog.ALL]〕を走査し[com.actionstarter.ai.model.ModelStorage.finalFile]の実在で判定する
+ * 方式）を確定させたことに伴い、本サイクルで配線した。[checkInstalledModel]が3〜4の間（[inferenceMutex]
+ * 内、2回目以降の同時呼び出しからも直列化される）で次を行う:
+ * - [modelStorage.installedEntry]／[modelStorage.installedModelPath]のいずれかが`null`
+ *   → [AiFallbackReason.MODEL_NOT_INSTALLED]（§8.6 #11、T-GW-3）
+ * - 毎回: 実ファイルサイズと[ModelCatalogEntry.sizeBytes]の照合。不一致 → 削除して
+ *   [AiFallbackReason.MODEL_CORRUPTED]
+ * - プロセス内（＝本[LocalAiGateway]インスタンス）で当該エントリを未検証の場合のみ
+ *   [modelVerifier.verify]でSHA-256を再検証し、結果を[sha256VerifiedEntryId]へキャッシュする
+ *   （§8.6 #12「以後の呼び出しでは再計算しない」、Gemini G1 CRITICAL #2、T-GW-18）。不一致
+ *   → 削除して[AiFallbackReason.MODEL_CORRUPTED]
+ * [modelStorage]／[modelVerifier]はP7-C1からのコンストラクタ引数をそのまま使う（シグネチャ変更なし）。
  *
  * **Analytics記録の設計は未確定（P7-C2への申し送り、本サイクルでも未解消）**: T-GW-14（全
  * Fallback経路でAnalytics記録が1回呼ばれる）を満たすための注入可能な収集口が必要だが、
@@ -112,9 +110,9 @@ import kotlinx.coroutines.withTimeout
  * @param model モデル実装。[LocalLanguageModel]型で受け取ることで§16「モデルは技術検証で
  *   交換可能にする」を維持する（本クラス自身は`com.google.ai.edge.litertlm`を一切importしない。
  *   T-AIISO-9）。
- * @param modelStorage F90。導入済みモデルの有無・パス確認に用いる（P7-C3では未使用、上記
- *   「modelStorage/modelVerifierチェックの延期」参照）。
- * @param modelVerifier F89。ロード前の破損・改竄再検証に用いる（P7-C3では未使用、同上）。
+ * @param modelStorage F90。導入済みモデルの有無・パス確認に用いる（P7-C4で配線、上記
+ *   「modelStorage/modelVerifierチェックの配線」参照）。
+ * @param modelVerifier F89。ロード前の破損・改竄再検証に用いる（P7-C4で配線、同上）。
  * @param deviceCapability F91。静的な端末対応可否判定と、動的な空きメモリ確認の両方に使う
  *   （[com.actionstarter.ai.model.DeviceCapability]のKDoc参照）。
  * @param preferences F92。AI ON/OFF判定に用いる。
@@ -134,6 +132,16 @@ class LocalAiGateway(
 
     /** T-GW-15。同一インスタンスへの同時呼び出しでも[model]呼び出しが重ならないよう直列化する。 */
     private val inferenceMutex = Mutex()
+
+    /**
+     * §8.6 #12「プロセス初回ロード前のみSHA-256再計算・以後の呼び出しでは再計算しない」の
+     * プロセス内キャッシュ（Gemini G1 CRITICAL #2、T-GW-18）。[com.actionstarter.di.AppContainer]が
+     * `by lazy`で1インスタンスのみ生成する設計（R-7）のため、本フィールドの寿命＝プロセスの
+     * 寿命と一致する。[checkInstalledModel]は常に[inferenceMutex]内から呼ばれるため、この
+     * `var`への書き込みはMutexで直列化されており追加の同期は不要。値は検証済みの
+     * [ModelCatalogEntry.id]（検証対象が変わったら再検証する）。
+     */
+    private var sha256VerifiedEntryId: String? = null
 
     /**
      * §71完成条件の中核。[PlanningContext]から[AIPlanResponse]を生成し、[AiResult]で
@@ -156,14 +164,78 @@ class LocalAiGateway(
                 "Device SUPPORTED_ABIS does not include arm64-v8a (§8.2)"
             )
         }
-        if (!deviceCapability.hasAvailableMemory(REQUIRED_PEAK_MEMORY_BYTES)) {
-            return AiResult.Fallback(
-                AiFallbackReason.OUT_OF_MEMORY_PREVENTED,
-                "availMem is below required peak RAM ($REQUIRED_PEAK_MEMORY_BYTES bytes incl. safety margin, §8.6 #7)"
+
+        return inferenceMutex.withLock {
+            val modelCheck = checkInstalledModel()
+            if (modelCheck is InstalledModelCheck.Failed) return@withLock modelCheck.fallback
+            val installedEntry = (modelCheck as InstalledModelCheck.Ready).entry
+
+            val requiredPeakMemoryBytes = installedEntry.peakRamBytes + MEMORY_SAFETY_MARGIN_BYTES
+            if (!deviceCapability.hasAvailableMemory(requiredPeakMemoryBytes)) {
+                return@withLock AiResult.Fallback(
+                    AiFallbackReason.OUT_OF_MEMORY_PREVENTED,
+                    "availMem is below required peak RAM ($requiredPeakMemoryBytes bytes incl. safety margin, §8.6 #7)"
+                )
+            }
+
+            runValidationPipeline(context)
+        }
+    }
+
+    private sealed interface InstalledModelCheck {
+        data class Ready(val entry: ModelCatalogEntry) : InstalledModelCheck
+        data class Failed(val fallback: AiResult.Fallback) : InstalledModelCheck
+    }
+
+    /**
+     * §8.6 #11（モデル未導入）・#12（ロード前再検証）。[inferenceMutex]内からのみ呼ばれる
+     * （クラスKDoc「modelStorage/modelVerifierチェックの配線」参照）。
+     */
+    private fun checkInstalledModel(): InstalledModelCheck {
+        val entry = modelStorage.installedEntry()
+            ?: return InstalledModelCheck.Failed(
+                AiResult.Fallback(AiFallbackReason.MODEL_NOT_INSTALLED, "ModelStorage.installedEntry() is null (§8.6 #11)")
+            )
+        // installedEntry()と同一の解決結果（finalFile）を使う。installedModelPath()を別途
+        // 呼ぶと2回目のcatalog走査になり、理論上は間にファイルが変化するTOCTOUの窓も生まれる
+        // ため、同じentryから直接導出する（installedModelPath()自体はLiteRtLmLocalLanguageModel
+        // のmodelPathProvider経由で引き続き使われる、AppContainerのKDoc参照）。
+        val file = modelStorage.finalFile(entry)
+
+        // 毎回: サイズ照合（軽量）。
+        if (file.length() != entry.sizeBytes) {
+            modelStorage.delete(entry)
+            sha256VerifiedEntryId = null
+            return InstalledModelCheck.Failed(
+                AiResult.Fallback(
+                    AiFallbackReason.MODEL_CORRUPTED,
+                    "Installed file size ${file.length()} != catalog ${entry.sizeBytes} (§8.6 #12)"
+                )
             )
         }
 
-        return inferenceMutex.withLock { runValidationPipeline(context) }
+        // プロセス内で当該エントリが未検証のときのみSHA-256を再検証する（§8.6 #12、T-GW-18）。
+        if (sha256VerifiedEntryId != entry.id) {
+            when (val verification = modelVerifier.verify(file, entry)) {
+                is ModelVerificationResult.Invalid -> {
+                    modelStorage.delete(entry)
+                    sha256VerifiedEntryId = null
+                    return InstalledModelCheck.Failed(
+                        AiResult.Fallback(
+                            AiFallbackReason.MODEL_CORRUPTED,
+                            "SHA-256 re-verification failed: ${verification.reason} " +
+                                "(§8.6 #12, Gemini G1 CRITICAL #2)"
+                        )
+                    )
+                }
+
+                ModelVerificationResult.Valid -> {
+                    sha256VerifiedEntryId = entry.id
+                }
+            }
+        }
+
+        return InstalledModelCheck.Ready(entry)
     }
 
     private suspend fun runValidationPipeline(context: PlanningContext): AiResult<AIPlanResponse> {
@@ -286,17 +358,15 @@ class LocalAiGateway(
         /**
          * §8.6 #7「必要ピークRAM＋安全マージン」の暫定マージン（512MB）。G4-D実測（§11.3）で
          * 確定するまでの仮値（§8.6冒頭「タイムアウト閾値の数値は...仮置き」と同じ扱い）。
+         *
+         * **P7-C4での変更**: 必要ピークRAMは`ModelCatalog`の特定エントリを本クラスへ
+         * ハードコードせず、[checkInstalledModel]が解決した導入済み[ModelCatalogEntry.
+         * peakRamBytes]（実際にロード対象となるモデル）へ本マージンを加える形へ改めた
+         * （[generatePlan]参照）。§17「モデル名を製品仕様として固定しない」との整合、および
+         * `ModelStorage`のテストfixtureエントリ（本番カタログ非依存）でもOOMガードが正しい値で
+         * 動作するようにするための変更。
          */
         private const val MEMORY_SAFETY_MARGIN_BYTES: Long = 512L * 1024 * 1024
-
-        /**
-         * 現状カタログ唯一のエントリ（[ModelCatalog.ALL]）を基準にした必要ピークRAM。
-         * 複数モデルが選択可能になった時点（P7-C4/C6、[AiPreferences.selectedModelId]配線後）で
-         * `selectedModelId`に対応する[com.actionstarter.ai.model.ModelCatalogEntry]を参照する形へ
-         * 差し替えること。
-         */
-        private val REQUIRED_PEAK_MEMORY_BYTES: Long =
-            ModelCatalog.QWEN3_0_6B_INT4_BLOCK32.peakRamBytes + MEMORY_SAFETY_MARGIN_BYTES
     }
 }
 

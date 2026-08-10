@@ -4,8 +4,11 @@ import android.app.ActivityManager
 import android.content.Context
 import com.actionstarter.ai.model.DeviceCapability
 import com.actionstarter.ai.model.DeviceCapabilityImpl
+import com.actionstarter.ai.model.ModelCatalogEntry
+import com.actionstarter.ai.model.ModelLicense
 import com.actionstarter.ai.model.ModelStorage
 import com.actionstarter.ai.model.ModelStorageImpl
+import com.actionstarter.ai.model.ModelVerificationResult
 import com.actionstarter.ai.model.ModelVerifier
 import com.actionstarter.ai.model.ModelVerifierImpl
 import com.actionstarter.domain.model.ExecutionEvent
@@ -28,6 +31,8 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.shadows.ShadowBuild
+import java.io.File
+import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -55,6 +60,36 @@ private fun singleStepPlanJson(eventType: String = "business_meeting", actionTyp
             )
         )
     }.toString()
+
+/**
+ * P7-C4（ADR-0053）: [installedModelStorage]／[notInstalledModelStorage]／[fakeInstalledEntry]が
+ * 共有する「導入済みモデル」fixtureの内容。実モデル（328MB・SHA-256実測値）を使わずに
+ * `ModelVerifierImpl`（本物）でのSHA-256照合を高速に完走させるための小さなバイト列。
+ * ファイルスコープにしてあるのは[sha256Hex]と同じ理由（ネストしたクラスからも参照するため）。
+ */
+private val FAKE_INSTALLED_MODEL_BYTES: ByteArray = "p7c4-fake-installed-model-fixture-bytes".toByteArray()
+
+private fun sha256Hex(bytes: ByteArray): String =
+    MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(separator = "") { "%02x".format(it) }
+
+/**
+ * `installedModelStorage()`／`notInstalledModelStorage()`／T-GW-18が使う「導入済みモデル」の
+ * [ModelCatalogEntry]。[ModelStorageImpl]の`catalog`引数（ADR-0053で新設）へ本番の
+ * `ModelCatalog.ALL`の代わりに渡すことで、実モデルのバイト列を持たずに§8.6 #11・#12を
+ * 本物の[com.actionstarter.ai.model.ModelVerifierImpl]で検証できる。
+ */
+private fun fakeInstalledEntry(): ModelCatalogEntry = ModelCatalogEntry(
+    id = "p7c4-test-installed-model",
+    displayName = "P7-C4 Test Installed Model",
+    downloadUrl = "https://example.invalid/p7c4-test-installed-model.litertlm",
+    sha256 = sha256Hex(FAKE_INSTALLED_MODEL_BYTES),
+    sizeBytes = FAKE_INSTALLED_MODEL_BYTES.size.toLong(),
+    peakRamBytes = 1L * 1024 * 1024,
+    contextLength = 1,
+    quantization = "test",
+    license = ModelLicense.APACHE_2_0,
+    requiresNoticeFile = false
+)
 
 /**
  * P7-C2／P7契約確定（計画書§12.5・T-GW-1〜18・T-AIMET-1・F96）。[LocalAiGateway.generatePlan]の
@@ -104,10 +139,21 @@ private fun singleStepPlanJson(eventType: String = "business_meeting", actionTyp
  * **fake注入の設計**: [model]は§16の凍結`interface LocalLanguageModel`のため
  * [FakeLocalLanguageModel]で完全に差し替え可能（他プロジェクト内の`CalendarService`／
  * `RoutingService`等と同じ、本プロジェクトの確立されたfakeパターン）。[modelStorage]の
- * 「導入済み」状態は、内部ファイル命名規約が計画書に未確定（P7-C4スコープ）のため意図表明の
- * プレースホルダ（[installedModelStorage]のKDoc参照）に留める。
+ * 「導入済み」状態は、P7-C4（ADR-0053）で`ModelStorage`のファイル配置規約が確定したことに伴い、
+ * [installedModelStorage]／[notInstalledModelStorage]が実際にファイルを配置・非配置する形へ
+ * 更新済み（[installedModelStorage]のKDoc参照。ADR-0051の再検討トリガーへの回答）。
  *
- * **本ファイルが対象外とするIDとその理由（Fable 5確認事項・裁定6/7で確定）**:
+ * **P7-C4（2026-08-10、domain-implementer）での追加調整**: `ModelStorage`のファイル配置規約
+ * （ADR-0053）確定に伴い、[LocalAiGateway.generatePlan]へ§8.6 #11（`modelStorage.
+ * installedEntry`チェック）・#12（`modelVerifier`ロード前再検証）を配線した（ADR-0054）。
+ * これにより**T-GW-3が本サイクルでGreen化**した（ADR-0051の再検討トリガーへの回答）。
+ * 併せて、下記「対象外ID」が挙げていた**T-GW-18も本サイクルで骨格を作成しGreen化**した
+ * （Fable 5裁定8・ADR-0049が据え置いていたブロッカー〔`ModelStorage`内部規約未確定〕が
+ * 解消されたため。[tGw18a_installedModelFailsPreLoadReverification_returnsFallbackModelCorrupted_deletesFile]・
+ * [tGw18b_secondCallWithinSameProcess_doesNotRecomputeSha256]参照、系統7）。
+ *
+ * **本ファイルが対象外とするIDとその理由（Fable 5確認事項・裁定6/7で確定。T-GW-18は上記の
+ * とおりP7-C4で解消済みのため以下からは除外した）**:
  * - **T-GW-11**（容量不足→DL開始しない）: `LocalAiGateway`の公開APIは`generatePlan`／
  *   `generateRecovery`のみで、DLを開始するメソッドを持たない。§8.6 #3の判定タイミングも
  *   「DL開始前」（Settings／ModelDownloader起点）であり、本クラスの責務外と判断した。
@@ -122,13 +168,8 @@ private fun singleStepPlanJson(eventType: String = "business_meeting", actionTyp
  *   `LocalLanguageModel.generatePlan`呼び出し回数からは観測できない（`Engine`/
  *   `Conversation`の生成有無を`LocalAiGateway`境界から見る手段がない）。P7-C5のadapter単体
  *   テストのスコープと判断した。
- * - **T-GW-18**（ロード前検証失敗→MODEL_CORRUPTED）: 「導入済みだが
- *   `ModelCatalogEntry.sha256`と不一致」という状態を組み立てるには`ModelStorage`の内部
- *   ファイル配置規約と検証対象エントリの決定方法の両方が要る。**Fable 5裁定8（2026-08-10、
- *   ADR-0049）**: P7-C4（ModelStorageファイルレイアウト規約確定時）まで骨格を書かず申し送る
- *   ことを確定した。
  *
- * これら4件は自己解釈で代替実装をでっち上げず、書ける範囲のみを書いて報告する
+ * これら3件は自己解釈で代替実装をでっち上げず、書ける範囲のみを書いて報告する
  * （本タスクの制約「計画書のケースが曖昧でテスト化できない場合は差し戻し報告」に基づく）。
  */
 @RunWith(RobolectricTestRunner::class)
@@ -240,26 +281,35 @@ class LocalAiGatewayTest {
 
     /**
      * 「未導入」状態のModelStorage（自然な既定状態。ファイル配置を一切行わない）。
-     * T-GW-3の対象そのもの。
+     * T-GW-3の対象そのもの。[fakeInstalledEntry]と同じcatalogを与えるが、対応する
+     * [ModelStorage.finalFile]へは何も書き込まないため[ModelStorage.installedEntry]は
+     * 常に`null`を返す。
      */
-    private fun notInstalledModelStorage(): ModelStorage = ModelStorageImpl(context())
+    private fun notInstalledModelStorage(): ModelStorage =
+        ModelStorageImpl(context(), catalog = listOf(fakeInstalledEntry()))
 
     /**
-     * 「モデル導入済み」状態を意図したModelStorage。
+     * 「モデル導入済み」状態を意図したModelStorage（P7-C4・ADR-0053で実配置形へ更新）。
      *
-     * 【重要な制約・Fable 5確認事項】`ModelStorageImpl.installedModelPath`/`partFile`/`commit`は
-     * いずれも`TODO()`であり、かつ内部のファイル命名規約はP7-C4で確定する
-     * （本ファイル作成時点では未確定）。加えて`LocalAiGateway`が`ModelVerifier`で再検証する際に
-     * `ModelCatalog`のどのエントリを対象にするか（`AiPreferences.selectedModelId`経由か、
-     * 単一カタログの暗黙選択か）も未確定である。したがって本ヘルパーは
-     * [notInstalledModelStorage]と同じ未初期化の`ModelStorageImpl`を返す（意図表明のみの
-     * プレースホルダ）。T-GW-1・4〜8・12・13・15・17はこの制約のもとで書かれており、現在は
-     * [LocalAiGateway.generatePlan]自身の最上位`TODO()`によりRedになる。P7-C4
-     * （ModelStorage Green化）・P7-C5（LocalAiGateway Green化）が上記2点の内部規約を確定させた
-     * 時点で、本ヘルパーを実際にファイルを配置する形へ更新する必要がある（T-GW-18も同様、
-     * Fable 5裁定8・ADR-0049）。
+     * **実配置形（P7-C4）**: [ModelStorageImpl]の`catalog`引数（ADR-0053で新設）へ本番の
+     * `ModelCatalog.ALL`（実モデル328MB・SHA-256実測値）ではなく、本ヘルパー専用の小さな
+     * fixtureエントリ（[fakeInstalledEntry]）を差し替えて渡す。これにより、実モデルの
+     * バイト列を持たなくても`ModelVerifierImpl`（本物、fakeに差し替えない）による本物の
+     * SHA-256照合を高速に完走させたうえで「導入済み」状態を表現できる
+     * （§8.6 #11・#12を本物のロジックで検証する。ADR-0053「導入済みモデルの解決方法」参照）。
+     * [ModelStorage.finalFile]へ[FAKE_INSTALLED_MODEL_BYTES]をそのまま書き込むことで、
+     * `installedEntry()`／`installedModelPath()`が非nullを返し、`ModelVerifier.verify`も
+     * 合格する状態を作る。
      */
-    private fun installedModelStorage(): ModelStorage = ModelStorageImpl(context())
+    private fun installedModelStorage(): ModelStorage {
+        val entry = fakeInstalledEntry()
+        val storage = ModelStorageImpl(context(), catalog = listOf(entry))
+        storage.finalFile(entry).apply {
+            parentFile?.mkdirs()
+            writeBytes(FAKE_INSTALLED_MODEL_BYTES)
+        }
+        return storage
+    }
 
     private fun verifier(): ModelVerifier = ModelVerifierImpl()
 
@@ -717,6 +767,89 @@ class LocalAiGatewayTest {
             "1回目はPrimary・2回目はRetry方針で呼ばれるべきです(Fable 5裁定9・ADR-0050・S-2是正)",
             listOf(SamplingPolicy.Primary, SamplingPolicy.Retry),
             model.recordedSamplingPolicies
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // 系統7: ロード前再検証（§8.6 #12・Gemini G1 CRITICAL #2・T-GW-18、P7-C4でGreen化）
+    // ------------------------------------------------------------------
+
+    /** [ModelVerifier.verify]の呼び出し回数を数える薄いラッパー（T-GW-18bのキャッシュ検証用）。 */
+    private class CountingModelVerifier(private val delegate: ModelVerifier) : ModelVerifier {
+        var verifyCallCount: Int = 0
+            private set
+
+        override fun verify(file: File, expected: ModelCatalogEntry): ModelVerificationResult {
+            verifyCallCount += 1
+            return delegate.verify(file, expected)
+        }
+    }
+
+    // T-GW-18a: 異常系 - ロード前検証(SHA-256再検証)不一致 → Fallback(MODEL_CORRUPTED)・
+    // ファイル削除・fakeモデルは1回も呼ばれない(Gemini G1 CRITICAL #2、ADR-0049裁定8・ADR-0054)
+    @Test
+    fun tGw18a_installedModelFailsPreLoadReverification_returnsFallbackModelCorrupted_deletesFile() = runTest {
+        val entry = fakeInstalledEntry()
+        val storage = ModelStorageImpl(context(), catalog = listOf(entry))
+        // FAKE_INSTALLED_MODEL_BYTESと同じ長さ・異なる内容 → SIZE_MISMATCHではなく
+        // HASH_MISMATCHで不合格になる（改竄想定、ModelVerifierTestのtamperedContentと同型）。
+        val tamperedBytes = ByteArray(FAKE_INSTALLED_MODEL_BYTES.size) { 0x00 }
+        storage.finalFile(entry).apply {
+            parentFile?.mkdirs()
+            writeBytes(tamperedBytes)
+        }
+        val model = FakeLocalLanguageModel(listOf(PlanCallOutcome.Respond(validSingleStepResponse())))
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tGw18a")
+        )
+
+        val result = gateway.generatePlan(planningContext())
+
+        assertTrue(result is AiResult.Fallback)
+        assertEquals(AiFallbackReason.MODEL_CORRUPTED, (result as AiResult.Fallback).reason)
+        assertEquals(
+            "ロード前検証が不合格の場合はfakeモデルのgeneratePlanが1回も呼ばれてはいけません",
+            0,
+            model.generatePlanCallCount
+        )
+        assertTrue(
+            "検証失敗時は破損ファイルを削除するべきです(§8.6 #12)",
+            !storage.finalFile(entry).exists()
+        )
+    }
+
+    // T-GW-18b: 正常系 - 検証成功後、同一Gatewayインスタンスへの2回目の呼び出しではSHA-256を
+    // 再計算しない(プロセス内キャッシュ、§8.6 #12「以後の呼び出しでは再計算しない」、
+    // Gemini G1 CRITICAL #2)
+    @Test
+    fun tGw18b_secondCallWithinSameProcess_doesNotRecomputeSha256() = runTest {
+        val countingVerifier = CountingModelVerifier(ModelVerifierImpl())
+        val model = FakeLocalLanguageModel(
+            listOf(
+                PlanCallOutcome.Respond(validSingleStepResponse()),
+                PlanCallOutcome.Respond(validSingleStepResponse())
+            )
+        )
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = countingVerifier,
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tGw18b")
+        )
+
+        gateway.generatePlan(planningContext())
+        gateway.generatePlan(planningContext())
+
+        assertEquals(
+            "同一プロセス内(同一Gatewayインスタンス)の2回目呼び出しではSHA-256を再計算しない" +
+                "はずです(§8.6 #12、Gemini G1 CRITICAL #2)",
+            1,
+            countingVerifier.verifyCallCount
         )
     }
 }

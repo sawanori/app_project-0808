@@ -1305,3 +1305,71 @@ P7-C2c（品質ハーネス由来の新設部品へのRed補完サイクル）�
 **再検討トリガー**: P7-C6でSettings画面（F97）を実装する際、T-SET-1（初回起動時`aiEnabled==false`）・T-SET-2（トグルON永続化）が本実装で正しく満たされることを確認すること（本ADRの実装は`AiPreferences`interfaceの契約どおりであり、T-SET-1〜2の期待値と矛盾しないと判断済みだが、P7-C6側での再確認を推奨する）。
 
 **再検討トリガー**: P7-C5実装時、adapterがGateway起点の「これは何回目の呼び出しか」をどう判断するか（内部カウンタ等）を確定した時点で、本ADRの該当箇所（決定1）を実装詳細として追記すること。T-GW-14はPhase 10の`AnalyticsStore`設計時に本ADRを参照し、コラボレータの正式な注入方式を設計すること。
+
+---
+
+### ADR-0053: `ModelStorage`のファイル配置規約を確定し、`LocalAiGateway`へ§8.6 #11/#12を配線する（ADR-0051の再検討トリガーへの回答）
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（domain-implementer判断・報告事項、P7-C4タスク指示「モデルファイルの配置規約を確定」の枠内） ／ 決定者: domain-implementer（P7-C4、Fable 5への報告を前提とした実装時判断） ／ 起案agent: domain-implementer ／ 関連仕様§: §95.6「ダウンロード開始前にStatFsで空き容量を検証」・§8.6発動条件表#11/#12・ADR-0048（4型のinterface化）・ADR-0051（P7-C4への延期決定、再検討トリガー）（記録トリガー②仕様未定義箇所の補完に該当。`ModelStorage`interfaceへの`installedEntry()`追加は既存メソッドの署名を変更しない後方互換な追加のみのため①契約変更には該当しない）
+
+- **ADR番号の付番根拠**: 起票直前に`grep -n "^### ADR-" DECISIONS.md`を再実測し、最新確定ADRがADR-0052（本書1283行）であることを確認した。その次番としてADR-0053を採番する。
+
+**背景**: P7-C3は`ModelStorage`のファイル配置規約が未確定であることを理由に、`LocalAiGateway.generatePlan()`から§8.6 #11（モデル未導入判定）・#12（ロード前SHA-256再検証）を意図的に除外し（ADR-0051）、結果としてT-GW-3が唯一のRedとして残った。ADR-0051の再検討トリガーは「P7-C4で`ModelStorage`のファイル配置規約が確定した時点で配線する」ことを明記していた。本ADRはその配置規約を確定し、配線を完了する。
+
+**決定**:
+1. **保存先**: `context.noBackupFilesDir/models/`固定（既存interfaceのKDoc・T-MDL-14の要求どおり）。ファイル名は`<ModelCatalogEntry.id>.litertlm`（正式配置、[ModelStorage.finalFile]）／`<id>.litertlm.part`（DL中一時ファイル、[ModelStorage.partFile]）。
+2. **「導入済み」の解決方法**: `ModelStorageImpl`はコンストラクタで`catalog: List<ModelCatalogEntry>`（既定`ModelCatalog.ALL`）を新たに受け取り、`installedEntry()`はこの`catalog`を順に走査して`finalFile(entry)`が実在する最初のエントリを返す（`installedModelPath()`は内部でこれを使い、`installedEntry()?.let { finalFile(it).absolutePath }`として実装）。Phase 7時点は`catalog`が単一エントリのため事実上の二値判定と同義だが、走査ベースにすることで①複数モデル対応時のコード変更が最小で済む（§17「モデル名を製品仕様として固定しない」の交換可能性）、②テストが本番の`ModelCatalog.ALL`（実モデル328MB・SHA-256実測値`e3e290...`）を経由せず、`catalog`引数を差し替えて小さなfixtureエントリで「導入済み」状態を作れる（328MBファイルの実体を持たずに本物の`ModelVerifierImpl`によるSHA-256照合を高速に完走できる）、という2つの利点を得る。
+3. `ModelStorage`interfaceへ`installedEntry(): ModelCatalogEntry?`を新設した（既存`installedModelPath(): String?`はシグネチャ・意味とも無変更で維持）。`LocalAiGateway`が§8.6 #12の再検証で必要とする「期待値」（`ModelCatalogEntry.sizeBytes`／`sha256`）を得るための最小の追加。
+4. **`LocalAiGateway.generatePlan()`の配線**: `isAbiSupported()`チェックとOOM事前ガード（§8.6 #7）の間、`inferenceMutex`内の先頭で新設private関数`checkInstalledModel()`を呼ぶ。
+   - `modelStorage.installedEntry()`が`null` → `Fallback(MODEL_NOT_INSTALLED)`（§8.6 #11、T-GW-3）
+   - 毎回: `modelStorage.finalFile(entry)`（`installedEntry()`と同一の解決結果を再利用し、`installedModelPath()`を別途呼ぶことによる二重走査・TOCTOUの窓を避ける）のファイルサイズと`entry.sizeBytes`を照合。不一致 → `modelStorage.delete(entry)`のうえ`Fallback(MODEL_CORRUPTED)`
+   - プロセス内（`LocalAiGateway`インスタンス単位、`AppContainer`が`by lazy`で1個のみ生成するためプロセス寿命と一致）で当該エントリが未検証のときのみ`modelVerifier.verify()`を呼び、結果を`sha256VerifiedEntryId`（`entry.id`）へキャッシュする（§8.6 #12「以後の呼び出しでは再計算しない」、Gemini G1 CRITICAL #2、T-GW-18）。不一致 → 同様に削除＋`Fallback(MODEL_CORRUPTED)`
+5. **OOM事前ガードの動的化（副次的な改善）**: 従来`LocalAiGateway`の companion object が`ModelCatalog.QWEN3_0_6B_INT4_BLOCK32.peakRamBytes`を固定的に参照していたが、`checkInstalledModel()`が解決した実際の導入済み`entry.peakRamBytes`を使う形へ改めた（§17「モデル名を製品仕様として固定しない」との整合、および`ModelStorage`のテストfixtureエントリでもOOMガードが正しい値で動作するようにするため）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `installedEntry()`を新設せず、`installedModelPath()`のみで済ませ、`LocalAiGateway`側で`ModelCatalog.QWEN3_0_6B_INT4_BLOCK32`を再検証対象として直接ハードコードする | テストが「導入済み」状態を作るために実モデル328MB・SHA-256実測値`e3e290...`と一致する巨大ファイルを用意する必要が生じ、実用的な速度でのJVMテストが成立しない。`LocalAiGatewayTest`の既存14ケース（T-GW-1・4〜10・12・13・15・17・19・20）すべてに影響する |
+| `ModelStorage`にentryを持たせず、`LocalAiGateway`のコンストラクタへ`modelCatalogEntry: ModelCatalogEntry`パラメータを追加して直接注入する | 既存16件のGateway構築呼び出し（`LocalAiGatewayTest`内）すべてに新引数を追加する必要が生じ、タスクが許可する変更範囲（`installedModelStorage()`/`notInstalledModelStorage()`ヘルパーのみ）を超える。`catalog`を`ModelStorage`側に持たせる方が、変更をヘルパー2つに閉じ込められる |
+| SHA-256の「プロセス内キャッシュ」を`ModelVerifierImpl`自身に実装する | `ModelVerifierImpl`のKDoc（P7-C3確定）が「本クラス単体は毎回計算する契約のまま。呼び出し側が同一インスタンスを再利用しキャッシュするかを決める」と既に明記しており、キャッシュの要否は呼び出し側（`LocalAiGateway`）の設計判断であるべき。`ModelVerifier`interfaceを状態依存にすると、他の呼び出し元（将来の`ModelDownloader`のDL直後検証、ADR-0054）が意図せずキャッシュの影響を受けるリスクがある |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/model/ModelStorage.kt`（interface拡張・`ModelStorageImpl`全実装）、`app/src/main/java/com/actionstarter/ai/LocalAiGateway.kt`（`generatePlan`内の#11/#12配線・`sha256VerifiedEntryId`フィールド追加・OOM必要RAMの動的化）、`app/src/main/java/com/actionstarter/di/AppContainer.kt`（`modelStorage`をローカル変数からプロパティへ昇格、[modelDownloader]と共有するため）、`app/src/test/java/com/actionstarter/ai/LocalAiGatewayTest.kt`（`installedModelStorage()`/`notInstalledModelStorage()`ヘルパー更新・T-GW-18a/b新設。ADR-0051が予告した承認済み変更範囲）。新設`app/src/test/java/com/actionstarter/ai/model/ModelStorageTest.kt`（T-MDL-4〜5・12〜15、11件）。
+
+**検証方法**: `:app:testDebugUnitTest --tests "com.actionstarter.ai.model.ModelStorageTest"`実測で11/11 Green（`build/agent-logs/p7c4-green-ModelStorage.log`）。`:app:testDebugUnitTest --tests "com.actionstarter.ai.LocalAiGatewayTest"`実測で18/18 Green（T-GW-3・T-GW-18a・T-GW-18b含む、`build/agent-logs/p7c4-green-LocalAiGateway.log`）。`:app:testDebugUnitTest --rerun`全体でtests=528/failures=0/errors=0/skipped=1（`build/agent-logs/p7c4-full.log`、既存417件＋P7-C2〜C2c追加88件＋P7-C4新規23件の合計と一致）。`:app:lintDebug --rerun-tasks`はBUILD SUCCESSFUL・error 0（新規warning 0件、既存22件は`AiPreferences.kt`・`SharedPreferencesExecutionScheduleStore.kt`由来でP7-C4のコード変更に起因するものはゼロ、`build/agent-logs/p7c4-lint.log`）。
+
+**再検討トリガー**: P7-C6で`AiPreferences.selectedModelId`による複数モデル選択が実装された時点で、`installedEntry()`の走査基準を「`catalog`全走査（先頭一致）」から「`selectedModelId`に一致する単一エントリ」へ絞ることを検討する（現状は単一カタログのため実害はないが、複数モデル導入時は「導入済みだが選択されていないモデル」の扱いを明確にする必要がある）。
+
+---
+
+### ADR-0054: `ModelDownloader`を実装する：容量ガードは`ModelStorage`（`DeviceCapability`ではない）が担い、DL完了後の検証・コミットまでを一体のパイプラインとする
+
+- 日付: 2026-08-10 ／ ステータス: 承認済み（domain-implementer判断・報告事項、P7-C4タスク指示の枠内での訂正） ／ 決定者: domain-implementer（P7-C4、Fable 5への報告を前提とした実装時判断） ／ 起案agent: domain-implementer ／ 関連仕様§: §18「ダウンロード開始前にストレージ空き容量の事前検証を必須」・§95.6・§8.6発動条件表#3/#5・§9本文（T-AIISO-6・ADR-0044の許可リスト）（記録トリガー②仕様未定義箇所の補完、および担当タスク指示文言とプロジェクト既存契約〔`ModelStorage.hasSufficientSpace`〕との不整合の訂正に該当。`ModelDownloader`の公開APIシグネチャ〔`download(entry, onProgress)`〕自体は無変更のため①契約変更には該当しない）
+
+- **ADR番号の付番根拠**: ADR-0053と同一バッチ起票。起票直前の`grep`再実測（ADR-0053参照）によりADR-0053の次番としてADR-0054を採番した。
+
+**背景**: 本サイクルのタスク指示は「`ModelDownloader`: HTTPダウンロード...・`ModelVerifier`でSHA-256検証・**`DeviceCapability`で容量ガード**（空き容量不足→DL拒否）・破損/検証失敗時は削除して`Fallback`/再DL導線」と記述していたが、実装着手前に既存契約を確認したところ、以下の訂正が必要と判明した。
+
+1. **容量ガードの担当コラボレータ**: `DeviceCapability`interface（F91、`ai/model/DeviceCapability.kt`）は`classify()`／`isAbiSupported()`／`hasAvailableMemory(requiredBytes: Long)`の3メソッドのみを持ち、いずれもRAM総量・ABI・空きRAMの判定用であり、ストレージ空き容量の概念を一切持たない（同ファイルのKDoc「§5.3の段階判定」「§8.6 #7の主防御」参照）。一方`ModelStorage`interface（F90）は既存scaffold（P7-C1）の時点で`hasSufficientSpace(requiredBytes: Long): Boolean`を「StatFsベースの容量ガード」用メソッドとして既に確定・KDoc化しており（「`[requiredBytes]×[CAPACITY_SAFETY_FACTOR]`の空き容量が確保できるか（§95.6）」）、計画書§8.6 #3の検知方法列も一貫して`StatFs(noBackupFilesDir).availableBytes`をModelStorageの管轄としている。したがって実際の容量ガードは`ModelStorage.hasSufficientSpace`を使う実装とし、タスク指示の「`DeviceCapability`で容量ガード」という記述は責務の取り違え（誤記）と判断して訂正した。タスク指示自身が「計画書§8・§14 P7-C4が正」と明記しているため、既存の`ModelStorage`interface契約（計画書の実体）を優先した。
+2. **DL完了後の検証・コミットの帰属**: §8.6 #5「検証失敗（改竄・破損。DL完了直後の1回目検証）」の判定タイミングは「DL完了直後（`.part`→正式名リネーム前）」であり、`ModelDownloader`の「Download」責務（F88）と時系列上ほぼ不可分である。タスク指示も「`ModelVerifier`でSHA-256検証...破損/検証失敗時は削除して`Fallback`/再DL導線」を`ModelDownloader`の記述に含めていたため、`download()`自体が転送完了後に検証→合格なら`commit`、不合格なら`delete`まで行う一体パイプラインとして実装した。
+
+**決定**:
+1. `ModelDownloader`のコンストラクタへ`modelVerifier: ModelVerifier`を追加した（既存`modelStorage: ModelStorage`に加えて。公開APIシグネチャの破壊的変更ではない——本タスク開始時点で本クラスを構築する呼び出し元は存在しなかったため）。
+2. `download(entry, onProgress)`は次の順で一体実行する: ①HTTPS検証（T-MDL-16）→②`modelStorage.hasSufficientSpace(entry.sizeBytes)`による容量ガード（§8.6 #3・§95.6）→③HTTP転送（レジューム対応、T-MDL-6・7、無限DL防止、T-MDL-8）→④転送完了後の`modelVerifier.verify()`（§8.6 #5）→⑤合格なら`modelStorage.commit(entry)`、不合格なら`modelStorage.delete(entry)`。
+3. HTTP接続をfakeで差し替え可能にするため、`ai/model/ModelDownloader.kt`内に自己完結した`HttpRangeClient`／`HttpRangeConnection`interfaceと、本番実装`UrlConnectionHttpRangeClient`（`java.net.HttpURLConnection`ベース、`com.actionstarter.services.routing.UrlConnectionHttpPostClient`と同型の設計だが`services.routing`配下を一切importしない自己完結実装）を新設した。T-AIISO-6の許可対象ファイルは変わらず本ファイル1つのままである（ADR-0044）。可視性は`public`とした（`ModelDownloader`の`public`コンストラクタが`httpClient`引数の型として公開するため、`internal`のままでは「publicな宣言がinternal型を公開している」というKotlinの可視性整合性エラーになる。単一`:app`モジュールのため実質的な公開範囲への影響はない）。
+4. `ModelDownloadFailureReason`へ`INSUFFICIENT_STORAGE`／`VERIFICATION_FAILED`／`STORAGE_ERROR`（`commit()`失敗）の3値を追加した（既存`INSECURE_URL`/`NETWORK_ERROR`/`HTTP_ERROR`/`SIZE_EXCEEDED`はそのまま維持、破壊的変更なし）。
+5. 実ネットワークDLはテストで一切実行しない（fake `HttpClient`/URLでのロジック検証のみ、本タスクの制約）。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| タスク指示の記述どおり`DeviceCapability`へ容量チェックメソッドを追加する | F91の責務（RAM/ABI判定）にストレージ容量という異質な関心事を混入させ、既存3メソッド構成の一貫性を壊す。P7-C1で既に`ModelStorage.hasSufficientSpace`が同じ目的で確定・KDoc化されており、追加すると同一目的の実装が2箇所に重複する |
+| `ModelDownloader.download()`を転送のみに限定し、検証・コミットは呼び出し側（将来のSettings ViewModel、P7-C6）の責務とする | タスク指示が明示的に検証・削除・再DL導線までを`ModelDownloader`の記述に含めており、これに従った。加えて「DLしたが未検証のファイル」を呼び出し側が誤ってロード対象として扱ってしまうリスク（信頼境界違反）を、`download()`の戻り値契約自体で構造的に防げる利点がある |
+| `HttpRangeClient`を`internal`のまま維持し、`ModelDownloader`の`httpClient`パラメータを取り除いてコンストラクタ内で直接`UrlConnectionHttpRangeClient()`を生成する（テストはリフレクション等で差し替える） | タスク指示「実HTTP DLのテストはfake HttpClient/URLで」に反する。リフレクションベースの差し替えは可読性・保守性を損ない、本プロジェクトの既存fakeパターン（コンストラクタ注入、`CalendarService`/`RoutingService`等）とも異なる |
+
+**影響範囲**: `app/src/main/java/com/actionstarter/ai/model/ModelDownloader.kt`（全面実装。`HttpRangeClient`等の新設含む）。新設`app/src/test/java/com/actionstarter/ai/model/ModelDownloaderTest.kt`（T-MDL-6〜8・16、および検証・コミット統合の追加ケース、計10件）。`app/src/main/java/com/actionstarter/di/AppContainer.kt`（`modelDownloader`プロパティ新設。**呼び出し元は未配線**——Settings画面はF97・P7-C6のスコープであり本サイクルでは作らない）。
+
+**検証方法**: `:app:testDebugUnitTest --tests "com.actionstarter.ai.model.ModelDownloaderTest"`実測で10/10 Green（`build/agent-logs/p7c4-green-ModelDownloader.log`）。`:app:testDebugUnitTest --rerun`全体でtests=528/failures=0/errors=0/skipped=1（`build/agent-logs/p7c4-full.log`）。実ネットワークDLを伴うテストは0件（全件fake `HttpRangeClient`経由）。
+
+**再検討トリガー**: P7-C6でSettings画面（F97）が`ModelDownloader`の呼び出し元になる際、進捗UI・キャンセル操作・再DL導線の具体的な配線を設計すること。T-GW-11（容量不足→DL開始しない）はADR-0049裁定6のとおり`ModelDownloader`/Settings領域のテストであり、本ADRの容量ガード実装（`download_insufficientStorage_returnsFailedInsufficientStorage_noConnectionOpened`）がその実装的な裏付けとなる。

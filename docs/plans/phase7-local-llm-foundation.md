@@ -1011,6 +1011,61 @@ ADR-0051のとおり、**`LocalAiGateway`のprivateフィールドとして直�
 
 **証拠ファイル**: `build/agent-logs/p7c3-green-SchemaValidator.log`・`p7c3-green-ContentSanityChecker.log`・`p7c3-green-PlanPromptBuilder.log`・`p7c3-green-DeviceCapability-ModelVerifier.log`・`p7c3-green-LocalAiGateway.log`・`p7c3-green-ai-package.log`（`com.actionstarter.ai.*`全体88件中87件Green再確認）・`p7c3-full.log`（`:app:testDebugUnitTest --rerun`全体、tests=505/failures=1/errors=0/skipped=1）・`p7c3-lint.log`（`:app:lintDebug`、BUILD SUCCESSFUL・error 0）。
 
+### 14.7 P7-C4完了記録（2026-08-10確定・domain-implementer）
+
+**結論**: P7-C3が唯一Red残置していたT-GW-3を含め、`ModelStorage`（F90）・`ModelDownloader`（F88）を実装し、`LocalAiGateway`へ§8.6 #11（モデル未導入判定）・#12（ロード前SHA-256再検証）を配線した。**T-GW-3をGreen化し、加えてADR-0049裁定8がP7-C4まで据え置いていたT-GW-18（ロード前検証失敗）も本サイクルでGreen化した（当初「Green化できれば行う」というbest-effort項目だったが、`ModelStorage`の`catalog`注入設計〔ADR-0053〕により実現できた）。** `:app:testDebugUnitTest --rerun`実測でtests=528／failures=0／errors=0／skipped=1。**既存417件の回帰は0件、P7-C2〜C2c追加88件（うちT-GW-3の1件Red含む）もすべてGreenを維持し、本サイクルの新規23件もすべてGreen——JVMスコープで唯一残っていたRed（T-GW-3）が解消され、現時点で`:app:testDebugUnitTest`のRedは0件になった。**
+
+#### `ModelStorage`ファイル配置規約の確定内容（ADR-0053）
+
+- **保存先**: `context.noBackupFilesDir/models/`固定（T-MDL-14）。ファイル名は`<ModelCatalogEntry.id>.litertlm`（正式配置）／`<id>.litertlm.part`（DL中一時ファイル）。
+- **「導入済み」の解決方法**: `ModelStorageImpl`はコンストラクタで`catalog: List<ModelCatalogEntry>`（既定`ModelCatalog.ALL`）を受け取り、新設`installedEntry(): ModelCatalogEntry?`が`catalog`を順に走査して`finalFile(entry)`が実在する最初のエントリを返す。`installedModelPath()`は内部でこれを再利用する。テストはこの`catalog`引数へ小さなfixtureエントリを差し替えることで、実モデル328MB・SHA-256実測値`e3e290...`を用意せずに、本物の`ModelVerifierImpl`によるSHA-256照合を伴う「導入済み」状態を高速に作れる（`LocalAiGatewayTest`の`installedModelStorage()`参照）。
+- **原子的コミット**: `commit()`は`java.nio.file.Files.move`の`ATOMIC_MOVE`で`.part`→正式名へリネームする（同一ディレクトリ内のため`AtomicMoveNotSupportedException`は発生しない）。
+- **容量ガード**: `hasSufficientSpace(requiredBytes)`は`StatFs(noBackupFilesDir).availableBytes >= requiredBytes × 1.5`で判定する。
+
+#### クラス別Green化記録（個別実行、`build/agent-logs/p7c4-green-<class>.log`）
+
+| クラス | 対象F番号 | 結果 | ログ |
+|---|---|---|---|
+| `ModelStorageTest`（新設） | F90 | **11/11 Green**（T-MDL-4〜5相当3件・未導入ベースライン2件・T-MDL-12相当3件・T-MDL-13相当1件・T-MDL-14相当1件・T-MDL-15相当2件、内訳は多重計上あり） | `p7c4-green-ModelStorage.log` |
+| `ModelDownloaderTest`（新設） | F88 | **10/10 Green**（T-MDL-16・容量ガード・T-MDL-6・T-MDL-7・T-MDL-8・HTTPエラー・ネットワークエラー・DL後検証成功・検証失敗・commit失敗） | `p7c4-green-ModelDownloader.log` |
+| `LocalAiGatewayTest` | F96 | **18/18 Green**（既存16件を維持しつつ**T-GW-3を新規Green化**、加えて**T-GW-18a／T-GW-18bを新設しGreen化**） | `p7c4-green-LocalAiGateway.log` |
+
+#### ModelDownloaderの設計訂正（ADR-0054・重要）
+
+本タスク指示は「`ModelDownloader`...`DeviceCapability`で容量ガード」と記述していたが、`DeviceCapability`（F91）はRAM／ABI判定専用でストレージ容量の概念を持たず、容量ガード（`StatFs`ベース、§95.6）は既存scaffold（P7-C1）の時点で`ModelStorage.hasSufficientSpace(requiredBytes)`として確定済みだった。本タスク自身が「計画書§8・§14 P7-C4が正」と明記しているため、既存`ModelStorage`interface契約を優先し、`ModelDownloader.download()`は`modelStorage.hasSufficientSpace()`で容量ガードする実装とした（詳細な経緯・却下した代替案はADR-0054）。加えて、DL完了後の検証（§8.6 #5）→合格ならコミット／不合格なら削除、までを`download()`自体が一体パイプラインとして行う設計とした（タスク指示が「破損/検証失敗時は削除」までを`ModelDownloader`の記述に含めていたことに基づく）。
+
+#### T-GW-3／T-GW-18のGreen化内容（`LocalAiGateway`配線、ADR-0053）
+
+`generatePlan()`の`isAbiSupported()`チェックとOOM事前ガードの間（`inferenceMutex`内）へ、新設private関数`checkInstalledModel()`を配線した。`modelStorage.installedEntry()`が`null`なら`Fallback(MODEL_NOT_INSTALLED)`（T-GW-3）。毎回ファイルサイズを照合し、プロセス内（`LocalAiGateway`インスタンス単位）で当該エントリが未検証のときのみ`modelVerifier.verify()`でSHA-256を再検証してキャッシュする（T-GW-18a: 不一致→削除＋`Fallback(MODEL_CORRUPTED)`、T-GW-18b: 2回目以降は`ModelVerifier.verify`が再呼び出しされないことをカウンタ付きラッパーで確認）。`LocalAiGatewayTest`の`installedModelStorage()`／`notInstalledModelStorage()`ヘルパーを実配置形へ更新した（ADR-0051の再検討トリガーへの回答。この2ヘルパーの更新とT-GW-18a/b新設のみがテスト側の変更範囲、それ以外の既存テストメソッドは無変更）。
+
+#### AppContainer配線（最小）
+
+`modelStorage`をローカル変数からprivateプロパティ（`by lazy`）へ昇格し、`localAiGateway`と新設`modelDownloader`（`by lazy`）が同一インスタンスを共有する構成にした。`modelDownloader`の**呼び出し元は未配線**（Settings画面はF97・P7-C6のスコープであり本サイクルでは作らない）。`planningEngine`／`recoveryEngine`の右辺・その他の既存プロパティは無変更。
+
+#### 3分類集計（`:app:testDebugUnitTest --rerun`実測、`build/agent-logs/p7c4-full.log`、JUnit XML集計で裏取り済み）
+
+| 分類 | 件数 | 内訳 |
+|---|---|---|
+| (a) 実機依存等で意図的に残すRed（P7-C5/C6/C7/C8スコープ） | **0（JVMスイート上）** | 現時点で`:app:testDebugUnitTest`にRedは0件。P7-C5（`LiteRtLmLocalLanguageModel`本体・T-P7E2E-*）・P7-C6（Settings・T-SET-*・T-P7DI-*）・P7-C7（T-AIISO-4〜9等の隔離ガード拡張）・P7-C8（P7-P1/P7-P2・QH-12/13/16）に属するテストは**まだテストファイル自体が存在しない**（Red化する対象コードがまだscaffold段階のため。§12.1のE3/E4区分・§14サイクル表どおり、実機/エミュレータ必須のため各担当サイクルで新規作成する） |
+| (b) 既存417件（P7-C1ベースライン）＋P7-C2〜C2c追加88件の回帰 | **0** | `tests=528`＝`417`（既存）＋`87`（P7-C2〜C2cで既にGreenだった分）＋`1`（T-GW-3、Red→Green反転）＋`23`（P7-C4新規、全件Green）で完全一致。JUnit XML集計（68クラス）で失敗クラスは0件 |
+| (c) 想定外の失敗 | **0** | 上記以外に予期しない失敗は発生しなかった |
+
+**Green化件数**: P7-C3終了時点の1件Red（T-GW-3）が解消し、加えてT-GW-18a・T-GW-18bおよびModelStorageTest 11件・ModelDownloaderTest 10件の新規23件が全件born-green相当でGreen化した。`:app:testDebugUnitTest --rerun`実測: tests=528／failures=0／errors=0／skipped=1（P7-C3のfailures=1から1件減、新規23件はfailuresに現れず即Green）。
+
+#### lint結果
+
+`:app:lintDebug --rerun-tasks`＝**BUILD SUCCESSFUL・error 0**（`build/agent-logs/p7c4-lint.log`、キャッシュ汚染を避けるため強制再実行で確認）。warning 22件（既存分と完全一致）のうち本サイクルの新規・変更コード（`ModelStorage.kt`・`ModelDownloader.kt`・`LocalAiGateway.kt`・`AppContainer.kt`）由来のものは**0件**（全22件は`AiPreferences.kt`2件・`SharedPreferencesExecutionScheduleStore.kt`3件のUseKtx提案、および既存のGradle/Manifest系警告であり、いずれもP7-C3以前から存在する既知分）。
+
+#### P7-C5への申し送り
+
+1. `LiteRtLmLocalLanguageModel`（P7-C5）実装時、`AiMetrics`の`modelLoadMs`／`firstTokenMs`／`outputTokens`／`tokensPerSecond`／`peakNativeHeapBytes`を`BenchmarkInfo`から実測値へ差し替えること（P7-C3からの申し送り、変更なし）。
+2. `LocalAiGateway`のOOM事前ガード（§8.6 #7）が参照する安全マージン（`MEMORY_SAFETY_MARGIN_BYTES=512MB`）は仮値のまま。G4-D実機実測（§11.3）で確定すること（P7-C3からの申し送り、変更なし）。
+3. `ModelDownloader.download()`は実装済みだが**呼び出し元が存在しない**（`AppContainer.modelDownloader`はwiring済みだが未使用）。P7-C5で`LiteRtLmLocalLanguageModel`を実装する際、モデル未導入時のフォールバック導線（DL誘導UI）を設計する場合はF97・P7-C6と調整すること。
+4. `AiPreferencesImpl`（ADR-0052）・Settings画面（F97・T-SET-*・T-P7DI-*）自体はP7-C6で改めて対応すること（P7-C3からの申し送り、変更なし）。
+5. `ModelStorage.installedEntry()`は現在`catalog`（既定`ModelCatalog.ALL`、単一エントリ）の先頭一致で「導入済み」を決める。P7-C6で`AiPreferences.selectedModelId`による複数モデル選択が入る場合、この解決方法を`selectedModelId`ベースへ切り替えることを検討すること（ADR-0053再検討トリガー）。
+
+**証拠ファイル**: `build/agent-logs/p7c4-compile.log`（`:app:compileDebugKotlin`／`:app:compileDebugUnitTestKotlin`成功）・`p7c4-green-ModelStorage.log`（11/11 Green）・`p7c4-green-ModelDownloader.log`（10/10 Green）・`p7c4-green-LocalAiGateway.log`（18/18 Green）・`p7c4-full.log`（`:app:testDebugUnitTest --rerun`全体、tests=528/failures=0/errors=0/skipped=1）・`p7c4-lint.log`（`:app:lintDebug --rerun-tasks`、BUILD SUCCESSFUL・error 0）。
+
 ---
 
 ## §15. リスク

@@ -12,6 +12,8 @@ import com.actionstarter.ai.AiPreferencesImpl
 import com.actionstarter.ai.LocalAiGateway
 import com.actionstarter.ai.adapter.LiteRtLmLocalLanguageModel
 import com.actionstarter.ai.model.DeviceCapabilityImpl
+import com.actionstarter.ai.model.ModelDownloader
+import com.actionstarter.ai.model.ModelStorage
 import com.actionstarter.ai.model.ModelStorageImpl
 import com.actionstarter.ai.model.ModelVerifierImpl
 import com.actionstarter.features.departure.DepartureViewModel
@@ -231,8 +233,18 @@ class AppContainer(
     )
 
     /**
-     * F96実配線の入口（計画書§7.2・§14 P7-C1）。Phase 7完成条件（`ai/`が単体で完結して動く、
-     * 仕様§71・計画書§0）を満たすための唯一の新規プロパティ。[planningEngine]／
+     * F90実配線（計画書§7.1・§14 P7-C4、ADR-0053）。[localAiGateway]・[modelDownloader]の両方が
+     * 参照する単一の`ModelStorage`インスタンス（同一の`noBackupFilesDir/models/`を見る必要が
+     * あるため、それぞれが別々に`ModelStorageImpl(context)`を生成しない）。`by lazy`は
+     * [localAiGateway]と同じくR-7（起動を重くしない）を理由とする——本プロパティ自体は
+     * ファイルI/Oを伴わない軽量なコンストラクタだが、起動シーケンスの一貫性のため他のAI関連
+     * プロパティと同じ遅延方針に揃える。
+     */
+    private val modelStorage: ModelStorage by lazy { ModelStorageImpl(context) }
+
+    /**
+     * F96実配線の入口（計画書§7.2・§14 P7-C1／P7-C4）。Phase 7完成条件（`ai/`が単体で完結して動く、
+     * 仕様§71・計画書§0）を満たすための新規プロパティ。[planningEngine]／
      * [recoveryEngine]の右辺は本サイクルでは無変更（計画書§2.2「Phase 7はAI配線をしない」・
      * `AppContainerTest`のT-P4DI-1／T-P6DI-1を維持）。
      *
@@ -240,7 +252,6 @@ class AppContainer(
      * LLMランタイムを素で足すと起動時に重い初期化が走る。`by lazy`により初回アクセスまで
      * 生成を遅延させ、起動を重くしない。
      *
-     * **P7-C1時点の暫定配線（本体はTODO()のみ・TDD厳守）**:
      * [LiteRtLmLocalLanguageModel]の`modelPathProvider`は
      * [com.actionstarter.ai.model.ModelStorage.installedModelPath]を都度参照する（未導入時は
      * 例外——実際のガードは[LocalAiGateway]内の§8.6 #11チェックが先に走る想定。
@@ -254,9 +265,14 @@ class AppContainer(
      * [AiPreferencesImpl]）へ分離された。本プロパティは実装クラスを構築して
      * [LocalAiGateway]のinterface型パラメータへ渡す（本コンテナ側の結線ロジック自体は
      * 無変更、コンストラクタ呼び出しの型名のみがinterface化に伴い変わった）。
+     *
+     * **P7-C4での変更**: `modelStorage`をローカル変数から[modelStorage]プロパティ（上記）へ
+     * 昇格した（[modelDownloader]と共有するため）。`ModelVerifierImpl()`は
+     * [LocalAiGateway]・[modelDownloader]それぞれが独立したインスタンスを持つ（状態は
+     * 「プロセス内SHA-256キャッシュ」が[LocalAiGateway]側にあるため、`ModelVerifierImpl`自体は
+     * 状態を持たず共有の必要がない）。
      */
     val localAiGateway: LocalAiGateway by lazy {
-        val modelStorage = ModelStorageImpl(context)
         LocalAiGateway(
             model = LiteRtLmLocalLanguageModel(
                 modelPathProvider = {
@@ -273,6 +289,17 @@ class AppContainer(
                 context.getSharedPreferences(AiPreferencesImpl.PREFS_NAME, Context.MODE_PRIVATE)
             )
         )
+    }
+
+    /**
+     * F88実配線（計画書§7.1・§14 P7-C4、ADR-0053）。[modelStorage]を共有し、DL完了直後の
+     * 検証（§8.6 #5）に使う`ModelVerifierImpl()`を独立に持つ（状態レスのため共有不要、
+     * [localAiGateway]のKDoc参照）。**呼び出し元は未配線**（Settings画面はF97・P7-C6の
+     * スコープであり本サイクルでは作らない）。`by lazy`は他のAI関連プロパティと同じくR-7を
+     * 理由とする。
+     */
+    val modelDownloader: ModelDownloader by lazy {
+        ModelDownloader(modelStorage = modelStorage, modelVerifier = ModelVerifierImpl())
     }
 
     /**
