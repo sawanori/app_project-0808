@@ -3,8 +3,11 @@ package com.actionstarter.features.recovery
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.actionstarter.R
+import com.actionstarter.ai.LocalAiRecoveryContextualizer
+import com.actionstarter.ai.RecoveryContextualizationResult
 import com.actionstarter.domain.model.ExecutionPlan
 import com.actionstarter.domain.model.RecoveryContext
+import com.actionstarter.domain.model.RecoveryPlan
 import com.actionstarter.domain.valueobject.Coordinate
 import com.actionstarter.navigation.SharedPlanViewModel
 import com.actionstarter.recovery.RecoveryEngine
@@ -17,6 +20,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.Clock
 import java.time.Duration
@@ -64,13 +68,25 @@ import java.util.UUID
  * されない」既知の未配線だったが、Recoveryが実際にPlanを更新できるようになったP6-C5で解消する。
  * [notificationService]の既定値は`null`（`RecoveryViewModelTest`等、通知結線を検証しない
  * 既存呼び出し元は無変更のまま成立する）。
+ *
+ * **Phase 9追加（計画書`docs/plans/phase9-recovery-ai.md`§3.1、ADR-0063想定）**: [aiRecoveryContextualizer]
+ * （既定`null`、`PlanReviewViewModel`の`aiPlanContextualizer`と同型の後方互換パターン）を追加した。
+ * `init`が直接呼んでいた単発の計算処理を[refresh]（`internal`、複数回呼び出し可能）へ抽出し、
+ * 呼び出しのたびに[computationGeneration]をインクリメントする世代トークン方式のstale-write防御
+ * （`PlanReviewViewModel`の`latestBase`/`latestAiResponse`combineパターンと同じ目的、
+ * オーケストレーター指摘A9）を導入した。**現状Phase 9 UIには[refresh]を2回呼ぶ導線がない**
+ * （`init`が1回呼ぶのみ）ため本ガードは実質的にno-op相当だが、(a)将来Recoveryが再トリガー
+ * される拡張点を安全にする、(b)`viewModelScope`のキャンセル漏れに対する構造的な保険になる、
+ * という2点の価値がある（計画書§3.1参照）。AI差し替え本体（[contextualize]呼び出し・
+ * `_uiState`への反映）はStep 4（Green、コミット3）で実装する。
  */
 class RecoveryViewModel(
     private val recoveryEngine: RecoveryEngine,
     private val sharedPlanViewModel: SharedPlanViewModel,
     private val locationService: LocationService = UnavailableLocationService,
     private val clock: Clock = Clock.systemUTC(),
-    private val notificationService: NotificationService? = null
+    private val notificationService: NotificationService? = null,
+    private val aiRecoveryContextualizer: LocalAiRecoveryContextualizer? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(RecoveryUiState())
@@ -78,20 +94,62 @@ class RecoveryViewModel(
 
     private val recoveryPlanApplier = RecoveryPlanApplier(clock)
 
+    /**
+     * Phase 9新設（計画書§3.1 stale-write防御、オーケストレーター指摘A9）。[refresh]の
+     * 呼び出しごとにインクリメントする世代トークン。AI応答の書き込み時、応答取得の起点となった
+     * 世代と現在値が一致する場合にのみ`_uiState`へ反映する設計（Step 4で配線）。
+     */
+    private var computationGeneration: Int = 0
+
     init {
-        viewModelScope.launch {
-            val plan = sharedPlanViewModel.confirmedPlan.value ?: return@launch
-            try {
-                val recoveryPlan = recoveryEngine.createRecoveryPlan(buildRecoveryContext(plan))
-                _uiState.value = RecoveryUiState(options = recoveryPlan.options, selectedOptionId = null)
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (engineFailure: Exception) {
-                // 握り潰さない（欠陥5修正）：engine例外をUiStateへ表面化させる。P6-C5で
-                // 専用のR.string.recovery_engine_error_messageへ差替済み（クラスKDoc参照）。
-                // options空のまま既定の「案なし」導線へ合流させ、固まったまま何も表示されない
-                // 状態を防ぐ。
-                _uiState.value = RecoveryUiState(routingFailureReason = R.string.recovery_engine_error_message)
+        viewModelScope.launch { refresh() }
+    }
+
+    /**
+     * [sharedPlanViewModel.confirmedPlan]から[RecoveryContext]を構築し[recoveryEngine]で
+     * Basic候補を計算・即時`_uiState`へ反映したのち、[aiRecoveryContextualizer]が非nullなら
+     * 非同期でAI差し替えを試みる（Basic即時表示→AI後差し替え、計画書§3.1）。
+     *
+     * **Phase 9で`internal`化（旧`init`直接記述から抽出）**: [RecoveryViewModelTest]の
+     * stale-write防御テスト（T-P9-31）から複数回呼び出せるようにするため（[overlay]と同じ
+     * 「テストから直接呼べるようinternalにする」規約）。本体（Basic計算部分）は元の`init`の
+     * ロジックと完全に同一で挙動を変えていない。
+     */
+    internal suspend fun refresh() {
+        val plan = sharedPlanViewModel.confirmedPlan.value ?: return
+        val generation = ++computationGeneration
+        var basicPlan: RecoveryPlan? = null
+        var recoveryContext: RecoveryContext? = null
+        try {
+            val context = buildRecoveryContext(plan)
+            recoveryContext = context
+            basicPlan = recoveryEngine.createRecoveryPlan(context)
+            _uiState.value = RecoveryUiState(options = basicPlan.options, selectedOptionId = null)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (engineFailure: Exception) {
+            // 握り潰さない（欠陥5修正）：engine例外をUiStateへ表面化させる。P6-C5で
+            // 専用のR.string.recovery_engine_error_messageへ差替済み（クラスKDoc参照）。
+            // options空のまま既定の「案なし」導線へ合流させ、固まったまま何も表示されない
+            // 状態を防ぐ。
+            _uiState.value = RecoveryUiState(routingFailureReason = R.string.recovery_engine_error_message)
+        }
+
+        val contextualizer = aiRecoveryContextualizer
+        val computedPlan = basicPlan
+        val computedContext = recoveryContext
+        if (contextualizer != null && computedPlan != null && computedContext != null) {
+            viewModelScope.launch {
+                val result = contextualizer.contextualize(computedPlan, computedContext)
+                // stale-write防御（計画書§3.1、オーケストレーター指摘A9、T-P9-31）:
+                // このrefresh()呼び出し以降に別のrefresh()が走っていた場合（世代が進んでいた場合）、
+                // 遅延到着したAI応答は現在表示中のbaseとは対応しないため無視する。
+                if (generation != computationGeneration) return@launch
+                when (result) {
+                    is RecoveryContextualizationResult.Applied ->
+                        _uiState.update { it.copy(options = result.plan.options) }
+                    is RecoveryContextualizationResult.Unchanged -> Unit // Basicのまま（既にuiStateへ反映済み）
+                }
             }
         }
     }

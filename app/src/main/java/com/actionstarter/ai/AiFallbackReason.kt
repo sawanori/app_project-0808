@@ -28,7 +28,6 @@ package com.actionstarter.ai
  *   ・②内容sanity検証（[com.actionstarter.ai.schema.ContentSanityChecker]）のいずれの不合格も
  *   本値へ集約する（品質ハーネス§6のフロー図「①または②失敗→retry1回→なお失敗→
  *   Fallback(SCHEMA_INVALID)」。②専用の理由コードは新設しない）
- * - [NOT_IMPLEMENTED_IN_PHASE7]: §13 #18・U-8（`generateRecovery`のPhase 7未実装）
  * - [UNKNOWN]: T-GW-12（未分類の`RuntimeException`。`detail`に例外クラス名を残し
  *   サイレント握り潰しを避ける）
  *
@@ -43,7 +42,12 @@ package com.actionstarter.ai
  *   [com.actionstarter.ai.model.ModelVerificationResult]）で表現する別の関心事のため。
  * - `BUSY`。§13 #11の原文は「Mutexで直列化。2本目は待つか即Fallback(BUSY)」と両論併記だが、
  *   §12.5 T-GW-15が確定させた仕様は「同時呼び出しはMutexで直列化（待機）」であり、
- *   即時拒否は採用しない。したがって`BUSY`理由コードは不要と判断した。
+ *   即時拒否は採用しない。したがって`BUSY`理由コードは不要と判断した（Phase 9の`generateRecovery`
+ *   も同一の[LocalAiGateway.inferenceMutex]を経由するため、この判断はRecovery経路にもそのまま
+ *   適用される。計画書`docs/plans/phase9-recovery-ai.md`§8「Plan/Recovery AI呼び出しの同時発生」
+ *   参照）。
+ * - `NOT_IMPLEMENTED_IN_PHASE7`。Phase 7時点で`generateRecovery`が未実装だったことを表す値
+ *   だったが、Phase 9で実装が完了したため削除した（計画書§9決定2、ADR-0063想定）。
  */
 enum class AiFallbackReason {
     AI_DISABLED,
@@ -57,6 +61,5 @@ enum class AiFallbackReason {
     OUT_OF_MEMORY,
     TIMEOUT,
     SCHEMA_INVALID,
-    NOT_IMPLEMENTED_IN_PHASE7,
     UNKNOWN
 }

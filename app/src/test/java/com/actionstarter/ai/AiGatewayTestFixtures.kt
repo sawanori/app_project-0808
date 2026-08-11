@@ -12,6 +12,7 @@ import com.actionstarter.ai.model.ModelVerifier
 import com.actionstarter.ai.model.ModelVerifierImpl
 import com.actionstarter.domain.model.PlanningContext
 import com.actionstarter.domain.model.RecoveryContext
+import com.actionstarter.domain.model.RecoveryOption
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import org.json.JSONArray
@@ -178,14 +179,43 @@ internal object AiGatewayTestFixtures {
     }
 
     /**
+     * Phase 9（計画書`docs/plans/phase9-recovery-ai.md`§3.3）。`RecoveryJsonSchema`の縮小契約
+     * （`options[{semantic_action, explanation}]`）に沿った生JSON文字列を組み立てる
+     * （[multiStepPlanJson]のRecovery版）。
+     */
+    fun recoveryOptionsJson(vararg options: Pair<String, String>): String =
+        JSONObject().apply {
+            put(
+                "options",
+                JSONArray().apply {
+                    options.forEach { (semanticAction, explanation) ->
+                        put(
+                            JSONObject().apply {
+                                put("semantic_action", semanticAction)
+                                put("explanation", explanation)
+                            }
+                        )
+                    }
+                }
+            )
+        }.toString()
+
+    /**
      * [LocalAiGatewayTest.FakeLocalLanguageModel]と同型のfake。[cancelledCount]はT-P8-22
      * （collectLatestによる構造化キャンセル）の直接検証に使う——[delayMillisPerCall]中に
      * `CancellationException`を受けたら記録してから再送出する（§4.3・T-GW-13と同じく
      * 握り潰さない）。
+     *
+     * **Phase 9追加（計画書`docs/plans/phase9-recovery-ai.md`§3.2、既定値付き・後方互換）**:
+     * [recoveryOutcomes]（既定空リスト）を追加した。空のままなら[generateRecovery]は
+     * 従来どおり`UnsupportedOperationException`を投げる（Plan専用のfixtureとして使う既存呼び出し
+     * 元は無変更のまま成立する）。非空の場合のみ[outcomes]と同型の消費ロジックで応答する
+     * （[LocalAiRecoveryContextualizerTest]・T-P9-26〜28が使う）。
      */
     class FakeLocalLanguageModel(
         private val outcomes: List<Outcome>,
-        private val delayMillisPerCall: Long = 0L
+        private val delayMillisPerCall: Long = 0L,
+        private val recoveryOutcomes: List<Outcome> = emptyList()
     ) : LocalLanguageModel {
         override val modelIdentifier: String = "phase8-fake-model"
 
@@ -195,6 +225,10 @@ internal object AiGatewayTestFixtures {
         var cancelledCount: Int = 0
             private set
 
+        /** Phase 9追加。[generateRecovery]の呼び出し回数（[callCount]のRecovery版）。 */
+        var recoveryCallCount: Int = 0
+            private set
+
         /**
          * Phase 8.5追加（計画書`docs/plans/phase8.5-adaptive-model-selection.md`§3設計5、
          * ADR-0062、アーキテクトレビューPass 1 CRITICAL対応）。呼び出しごとに受け取った
@@ -202,6 +236,9 @@ internal object AiGatewayTestFixtures {
          * を検証するために使う、[recordedSamplingPolicies]と同型のパターン）。
          */
         val recordedModelPaths: MutableList<String> = mutableListOf()
+
+        /** Phase 9追加（計画書§3.2、T-P9-26）。[generateRecovery]呼び出しごとの`modelPath`記録。 */
+        val recordedRecoveryModelPaths: MutableList<String> = mutableListOf()
 
         sealed interface Outcome {
             data class Respond(val rawJson: String) : Outcome
@@ -226,7 +263,27 @@ internal object AiGatewayTestFixtures {
             }
         }
 
-        override suspend fun generateRecovery(context: RecoveryContext): AIRecoveryResponse =
-            throw UnsupportedOperationException("Phase 8 fixtureでは未使用")
+        /**
+         * Phase 9追加（計画書§3.2）。[recoveryOutcomes]が空のままなら（既定）Plan専用fixture
+         * としての従来動作（`UnsupportedOperationException`）を維持する。非空の場合のみ
+         * [generatePlan]と同型の消費ロジックで応答する。
+         */
+        override suspend fun generateRecovery(
+            context: RecoveryContext,
+            options: List<RecoveryOption>,
+            modelPath: String,
+            samplingPolicy: SamplingPolicy
+        ): String {
+            if (recoveryOutcomes.isEmpty()) {
+                throw UnsupportedOperationException("Phase 8 fixtureでは未使用（recoveryOutcomesが空のまま）")
+            }
+            recordedRecoveryModelPaths.add(modelPath)
+            val outcome = recoveryOutcomes.getOrElse(recoveryCallCount) { recoveryOutcomes.last() }
+            recoveryCallCount += 1
+            return when (outcome) {
+                is Outcome.Respond -> outcome.rawJson
+                is Outcome.ThrowError -> throw outcome.error
+            }
+        }
     }
 }

@@ -2,15 +2,17 @@ package com.actionstarter.ai.adapter
 
 import android.os.Debug
 import android.os.SystemClock
-import com.actionstarter.ai.AIRecoveryResponse
 import com.actionstarter.ai.BenchmarkMetricsSource
 import com.actionstarter.ai.InferenceBenchmarkSnapshot
 import com.actionstarter.ai.LocalLanguageModel
 import com.actionstarter.ai.SamplingPolicy
 import com.actionstarter.ai.prompt.PlanPromptBuilder
+import com.actionstarter.ai.prompt.RecoveryPromptBuilder
 import com.actionstarter.ai.schema.PlanJsonSchema
+import com.actionstarter.ai.schema.RecoveryJsonSchema
 import com.actionstarter.domain.model.PlanningContext
 import com.actionstarter.domain.model.RecoveryContext
+import com.actionstarter.domain.model.RecoveryOption
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
@@ -28,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -136,6 +139,9 @@ class LiteRtLmLocalLanguageModel(
 
     private val promptBuilder = PlanPromptBuilder()
 
+    /** Phase 9（計画書§3.2）。[generateRecovery]専用の[RecoveryPromptBuilder]（[promptBuilder]のRecovery版）。 */
+    private val recoveryPromptBuilder = RecoveryPromptBuilder()
+
     /** [engineLifecycleMutex]配下でのみ読み書きする遅延生成Engine（R-7）。 */
     private var engine: Engine? = null
 
@@ -201,11 +207,60 @@ class LiteRtLmLocalLanguageModel(
             }
         }
 
-    override suspend fun generateRecovery(context: RecoveryContext): AIRecoveryResponse {
-        TODO(
-            "Phase 7では呼び出されない契約（LocalAiGateway.generateRecoveryがFallback" +
-                "(NOT_IMPLEMENTED_IN_PHASE7)で早期リターンするため）。Phase 9（§18申し送り5）で実装"
-        )
+    /**
+     * Phase 9実装（計画書§3.2・§18申し送り5）。[generatePlan]と同型の構造
+     * （[obtainEngine]→[Conversation]生成→[Conversation.sendMessage]→`finally`で必ず`close()`）を
+     * 踏襲する。**[RecoveryContext]は`locale`を持たないため（計画書§5「非変更」との整合、
+     * `RecoveryPromptBuilder`のクラスKDoc「実装調査で判明した設計ギャップ」参照）、
+     * `Locale.getDefault()`を直接使う**。
+     */
+    override suspend fun generateRecovery(
+        context: RecoveryContext,
+        options: List<RecoveryOption>,
+        modelPath: String,
+        samplingPolicy: SamplingPolicy
+    ): String = withContext(Dispatchers.IO) {
+        val (activeEngine, modelLoadMs) = obtainEngine(modelPath)
+        val locale = Locale.getDefault()
+
+        var conversation: Conversation? = null
+        try {
+            conversation = activeEngine.createConversation(buildRecoveryConversationConfig(locale, samplingPolicy))
+            val dataMessage = buildRecoveryDataMessage(context, options, samplingPolicy)
+
+            val ramSampler = NativeHeapPeakSampler().apply { start() }
+            val response = try {
+                conversation.sendMessage(
+                    dataMessage,
+                    maxOutputToken = MAX_OUTPUT_TOKEN,
+                    thinkingConfig = DISABLED_THINKING_CONFIG,
+                    responseFormat = ResponseFormat.json(RecoveryJsonSchema.TEXT)
+                )
+            } finally {
+                ramSampler.stop()
+            }
+
+            val benchmarkInfo = runCatching { conversation.getBenchmarkInfo() }.getOrNull()
+            lastMetrics = InferenceBenchmarkSnapshot(
+                modelLoadMs = modelLoadMs,
+                firstTokenMs = ((benchmarkInfo?.timeToFirstTokenInSecond ?: 0.0) * MILLIS_PER_SECOND).toLong(),
+                outputTokens = benchmarkInfo?.lastDecodeTokenCount ?: 0,
+                tokensPerSecond = benchmarkInfo?.lastDecodeTokensPerSecond ?: 0.0,
+                peakNativeHeapBytes = ramSampler.peakBytes()
+            )
+
+            extractText(response)
+        } catch (t: OutOfMemoryError) {
+            // §13 #8二次防御（generatePlanと同型）。
+            unloadEngine()
+            throw t
+        } finally {
+            try {
+                conversation?.close()
+            } catch (t: Throwable) {
+                // close()は非冪等（V-2実測、generatePlanと同型）。
+            }
+        }
     }
 
     /**
@@ -298,6 +353,36 @@ class LiteRtLmLocalLanguageModel(
      */
     private fun buildDataMessage(context: PlanningContext, samplingPolicy: SamplingPolicy): String {
         val dataMessage = promptBuilder.build(context)
+        return if (samplingPolicy.appendConcisenessConstraint) {
+            "$dataMessage\n$CONCISENESS_CONSTRAINT_SUFFIX"
+        } else {
+            dataMessage
+        }
+    }
+
+    /** [buildConversationConfig]のRecovery版（計画書§3.2）。[locale]は呼び出し元が明示的に渡す。 */
+    private fun buildRecoveryConversationConfig(locale: Locale, samplingPolicy: SamplingPolicy): ConversationConfig {
+        val fewShotMessages = recoveryPromptBuilder.buildFewShot(locale, shotCount).flatMap { example ->
+            listOf(Message.user(example.userTurn), Message.model(example.modelTurn))
+        }
+        return ConversationConfig(
+            enableResponseFormat = true,
+            systemInstruction = Contents.of(recoveryPromptBuilder.buildSystemInstruction(locale)),
+            initialMessages = fewShotMessages,
+            samplerConfig = toSamplerConfig(samplingPolicy),
+            thinkingConfig = DISABLED_THINKING_CONFIG,
+            maxOutputToken = MAX_OUTPUT_TOKEN,
+            prefillPrefaceOnInit = true
+        )
+    }
+
+    /** [buildDataMessage]のRecovery版（計画書§3.2）。 */
+    private fun buildRecoveryDataMessage(
+        context: RecoveryContext,
+        options: List<RecoveryOption>,
+        samplingPolicy: SamplingPolicy
+    ): String {
+        val dataMessage = recoveryPromptBuilder.build(context, options)
         return if (samplingPolicy.appendConcisenessConstraint) {
             "$dataMessage\n$CONCISENESS_CONSTRAINT_SUFFIX"
         } else {

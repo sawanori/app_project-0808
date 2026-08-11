@@ -12,12 +12,18 @@ import org.junit.Test
  * 本テストはRedにならない。「契約が既に確定している型・enum等はborn-green回帰ガードとして
  * 許容する」という本タスクの制約に基づき、将来の変更で値が誤って増減した場合に検知する
  * 回帰ガードとして追加する。
+ *
+ * **Phase 9での契約変更（計画書`docs/plans/phase9-recovery-ai.md`§9決定2、ADR-0063想定）**:
+ * `generateRecovery`の実装完了に伴い`NOT_IMPLEMENTED_IN_PHASE7`を削除し13値→12値へ更新した
+ * （既存呼び出し元は本値を参照していなかったため削除自体に伴う波及はない、
+ * `grep`実測で確認済み）。
  */
 class AiFallbackReasonTest {
 
-    // 正常系: §8.6発動条件表・T-GW-1〜18が要求する13値が過不足なく揃っている
+    // 正常系: §8.6発動条件表・T-GW-1〜18が要求する12値が過不足なく揃っている
+    // （Phase 9でNOT_IMPLEMENTED_IN_PHASE7を削除、13→12値）
     @Test
-    fun allThirteenConfirmedValues_arePresentExactly() {
+    fun allTwelveConfirmedValues_arePresentExactly() {
         val expected = setOf(
             "AI_DISABLED",
             "MODEL_NOT_INSTALLED",
@@ -30,7 +36,6 @@ class AiFallbackReasonTest {
             "OUT_OF_MEMORY",
             "TIMEOUT",
             "SCHEMA_INVALID",
-            "NOT_IMPLEMENTED_IN_PHASE7",
             "UNKNOWN"
         )
 

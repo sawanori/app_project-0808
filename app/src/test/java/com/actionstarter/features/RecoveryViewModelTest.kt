@@ -3,6 +3,10 @@
 package com.actionstarter.features
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.actionstarter.ai.AiGatewayTestFixtures
+import com.actionstarter.ai.LocalAiGateway
+import com.actionstarter.ai.LocalAiRecoveryContextualizer
+import com.actionstarter.ai.model.ModelVerifierImpl
 import com.actionstarter.domain.model.ExecutionEvent
 import com.actionstarter.domain.model.ExecutionPlan
 import com.actionstarter.domain.model.RecoveryContext
@@ -24,6 +28,7 @@ import com.actionstarter.services.notification.NotifyResult
 import com.actionstarter.services.notification.ScheduleResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -391,5 +396,90 @@ class RecoveryViewModelTest {
         assertEquals(originalPlan.event.id.toString(), notificationService.cancelledPlanId)
         assertEquals(sharedPlanViewModel.confirmedPlan.value, notificationService.scheduledPlan)
         assertEquals(listOf("cancelAll", "schedule"), notificationService.callOrder)
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 9（計画書`docs/plans/phase9-recovery-ai.md`§3.1・§7、オーケストレーター指摘A9、
+    // ADR-0063想定）: stale-write防御（世代トークン）。[RecoveryViewModel.refresh]のAI差し替え
+    // 分岐が`TODO()`のため、`NotImplementedError`によりRedになるのが正しい。
+    // ------------------------------------------------------------------
+
+    /** [refresh]の呼び出しごとに異なる[RecoveryPlan]を返すfake（1回目→A案のみ、2回目→D案のみ）。 */
+    private class SequencedRecoveryEngine(private val results: List<RecoveryPlan>) : RecoveryEngine {
+        var callCount = 0
+            private set
+
+        override suspend fun createRecoveryPlan(context: RecoveryContext): RecoveryPlan {
+            val result = results.getOrElse(callCount) { results.last() }
+            callCount += 1
+            return result
+        }
+    }
+
+    // T-P9-31: エッジ・ゲート - refresh()を2回呼び出し、1回目のrefresh()が起動したAI応答
+    // （遅延応答）が2回目のrefresh()完了後に到着しても、2回目のbaseへ古いexplanationが
+    // 適用されない（世代トークン不一致により無視される）
+    @Test
+    fun tP9_31_staleAiResponseFromFirstRefresh_doesNotOverwriteSecondRefreshsBasicPlan() = runTest(testDispatcher) {
+        val optionA = sampleOption() // 1回目のrefresh()の候補（semanticAction=keep_all_steps）
+        val optionD = RecoveryOption(
+            id = UUID.randomUUID(),
+            semanticAction = "change_transport_mode",
+            title = "",
+            explanation = "",
+            estimatedArrival = Instant.parse("2026-08-10T09:20:00Z"),
+            skippedStepIds = emptyList()
+        )
+        val engine = SequencedRecoveryEngine(
+            results = listOf(
+                RecoveryPlan(options = listOf(optionA)),
+                RecoveryPlan(options = listOf(optionD))
+            )
+        )
+        val sharedPlanViewModel = SharedPlanViewModel().apply { confirmPlan(samplePlan()) }
+
+        // 1回目のAI応答だけを遅延させ、2回目のrefresh()のBasic計算が先に完了する状況を作る
+        // （AiGatewayTestFixtures.FakeLocalLanguageModel.delayMillisPerCallはgeneratePlan専用の
+        // ため、generateRecovery用の遅延はrecoveryOutcomes経路の呼び出し内で明示的に模す）。
+        val model = AiGatewayTestFixtures.FakeLocalLanguageModel(
+            outcomes = emptyList(),
+            recoveryOutcomes = listOf(
+                AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(
+                    AiGatewayTestFixtures.recoveryOptionsJson("keep_all_steps" to "Finish getting ready and leave when done.")
+                )
+            ),
+            delayMillisPerCall = 5_000L
+        )
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = AiGatewayTestFixtures.installedModelStorage(),
+            modelVerifier = ModelVerifierImpl(),
+            deviceCapability = AiGatewayTestFixtures.supportedDeviceCapability(),
+            preferences = AiGatewayTestFixtures.preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP9_31")
+        )
+        val contextualizer = LocalAiRecoveryContextualizer(gateway)
+
+        val viewModel = RecoveryViewModel(
+            recoveryEngine = engine,
+            sharedPlanViewModel = sharedPlanViewModel,
+            locationService = alwaysSuccessLocationService,
+            clock = Clock.systemUTC(),
+            aiRecoveryContextualizer = contextualizer
+        )
+        testDispatcher.scheduler.advanceUntilIdle() // 1回目のrefresh()（init由来）のBasic部分のみ進む
+
+        viewModel.refresh() // 2回目（世代を進める）
+        testDispatcher.scheduler.advanceUntilIdle() // 2回目のBasic部分＋1回目の遅延AI応答の両方が進む
+
+        assertEquals(
+            "2回目のrefresh()完了後は2回目のbase(D案)がuiStateに反映されているべきです(T-P9-31)",
+            listOf(optionD.semanticAction),
+            viewModel.uiState.value.options.map { it.semanticAction }
+        )
+        assertTrue(
+            "1回目のrefresh()由来の遅延AI応答が2回目のbaseへ誤って適用されていないべきです" +
+                "(explanationが空文字のまま=stale応答が無視された、T-P9-31)",
+            viewModel.uiState.value.options.all { it.explanation.isEmpty() }
+        )
     }
 }

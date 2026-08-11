@@ -10,10 +10,13 @@ import com.actionstarter.ai.model.ModelVerificationResult
 import com.actionstarter.ai.model.ModelVerifier
 import com.actionstarter.ai.schema.ContentSanityChecker
 import com.actionstarter.ai.schema.ContentSanityResult
+import com.actionstarter.ai.schema.RecoverySchemaValidationResult
+import com.actionstarter.ai.schema.RecoverySchemaValidator
 import com.actionstarter.ai.schema.SchemaValidationResult
 import com.actionstarter.ai.schema.SchemaValidator
 import com.actionstarter.domain.model.PlanningContext
 import com.actionstarter.domain.model.RecoveryContext
+import com.actionstarter.domain.model.RecoveryOption
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -141,6 +144,9 @@ class LocalAiGateway(
 ) {
     private val schemaValidator = SchemaValidator()
     private val contentSanityChecker = ContentSanityChecker()
+
+    /** Phase 9（計画書§3.4）。[generateRecovery]の①形式＋pairing検証に使う（[schemaValidator]のRecovery版）。 */
+    private val recoverySchemaValidator = RecoverySchemaValidator()
 
     /** T-GW-15。同一インスタンスへの同時呼び出しでも[model]呼び出しが重ならないよう直列化する。 */
     private val inferenceMutex = Mutex()
@@ -438,16 +444,138 @@ class LocalAiGateway(
     )
 
     /**
-     * Phase 7時点では常に[AiResult.Fallback]（[AiFallbackReason.NOT_IMPLEMENTED_IN_PHASE7]）を
-     * 返す契約（U-8・§13 #18「`TODO()`で落とさない」）。[model]のgenerateRecoveryを呼ばずに
-     * 早期リターンする設計とし、Phase 7が未対応の経路を安全側で閉じる。実際の対応はPhase 9
-     * （§18申し送り5）。
+     * Phase 9 コミット1実装（計画書`docs/plans/phase9-recovery-ai.md`§3.4、ADR-0063想定）。
+     * [options]（`BasicRecoveryEngine`が既に決定した候補集合）の各`semanticAction`に対する
+     * `explanation`を生成し、[AiResult]で封じ込めて返す。[generatePlan]と同一のパイプライン構造
+     * （[inferenceMutex]で実推論呼び出しを含め直列化——計画書§8「Plan/Recovery AI呼び出しの
+     * 同時発生」・§13 A-6訂正・T-GW-15、`resolveInstalledEntry`／`checkInstalledModel`の共通化、
+     * Primary→[RecoverySchemaValidator]検証（①形式＋pairing）→不合格ならRetry→再検証→
+     * なお不合格ならFallback(SCHEMA_INVALID)）を踏襲する。例外は一切外へ送出しない
+     * （[CancellationException]を除く）。
+     *
+     * **②[ContentSanityChecker]内容sanity（L2）はコミット1のスコープ外**: 計画書§11コミット
+     * 粒度（コミット1=「AIが生成できる」基盤、コミット2=「生成された内容の安全性」）どおり、
+     * L2ルール（few-shotエコー検出・最小品質ヒューリスティック）は`ContentSanityChecker`へ
+     * まだ実装されていない（T-P9-12〜25が対象、コミット2のRedスコープ）。現時点の
+     * `runRecoveryValidationPipeline`は①（[RecoverySchemaValidator]の形式＋pairing検証）のみを
+     * 行う。②を追加する配線変更はコミット2で行う。
      */
-    suspend fun generateRecovery(context: RecoveryContext): AiResult<AIRecoveryResponse> {
-        return AiResult.Fallback(
-            AiFallbackReason.NOT_IMPLEMENTED_IN_PHASE7,
-            "generateRecovery is not implemented in Phase 7 (U-8); model.generateRecovery is not invoked"
-        )
+    suspend fun generateRecovery(context: RecoveryContext, options: List<RecoveryOption>): AiResult<AIRecoveryResponse> {
+        if (!preferences.aiEnabled) {
+            return AiResult.Fallback(AiFallbackReason.AI_DISABLED, "AiPreferences.aiEnabled is false (§19既定OFF)")
+        }
+        if (deviceCapability.classify() == DeviceTier.TIER_0_UNSUPPORTED) {
+            return AiResult.Fallback(
+                AiFallbackReason.UNSUPPORTED_DEVICE,
+                "Device totalMem is below the Local AI tier threshold (§5.3段0)"
+            )
+        }
+        if (!deviceCapability.isAbiSupported()) {
+            return AiResult.Fallback(
+                AiFallbackReason.UNSUPPORTED_ABI,
+                "Device SUPPORTED_ABIS does not include arm64-v8a (§8.2)"
+            )
+        }
+
+        return inferenceMutex.withLock {
+            val modelCheck = checkInstalledModel()
+            if (modelCheck is InstalledModelCheck.Failed) return@withLock modelCheck.fallback
+            val installedEntry = (modelCheck as InstalledModelCheck.Ready).entry
+
+            val requiredPeakMemoryBytes = installedEntry.defaultProfilePeakRamBytes + DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES
+            if (!deviceCapability.hasAvailableMemory(requiredPeakMemoryBytes)) {
+                return@withLock AiResult.Fallback(
+                    AiFallbackReason.OUT_OF_MEMORY_PREVENTED,
+                    "availMem is below required peak RAM ($requiredPeakMemoryBytes bytes incl. safety margin, §8.6 #7)"
+                )
+            }
+
+            runRecoveryValidationPipeline(context, options, installedEntry)
+        }
+    }
+
+    /**
+     * @param entry [checkInstalledModel]が確定した導入済みエントリ（[runValidationPipeline]と
+     *   同型のPlan/Recovery共通パターン）。
+     */
+    private suspend fun runRecoveryValidationPipeline(
+        context: RecoveryContext,
+        options: List<RecoveryOption>,
+        entry: ModelCatalogEntry
+    ): AiResult<AIRecoveryResponse> {
+        val startedAtNanos = System.nanoTime()
+        val expectedSemanticActions = options.map { it.semanticAction }.toSet()
+
+        val primaryAttempt = invokeRecoveryModel(context, options, entry, SamplingPolicy.Primary)
+        if (primaryAttempt is ModelAttempt.Failed) return primaryAttempt.fallback
+        val primaryRaw = primaryAttempt as ModelAttempt.RawJson
+        val primaryValidation = recoverySchemaValidator.validate(primaryRaw.text, expectedSemanticActions)
+        if (primaryValidation is RecoverySchemaValidationResult.Valid) {
+            return AiResult.Success(
+                primaryValidation.response,
+                buildMetrics(
+                    retried = false,
+                    elapsedNanos = System.nanoTime() - startedAtNanos,
+                    benchmark = primaryRaw.benchmark,
+                    selectedModelId = entry.id
+                )
+            )
+        }
+
+        // ①不合格 → retry 1回（generatePlanと同じSamplingPolicy.Retryで呼び直す。会話履歴の
+        // 破棄自体はmodel実装〔ai/adapter/〕の内部関心事）。
+        val retryAttempt = invokeRecoveryModel(context, options, entry, SamplingPolicy.Retry)
+        if (retryAttempt is ModelAttempt.Failed) return retryAttempt.fallback
+        val retryRaw = retryAttempt as ModelAttempt.RawJson
+        val retryValidation = recoverySchemaValidator.validate(retryRaw.text, expectedSemanticActions)
+        if (retryValidation is RecoverySchemaValidationResult.Valid) {
+            return AiResult.Success(
+                retryValidation.response,
+                buildMetrics(
+                    retried = true,
+                    elapsedNanos = System.nanoTime() - startedAtNanos,
+                    benchmark = retryRaw.benchmark,
+                    selectedModelId = entry.id
+                )
+            )
+        }
+
+        return AiResult.Fallback(AiFallbackReason.SCHEMA_INVALID, (retryValidation as RecoverySchemaValidationResult.Invalid).reason)
+    }
+
+    /**
+     * [model]を[policy]で1回呼び出す（[invokeModel]のRecovery版、同型の例外→[AiFallbackReason]
+     * 写像）。[modelPath]は[entry]から都度計算し[model.generateRecovery]へ明示的に渡す
+     * （ADR-0062決定5と同型）。
+     */
+    private suspend fun invokeRecoveryModel(
+        context: RecoveryContext,
+        options: List<RecoveryOption>,
+        entry: ModelCatalogEntry,
+        policy: SamplingPolicy
+    ): ModelAttempt {
+        return try {
+            val modelPath = modelStorage.finalFile(entry).absolutePath
+            val rawJson = withTimeout(requestTimeoutMillis) { model.generateRecovery(context, options, modelPath, policy) }
+            val benchmark = (model as? BenchmarkMetricsSource)?.lastInferenceMetrics()
+            ModelAttempt.RawJson(rawJson, benchmark)
+        } catch (e: TimeoutCancellationException) {
+            ModelAttempt.Failed(
+                AiResult.Fallback(AiFallbackReason.TIMEOUT, "No response within ${requestTimeoutMillis}ms (§8.6 #8)")
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: UnsatisfiedLinkError) {
+            ModelAttempt.Failed(AiResult.Fallback(AiFallbackReason.MODEL_LOAD_FAILED, e.message ?: e.toString()))
+        } catch (e: OutOfMemoryError) {
+            // 二次防御（事前ガードをすり抜けた残余ケース）。§8.6 #13・T-GW-17と同型。
+            ModelAttempt.Failed(AiResult.Fallback(AiFallbackReason.OUT_OF_MEMORY, e.message ?: e.toString()))
+        } catch (e: Throwable) {
+            // 未分類の失敗はサイレントに握り潰さず、例外クラス名をdetailへ残す（T-GW-12と同型）。
+            ModelAttempt.Failed(
+                AiResult.Fallback(AiFallbackReason.UNKNOWN, "${e::class.qualifiedName}: ${e.message}")
+            )
+        }
     }
 
     companion object {

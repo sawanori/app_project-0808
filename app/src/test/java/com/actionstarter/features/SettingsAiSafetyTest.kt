@@ -8,7 +8,6 @@ import com.actionstarter.ai.AiFallbackReason
 import com.actionstarter.ai.AiPreferencesImpl
 import com.actionstarter.ai.LocalAiGateway
 import com.actionstarter.ai.LocalLanguageModel
-import com.actionstarter.ai.AIRecoveryResponse
 import com.actionstarter.ai.AiResult
 import com.actionstarter.ai.SamplingPolicy
 import com.actionstarter.ai.model.DeviceCapabilityImpl
@@ -19,6 +18,7 @@ import com.actionstarter.ai.model.ModelVerifierImpl
 import com.actionstarter.domain.model.PlanningContext
 import com.actionstarter.domain.model.ExecutionEvent
 import com.actionstarter.domain.model.RecoveryContext
+import com.actionstarter.domain.model.RecoveryOption
 import com.actionstarter.domain.valueobject.CalendarSource
 import com.actionstarter.domain.valueobject.TransportMode
 import kotlinx.coroutines.test.runTest
@@ -97,8 +97,15 @@ class SettingsAiSafetyTest {
         override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String =
             error("generatePlan must never be invoked in this scenario (AI safety regression, P7-C6)")
 
-        override suspend fun generateRecovery(context: RecoveryContext): AIRecoveryResponse =
-            error("generateRecovery must never be invoked in this scenario (AI safety regression, P7-C6)")
+        // Phase 9（計画書`docs/plans/phase9-recovery-ai.md`§3.2）: シグネチャの機械的追随のみ。
+        // 本オブジェクトは「呼ばれてはいけない」ことの検証専用のためロジック・アサーションは
+        // 無変更（クラスKDoc参照）。
+        override suspend fun generateRecovery(
+            context: RecoveryContext,
+            options: List<RecoveryOption>,
+            modelPath: String,
+            samplingPolicy: SamplingPolicy
+        ): String = error("generateRecovery must never be invoked in this scenario (AI safety regression, P7-C6)")
     }
 
     private fun samplePlanningContext(): PlanningContext = PlanningContext(

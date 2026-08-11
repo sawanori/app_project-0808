@@ -2,6 +2,7 @@ package com.actionstarter.ai
 
 import com.actionstarter.domain.model.PlanningContext
 import com.actionstarter.domain.model.RecoveryContext
+import com.actionstarter.domain.model.RecoveryOption
 
 /**
  * 仕様§16準拠（Local LLM Runtime）。Model Adapter方式の契約interface。
@@ -20,9 +21,11 @@ import com.actionstarter.domain.model.RecoveryContext
  * AIPlanResponse`という一方向の流れに統一する（[com.actionstarter.ai.schema.SchemaValidator]の
  * KDoc参照）。
  *
- * [generateRecovery]の戻り値は本裁定の対象外であり無変更（Phase 7では
- * [com.actionstarter.ai.LocalAiGateway.generateRecovery]が[AiFallbackReason.
- * NOT_IMPLEMENTED_IN_PHASE7]を返すのみで本メソッドを呼び出さない契約、U-8）。
+ * **[generateRecovery]のPhase 9契約変更（計画書`docs/plans/phase9-recovery-ai.md`§3.2、
+ * ADR-0063想定）**: Phase 7時点は戻り値が[AIRecoveryResponse]（パース済みオブジェクト）
+ * だったが、[generatePlan]と同じ理由（ADR-0045。誰が生JSONへ再シリアライズするのかという
+ * 往復の解消）で**生JSONテキスト（`String`）**へ変更した。[options]・[modelPath]引数も
+ * 新設した（後述）。
  *
  * 戻り値の[AIRecoveryResponse]はSchema Validation前の生の構造化出力であり、Domain Logicへ
  * 直接使用してはならない（仕様§20）。
@@ -70,5 +73,22 @@ interface LocalLanguageModel {
         samplingPolicy: SamplingPolicy = SamplingPolicy.Primary
     ): String
 
-    suspend fun generateRecovery(context: RecoveryContext): AIRecoveryResponse
+    /**
+     * [context]・既に確定済みの[options]（`BasicRecoveryEngine`の候補集合）から生成した
+     * Recovery説明文のLLM生JSONテキストを返す（計画書§3.2）。呼び出し側（[LocalAiGateway]）が
+     * [com.actionstarter.ai.schema.RecoverySchemaValidator.validate]・
+     * [com.actionstarter.ai.schema.ContentSanityChecker.check]の順で検証しパースする。
+     *
+     * @param options `BasicRecoveryEngine`が既に決定した候補（`semanticAction`の集合として
+     *   プロンプトへ渡す。計画書§3.3「echo必須集合」）。
+     * @param modelPath ロード対象モデルの絶対パス（[generatePlan]と同型、ADR-0062決定5）。
+     * @param samplingPolicy 使用するサンプリング方針（[generatePlan]と同型、既定
+     *   [SamplingPolicy.Primary]）。
+     */
+    suspend fun generateRecovery(
+        context: RecoveryContext,
+        options: List<RecoveryOption>,
+        modelPath: String,
+        samplingPolicy: SamplingPolicy = SamplingPolicy.Primary
+    ): String
 }

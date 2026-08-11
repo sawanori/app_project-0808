@@ -2,6 +2,7 @@ package com.actionstarter.ai
 
 import android.app.ActivityManager
 import android.content.Context
+import com.actionstarter.ai.adapter.requiresEngineReload
 import com.actionstarter.ai.model.DeviceCapability
 import com.actionstarter.ai.model.DeviceCapabilityImpl
 import com.actionstarter.ai.model.ModelCatalogEntry
@@ -15,6 +16,7 @@ import com.actionstarter.ai.model.ModelVerifierImpl
 import com.actionstarter.domain.model.ExecutionEvent
 import com.actionstarter.domain.model.PlanningContext
 import com.actionstarter.domain.model.RecoveryContext
+import com.actionstarter.domain.model.RecoveryOption
 import com.actionstarter.domain.valueobject.CalendarSource
 import com.actionstarter.domain.valueobject.Coordinate
 import com.actionstarter.domain.valueobject.TransportMode
@@ -186,13 +188,27 @@ class LocalAiGatewayTest {
         data class ThrowError(val error: Throwable) : PlanCallOutcome
     }
 
+    /**
+     * Phase 9追加（計画書`docs/plans/phase9-recovery-ai.md`§3.2）。[FakeLocalLanguageModel]の
+     * `generateRecovery`版[Outcome]（[PlanCallOutcome]と同型）。
+     */
+    private sealed interface RecoveryCallOutcome {
+        data class Respond(val rawJson: String) : RecoveryCallOutcome
+        data class ThrowError(val error: Throwable) : RecoveryCallOutcome
+    }
+
     private class FakeLocalLanguageModel(
         private val outcomes: List<PlanCallOutcome>,
-        private val delayMillisPerCall: Long = 0L
+        private val delayMillisPerCall: Long = 0L,
+        private val recoveryOutcomes: List<RecoveryCallOutcome> = emptyList()
     ) : LocalLanguageModel {
         override val modelIdentifier: String = "fake-model"
 
         var generatePlanCallCount: Int = 0
+            private set
+
+        /** Phase 9追加（計画書§3.2、T-P9-26〜28）。[generateRecovery]の呼び出し回数。 */
+        var generateRecoveryCallCount: Int = 0
             private set
 
         /**
@@ -211,6 +227,9 @@ class LocalAiGatewayTest {
          */
         val recordedModelPaths: MutableList<String> = mutableListOf()
 
+        /** Phase 9追加（計画書§3.2、T-P9-26）。[generateRecovery]呼び出しごとの`modelPath`記録。 */
+        val recordedRecoveryModelPaths: MutableList<String> = mutableListOf()
+
         override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String {
             recordedSamplingPolicies.add(samplingPolicy)
             recordedModelPaths.add(modelPath)
@@ -225,10 +244,27 @@ class LocalAiGatewayTest {
             }
         }
 
-        override suspend fun generateRecovery(context: RecoveryContext): AIRecoveryResponse {
-            throw UnsupportedOperationException(
-                "Phase 7ではLocalAiGateway.generateRecoveryがmodelを呼び出さない契約のため未使用（U-8）"
-            )
+        /**
+         * Phase 9追加（計画書§3.2）。[recoveryOutcomes]が空のままなら（既定）Plan専用fixture
+         * としての従来動作（`UnsupportedOperationException`）を維持する。非空の場合のみ
+         * [generatePlan]と同型の消費ロジックで応答する（T-P9-26〜28が使う）。
+         */
+        override suspend fun generateRecovery(
+            context: RecoveryContext,
+            options: List<RecoveryOption>,
+            modelPath: String,
+            samplingPolicy: SamplingPolicy
+        ): String {
+            if (recoveryOutcomes.isEmpty()) {
+                throw UnsupportedOperationException("本fixtureはPlan経路専用のため未使用（recoveryOutcomesが空のまま）")
+            }
+            recordedRecoveryModelPaths.add(modelPath)
+            val outcome = recoveryOutcomes.getOrElse(generateRecoveryCallCount) { recoveryOutcomes.last() }
+            generateRecoveryCallCount += 1
+            return when (outcome) {
+                is RecoveryCallOutcome.Respond -> outcome.rawJson
+                is RecoveryCallOutcome.ThrowError -> throw outcome.error
+            }
         }
     }
 
@@ -249,8 +285,13 @@ class LocalAiGatewayTest {
             return singleStepPlanJson(eventType = "business_meeting", actionType = "prepare_items")
         }
 
-        override suspend fun generateRecovery(context: RecoveryContext): AIRecoveryResponse =
-            throw UnsupportedOperationException("T-GW-15では未使用")
+        // Phase 9（計画書`docs/plans/phase9-recovery-ai.md`§3.2）: シグネチャの機械的追随のみ。
+        override suspend fun generateRecovery(
+            context: RecoveryContext,
+            options: List<RecoveryOption>,
+            modelPath: String,
+            samplingPolicy: SamplingPolicy
+        ): String = throw UnsupportedOperationException("T-GW-15では未使用")
     }
 
     // ------------------------------------------------------------------
@@ -1243,6 +1284,125 @@ class LocalAiGatewayTest {
         assertEquals(
             storage.finalFile(fakeGemma4LikeEntry()).absolutePath,
             model.recordedModelPaths.single()
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 9（計画書`docs/plans/phase9-recovery-ai.md`§3.2・§7、ADR-0063想定）: generateRecoveryの
+    // modelPath配線・auto選択の共用（T-P9-26〜28）。generateRecovery本体（LocalAiGateway・
+    // LiteRtLmLocalLanguageModelとも）が`TODO()`のため、全件`NotImplementedError`により
+    // Redになるのが正しい。
+    // ------------------------------------------------------------------
+
+    private fun recoveryContext(): RecoveryContext = RecoveryContext(
+        currentTime = Instant.parse("2026-08-10T09:15:00Z"),
+        currentLocation = null,
+        event = sampleEvent(),
+        unfinishedSteps = emptyList(),
+        latestTravelEstimate = Duration.ofMinutes(20),
+        plannedDepartureTime = Instant.parse("2026-08-10T09:00:00Z")
+    )
+
+    private fun sampleRecoveryOptions(): List<RecoveryOption> = listOf(
+        RecoveryOption(
+            id = java.util.UUID.randomUUID(),
+            semanticAction = "keep_all_steps",
+            title = "",
+            explanation = "",
+            estimatedArrival = Instant.parse("2026-08-10T09:30:00Z"),
+            skippedStepIds = emptyList()
+        )
+    )
+
+    // T-P9-26: 正常 - generateRecoveryがLocalAiGatewayの選択したmodelPathをそのままadapterへ渡す
+    @Test
+    fun tP9_26_generateRecovery_passesResolvedModelPathToAdapter() = runTest {
+        val model = FakeLocalLanguageModel(
+            outcomes = emptyList(),
+            recoveryOutcomes = listOf(
+                RecoveryCallOutcome.Respond(
+                    JSONObject().put(
+                        "options",
+                        JSONArray().put(
+                            JSONObject().put("semantic_action", "keep_all_steps").put("explanation", "Finish getting ready.")
+                        )
+                    ).toString()
+                )
+            )
+        )
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP9_26")
+        )
+
+        gateway.generateRecovery(recoveryContext(), sampleRecoveryOptions())
+
+        assertEquals(
+            "generateRecoveryはgeneratePlanと同じ解決済みmodelPathをそのままadapterへ渡すべきです(T-P9-26)",
+            installedModelStorage().finalFile(fakeInstalledEntry()).absolutePath,
+            model.recordedRecoveryModelPaths.single()
+        )
+    }
+
+    // T-P9-27: 正常（回帰） - generateRecoveryもModelSelector/auto既定を経由する
+    // （Recovery専用の解決経路が存在しないことの回帰確認）
+    @Test
+    fun tP9_27_generateRecovery_alsoRoutesThroughAutoSelection_noRecoverySpecificResolutionPath() = runTest {
+        val entries = autoTestCatalog()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP9_27")
+            .apply { selectedModelId = AiPreferences.AUTO_SELECT_MODEL_ID }
+        val storage = installedModelStorageWithEntries(entries, preferences)
+        val model = FakeLocalLanguageModel(
+            outcomes = emptyList(),
+            recoveryOutcomes = listOf(
+                RecoveryCallOutcome.Respond(
+                    JSONObject().put(
+                        "options",
+                        JSONArray().put(
+                            JSONObject().put("semantic_action", "keep_all_steps").put("explanation", "Finish getting ready.")
+                        )
+                    ).toString()
+                )
+            )
+        )
+        val deviceCapability = supportedDeviceCapability(availMemBytes = 2L * GB) // Qwen06b-likeのみ適合
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapability,
+            preferences = preferences,
+            modelSelector = ModelSelectorImpl(deviceCapability, storage, candidates = qualityOrderedCandidates())
+        )
+
+        gateway.generateRecovery(recoveryContext(), sampleRecoveryOptions())
+
+        assertEquals(
+            "generateRecoveryもModelSelectorのauto解決結果(この条件ではQwen06b-like)を使うべきです(T-P9-27)",
+            storage.finalFile(fakeQwen06bLikeEntry()).absolutePath,
+            model.recordedRecoveryModelPaths.single()
+        )
+    }
+
+    // T-P9-28（born-green・限定的な回帰確認）: EngineLoadPolicy.requiresEngineReloadは呼び出し元
+    // （Plan/Recovery）を区別しない純粋関数であるため、generateRecoveryが同じ関数を再利用しさえ
+    // すれば同一パス時のEngine再利用は構造的に成立する。実際のEngine生成回数の実機検証は
+    // LiteRtLmLocalLanguageModel.generateRecoveryの実装完了後（コミット3以降）にandroidTest
+    // プローブで別途行う（本テストのスコープ外、計画書§6「検証境界の明記」と同型の限定）。
+    @Test
+    fun tP9_28_engineLoadPolicy_isCallerAgnostic_reusableForRecoveryPathToo() {
+        val planPath = "/data/models/qwen3-0.6b.litertlm"
+
+        assertTrue(
+            "同一パスへの2回目の要求はPlan/Recoveryを問わず再ロード不要と判定するべきです(T-P9-28)",
+            !requiresEngineReload(loadedModelPath = planPath, requestedModelPath = planPath)
+        )
+        assertTrue(
+            "異なるパスへの要求はPlan/Recoveryを問わず再ロード必要と判定するべきです(T-P9-28)",
+            requiresEngineReload(loadedModelPath = planPath, requestedModelPath = "/data/models/gemma-4-e2b-it.litertlm")
         )
     }
 }
