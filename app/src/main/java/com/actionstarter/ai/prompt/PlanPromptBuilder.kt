@@ -52,6 +52,15 @@ import java.util.Locale
 class PlanPromptBuilder {
 
     /**
+     * Phase 9.5新設（計画書§3.2 F-1、Step 4 Green）。[buildFewShot]が[eventTitle]非null時に
+     * カテゴリ推定へ使う。[EventCategoryClassifier]自体は状態レスのため、呼び出しごとに
+     * 新規生成せずインスタンス1個を再利用する（[PlanPromptBuilder]自体が[LiteRtLmLocalLanguageModel]
+     * から呼び出しのたびに新規生成される軽量クラスであるため、フィールド化の利益は小さいが
+     * 同一パッケージの他クラスとの一貫性のため保持する）。
+     */
+    private val eventCategoryClassifier = EventCategoryClassifier()
+
+    /**
      * [context]からプロンプト文字列を組み立てる（LLMへ渡す「data message」相当）。**P7-C3実装済み
      * （Green）**: `[EVENT]...[/EVENT]`の区切りトークンでイベント由来のデータ部を構造的に囲み、
      * 指示部（言語指示・時刻演算禁止の文言）はこの区切りの外に置く（T-PRM-6のプロンプト
@@ -142,11 +151,35 @@ class PlanPromptBuilder {
      *
      * @param shotCount 返す例の件数（既定[DEFAULT_SHOT_COUNT]＝2。P7-C8実測後にFable 5が
      *   最終既定値を確定する、品質ハーネスUQ-4）。
+     * @param eventTitle Phase 9.5新設（計画書§3.2 F-1、末尾・既定`null`パラメータで既存呼び出し元
+     *   との後方互換を保つ）。非nullの場合、[EventCategoryClassifier.classify]で推定した
+     *   カテゴリに一致する模範例のみへ絞り込む（計画書§3.2「推定カテゴリに一致する模範例のみ
+     *   （1〜2件）を選ぶ。不一致0件時は現行の全件混合へフォールバックする」）。
+     *
+     *   **Step 4（Green）で実配線済み**: [eventTitle]が非nullなら[eventCategoryClassifier.
+     *   classify]でカテゴリを推定し、[FewShotSeed.eventType]が一致する模範例のみへ絞り込む。
+     *   一致0件（[EventCategoryClassifier.CATEGORY_UNKNOWN]を含む——`eventType`の4値のいずれとも
+     *   一致しないため自動的に0件になる）の場合は現行の全件混合（[seeds]そのまま）へ
+     *   フォールバックする（T-P95-8、few-shotが0件になる事態を避ける安全側設計）。
+     *
+     *   **本番配線（計画書§3.2「実配線」）**: [com.actionstarter.ai.adapter.
+     *   LiteRtLmLocalLanguageModel.buildConversationConfig]が`context.event.title`（生タイトル、
+     *   [truncateForPrompt]による切り詰めは行わない——本パラメータは[build]のようにLLMへ
+     *   埋め込まれる文字列ではなく、Kotlin側の分類判定にのみ使われ切り詰めの必要がないため）を
+     *   本パラメータへ渡す。これにより`generatePlan`呼び出しのたびに実際のイベントタイトルから
+     *   few-shot選択が発動する。
      */
-    fun buildFewShot(locale: Locale, shotCount: Int = DEFAULT_SHOT_COUNT): List<PromptExample> {
+    fun buildFewShot(locale: Locale, shotCount: Int = DEFAULT_SHOT_COUNT, eventTitle: String? = null): List<PromptExample> {
         val seeds = if (locale.language == Locale.JAPANESE.language) JAPANESE_FEW_SHOT_SEEDS else ENGLISH_FEW_SHOT_SEEDS
-        val clampedCount = shotCount.coerceIn(MIN_SHOT_COUNT, seeds.size)
-        return seeds.take(clampedCount).map { seed ->
+        val candidateSeeds = if (eventTitle != null) {
+            val category = eventCategoryClassifier.classify(eventTitle, locale)
+            val matchingSeeds = seeds.filter { it.eventType == category }
+            matchingSeeds.ifEmpty { seeds }
+        } else {
+            seeds
+        }
+        val clampedCount = shotCount.coerceIn(MIN_SHOT_COUNT, candidateSeeds.size)
+        return candidateSeeds.take(clampedCount).map { seed ->
             PromptExample(userTurn = seed.userTurn, modelTurn = seed.toModelTurnJson())
         }
     }

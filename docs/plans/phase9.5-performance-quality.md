@@ -3,7 +3,7 @@
 > 対象仕様: §73「Phase 9・Local AI Recovery」の性能・品質フォローアップ、§57「性能指標」、§11.1〜§11.3実機実測系。直接の起点はPhase 9計画書§4.6「Phase 9.5候補（実機計測ループ要）」と、同計画書Step 4（コミット3 Green）報告が持ち越したリファクタ候補
 > 前提基盤: Phase 9（Local AI Recovery完了・A54実機受け入れ合格、ADR-0063）・Phase 8.5（`ModelSelector`自動選択・ADR-0062）・Phase 7（LiteRT-LM基盤・P7-C0/C5/C8実機実測、`LiteRtLmProbeTest`／`ModelComparisonProbeTest`のprobe規約確立）
 > 種別: 計測駆動フェーズ（コミット0・M実施済み。F-4/F-5はコード変更を伴う優先繰り上げ機能）
-> 承認状態: **敵対的レビュー反映済み（§13）。コミット0（androidTestコンパイル復旧）・Mベースライン計測（§14、30試行）実施済み。実測で発見した2件の設計欠陥（Recovery pairing全滅・Planウォームゲート自爆）を受け優先繰り上げしたF-4/F-5は、F-5当初Red実装がRed検収で修正層の誤同定により差し戻され（§13「Red検収時点の追加訂正」、§3.10）、二層構成（`ModelSelector`層＋`LocalAiGateway`層、単一`EngineLoadStateSource`共有）へ訂正しコミット済み（288e9b9）。コミット後の実機A/B実測でF-4成立・F-5未発動（`LocalAiGateway`既定値`modelSelector`がengineLoadStateSource未配線という統合ギャップ）が判明し、F-5b（既定値へ自動配線）をGreen実装・コミット済み（2acd2f2）。**F-5bコミット後の実機A/B再測定でRecovery完全蘇生を確認済み**（§14「A/B再実測」、F-5b後3/3 Success、retried=false・sanity clean）
+> 承認状態: **敵対的レビュー反映済み（§13）。コミット0（androidTestコンパイル復旧）・Mベースライン計測（§14、30試行）実施済み。実測で発見した2件の設計欠陥（Recovery pairing全滅・Planウォームゲート自爆）を受け優先繰り上げしたF-4/F-5は、F-5当初Red実装がRed検収で修正層の誤同定により差し戻され（§13「Red検収時点の追加訂正」、§3.10）、二層構成（`ModelSelector`層＋`LocalAiGateway`層、単一`EngineLoadStateSource`共有）へ訂正しコミット済み（288e9b9）。コミット後の実機A/B実測でF-4成立・F-5未発動（`LocalAiGateway`既定値`modelSelector`がengineLoadStateSource未配線という統合ギャップ）が判明し、F-5b（既定値へ自動配線）をGreen実装・コミット済み（2acd2f2）。**F-5bコミット後の実機A/B再測定でRecovery完全蘇生を確認済み**（§14「A/B再実測」、F-5b後3/3 Success、retried=false・sanity clean、コミット08de59a）。続けてF-1（few-shotカテゴリ条件選択、Plan限定スコープ、§3.2）のStep 3（Red）・Step 4（Green）とも実施済み——`EventCategoryClassifier.classify`本体実装（ロケール別辞書キーワード`contains`判定・`CATEGORY_PRIORITY_ORDER`による決定的優先・不一致は`CATEGORY_UNKNOWN`）・`PlanPromptBuilder.buildFewShot`のカテゴリ絞り込み実配線・**実配線先`LiteRtLmLocalLanguageModel.buildConversationConfig`へ`context.event.title`を引き回し済み**（§3.2「実配線」参照）・T-P95-1〜8（T-P95-8はRed検収で先送りしていたfew-shotレベル不明フォールバックをborn-greenロックとして追加）。全ファイルはコミット288e9b9〜08de59aに続く**未コミット**の変更（:app:testDebugUnitTest tests=739/skipped=1/failures=0/errors=0〔全件Green、既存731件は無傷〕・:app:lintDebug error=0/warning=23、JUnit XML集計で確認済み）。**F-1のコミットは検収待ち**
 
 ---
 
@@ -58,6 +58,8 @@ Phase 9はA54実機受け入れに合格したが（`docs/plans/phase9-recovery-
 **Recovery側への適用は本フェーズでは行わない（敵対的レビュー指摘・採用A-3）**: `RecoveryPromptBuilder`のfew-shot模範例はja/en各2件しかなく、カテゴリ4種の条件選択を適用すると大半の実行で1件も一致せず常時フォールバック（全件混合）へ縮退するため、A/Bで効果を測定できない（模範例が2件しかない時点でカテゴリ選択の恩恵自体が構造的に成立しない）。`RecoveryPromptBuilder.FewShotSeed`へのcategory追加・Recovery側条件選択は行わない。Recovery側への展開はPR-2（few-shot模範例プール自体の見直し）の結果を見て将来判断する。
 
 効果測定はMと同一プローブで、Plan生成について(a)エコー再現率（既知few-shotタイトルを含む無関係イベントでのL5 `FEW_SHOT_ECHO`発生率）、(b)TTFT（プレフィル短縮）をA/B比較する。
+
+**実配線（Step 4 Green実装済み）**: `EventCategoryClassifier.classify`は`CATEGORY_PRIORITY_ORDER`の先頭から順にキーワード`contains`判定（`ignoreCase = true`）を行い、最初に一致したカテゴリを返す（複数一致時の優先順位を決定的にする、T-P95-6）。`PlanPromptBuilder.buildFewShot`は`eventTitle`が非nullなら`classify`でカテゴリを推定し、`FewShotSeed.eventType`が一致する模範例のみへ絞り込み、一致0件（`CATEGORY_UNKNOWN`を含む）なら`ifEmpty`で現行の全件混合へフォールバックする。**呼び出し元の実配線先は`LiteRtLmLocalLanguageModel.buildConversationConfig`（`ai/adapter/`）**——`promptBuilder.buildFewShot(context.locale, shotCount, eventTitle = context.event.title)`として`PlanningContext.event.title`（生タイトル、`build`が使う`truncateForPrompt`切り詰めは適用しない——LLMへ埋め込まれずKotlin側の分類判定にのみ使うため）を渡す。これにより`generatePlan`呼び出しのたびに実際のイベントタイトルからfew-shotのカテゴリ選択が発動する（`RecoveryPromptBuilder`側・`buildRecoveryConversationConfig`は無変更、Plan限定スコープのまま）。
 
 ### 3.3 F-2: Engineウォームアップ（P1）
 

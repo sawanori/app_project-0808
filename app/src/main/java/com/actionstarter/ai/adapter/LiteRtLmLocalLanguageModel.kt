@@ -364,9 +364,15 @@ class LiteRtLmLocalLanguageModel(
      * `systemInstruction`＋`initialMessages`（few-shot）＋[samplingPolicy]から導いた
      * `samplerConfig`を持つ[ConversationConfig]を組み立てる（品質ハーネス§3・§4・§10）。
      * `prefillPrefaceOnInit = true`でこのprefaceを会話生成時にprefillする（品質ハーネス§3末尾）。
+     *
+     * **Phase 9.5 F-1実配線（計画書§3.2、Step 4 Green）**: [PlanPromptBuilder.buildFewShot]の
+     * `eventTitle`引数へ`context.event.title`（生タイトル）を渡す。[PlanPromptBuilder.build]の
+     * `title`（[com.actionstarter.ai.prompt.PlanPromptBuilder]内部の`truncateForPrompt`で
+     * 切り詰め）とは異なり、こちらはLLMへ埋め込まれず`EventCategoryClassifier.classify`の
+     * キーワード照合にのみ使われるKotlin側の判定材料であるため、切り詰めは行わない。
      */
     private fun buildConversationConfig(context: PlanningContext, samplingPolicy: SamplingPolicy): ConversationConfig {
-        val fewShotMessages = promptBuilder.buildFewShot(context.locale, shotCount).flatMap { example ->
+        val fewShotMessages = promptBuilder.buildFewShot(context.locale, shotCount, eventTitle = context.event.title).flatMap { example ->
             listOf(Message.user(example.userTurn), Message.model(example.modelTurn))
         }
         return ConversationConfig(

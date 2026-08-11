@@ -595,6 +595,52 @@ class PlanPromptBuilderTest {
         )
     }
 
+    // ------------------------------------------------------------------
+    // Phase 9.5（計画書§3.2 F-1・§7、ADR-0064想定、Step 4 Green実装済み）:
+    // buildFewShotのカテゴリ条件選択（Plan限定）。
+    // ------------------------------------------------------------------
+
+    // T-P95-7: 正常 - 推定カテゴリに一致する模範例のみが返る（不一致の模範例は含まれない）
+    @Test
+    fun tP95_7_buildFewShot_eventTitleMatchesMedicalCategory_returnsOnlyMedicalExample() {
+        val examples = PlanPromptBuilder().buildFewShot(Locale.JAPAN, shotCount = 2, eventTitle = "歯科検診の予約")
+
+        assertEquals(
+            "medicalカテゴリのeventTitleを渡した場合、medical模範(歯科検診)のみが返るべきです" +
+                "(T-P95-7、計画書§3.2)",
+            1,
+            examples.size
+        )
+        assertTrue(
+            "返された模範はmedical(歯科検診)であるべきです(T-P95-7)",
+            examples.single().userTurn.contains("歯科検診")
+        )
+    }
+
+    // T-P95-8（born-greenロック、Red検収でfew-shotレベル不明フォールバックケースとして先送りされて
+    // いたが、eventTitle分岐の実配線後は意味を持つため追加、計画書§3.2）: 正常・回帰 -
+    // 不明カテゴリ（キーワード非一致）のeventTitleを渡しても、0件にならず現行の全件混合へ
+    // フォールバックする。EventCategoryClassifier.classifyがCATEGORY_UNKNOWNを返すケースは
+    // FewShotSeed.eventTypeのいずれとも一致しないため、buildFewShotのifEmptyフォールバックが
+    // 自動的に発動する（buildFewShotのKDoc「@param eventTitle」参照）。
+    @Test
+    fun tP95_8_buildFewShot_eventTitleMatchesNoCategory_fallsBackToFullMixedSet() {
+        val withoutEventTitle = PlanPromptBuilder().buildFewShot(Locale.JAPAN, shotCount = 2)
+        val withUnmatchedEventTitle = PlanPromptBuilder().buildFewShot(Locale.JAPAN, shotCount = 2, eventTitle = "来週の予定")
+
+        assertEquals(
+            "不明カテゴリのeventTitleを渡しても0件にならず全件混合へフォールバックするべきです" +
+                "(T-P95-8、計画書§3.2)",
+            2,
+            withUnmatchedEventTitle.size
+        )
+        assertEquals(
+            "不明カテゴリ時はeventTitle省略時と同じ全件混合の先頭2件と一致するべきです(T-P95-8)",
+            withoutEventTitle,
+            withUnmatchedEventTitle
+        )
+    }
+
     companion object {
         /** [qh14f_buildFewShot_examples_neverCopyTheirOwnEventTitleIntoDisplayText]用: 実際の
          * seed数に関わらず全件を取得するための十分大きいshotCount（[PlanPromptBuilder.buildFewShot]
