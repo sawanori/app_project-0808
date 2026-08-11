@@ -7,10 +7,11 @@
 > - **M**（ベースライン計測、コミット9606135）・**F-4/F-5**（Recovery pairing交差一致緩和・warmゲート2層修正、288e9b9）・**F-5b**（既定値配線ギャップ修正、2acd2f2）・**A/B（F-4/F-5/F-5b）**（Recovery完全蘇生3/3確認、08de59a）は完了・コミット済み。
 > - **F-1／F-1b／F-1c**（few-shotカテゴリ条件選択、Plan限定）は実装→A/B実測2回（`TITLE_COPY`→`MIN_QUALITY`）→撤退基準発動→**不採用・ロールバック確定**（09f4d99→12a14d6→608a478）。`EventCategoryClassifier`等はドーマント基盤（Phase 12実験材料）として残置。詳細は§14「A/B再実測（F-1）」「A/B判定（F-1b）」、結論は§3.2「F-1c」参照。
 > - **F-2（Engineウォームアップ）はStep 3（Red）・Step 4（Green）とも実装済み・コミット済み（3dcb207）**——`LocalAiGateway.warmUp()`（aiEnabled→Tier→ABI→`resolveInstalledEntry`→強化availMemガード→`inferenceMutex.tryLock()`によるin-flightスキップ→`(model as? EngineWarmable)?.warmUpEngine`、例外は`warmUpEngine`呼び出しのみ捕捉しno-op化）・新設任意interface`EngineWarmable`を`LiteRtLmLocalLanguageModel`が実装（`obtainEngine`へ委譲）・`EventSelectionViewModel.init`から`warmUpAiIfPossible()`を1回実配線・`AppContainer`配線（実装時に`LinkageError`回帰〔ナビゲーションフロー起点での`localAiGateway`未捕捉伝播、13件失敗〕を発見し`eventSelectionLocalAiGateway`ガードで解消、§3.3参照）。T-P95-50〜57は全件Green。
-> - **F-2b（ウォームアップのヘッドルーム再調整）は実機検証結果を受けて実装済み**——A54実機でF-2ウォームアップが**不発**（トップ画面20秒滞在後もPSS108MB＝モデル非常駐）と判明。実際に解決されたQwen3-0.6B（`defaultProfilePeakRamBytes`＝1.25GiB）に対し旧強化ガード要求2.25GiB（1.25GiB＋旧+1GiB）へ起動時availMem2.28GiBが僅差（約34MB）で近接し、`warmUp()`実評価時点にはアプリ自身の起動消費で閾値割れしていた（**+1GiBは6GB端末で常閉の門**）。`WARM_UP_EXTRA_HEADROOM_BYTES`を1GiB→**512MB**（通常ガード`MEMORY_SAFETY_MARGIN_BYTES`と同値）へ再調整し、強化ガードと通常ガードの数式が一致（旧非対称設計は解消）。T-P95-54を新閾値の境界（1バイト手前）へ再設計・対となるT-P95-63（ちょうど→呼ぶ）を新設し境界2点を回帰ロック（詳細は§3.3「F-2b」参照）。
+> - **F-2b（ウォームアップのヘッドルーム再調整）は実装・実機検証とも完了（コミットf08859a）**——A54実機でF-2ウォームアップが**不発**（トップ画面20秒滞在後もPSS108,062KB＝モデル非常駐）と判明。実際に解決されたQwen3-0.6B（`defaultProfilePeakRamBytes`＝1.25GiB）に対し旧強化ガード要求2.25GiB（1.25GiB＋旧+1GiB）へ起動時availMem2.28GiBが僅差（約34MB）で近接し、`warmUp()`実評価時点にはアプリ自身の起動消費で閾値割れしていた（**+1GiBは6GB端末で常閉の門**）。`WARM_UP_EXTRA_HEADROOM_BYTES`を1GiB→**512MB**（通常ガード`MEMORY_SAFETY_MARGIN_BYTES`と同値）へ再調整し、強化ガードと通常ガードの数式が一致（旧非対称設計は解消）。T-P95-54を新閾値の境界（1バイト手前）へ再設計・対となるT-P95-63（ちょうど→呼ぶ）を新設し境界2点を回帰ロック（詳細は§3.3「F-2b」参照）。**実機再検証（発動確認）**: 修正後PSSが**526,475KB**まで増加しウォームアップ発動・エンジン常駐を確認（起動時availMem2.29GiB≥新閾値1.75GiB、§14「F-2b実機再検証」参照）。
 > - **F-3（Recovery用maxNumTokensプロファイル縮小）は結論確定・クローズ・コミット済み（b956fdd）**——Step 3（Red）でアーキテクチャ論点（`LiteRtLmLocalLanguageModel`のEngineは1個・`maxNumTokens`は`generatePlan`／`generateRecovery`共有）を発見し、**F-3裁定（2026-08-12）: 本番配線は不成立として縮退（descope）**——Plan/Recoveryの大きい方を採用=無益、プロファイル不一致リロード=Recovery（時間クリティカル）に1.4秒ロードを差し込む最悪UXのいずれも不採用。計測を1回も実施せず構造分析だけで結論に到達した（§14「F-3裁定」参照）。`RecoveryPromptBuilder.estimateMaxNumTokens`はGreen実装済み（T-P95-58〜62、preface文字数からの直接算出方式・下限上限は`PlanPromptBuilder`と共有）だが「Recoveryトークン予算分析を記録するドーマント設計文書」として`generateRecovery`へは配線しない（`EventCategoryClassifier`と同方針、KDocに裁定を明記）。`LiteRtLmLocalLanguageModel`側の宣言のみスタブは将来性なしのため削除。**実装時の追加発見**: 当初のT-P95-59（「同一shotCount・maxOutputTokenでRecovery≤Plan」）はDEFAULT_SHOT_COUNT=2で実測すると成立しない（Recovery=1664>Plan=1280）ことが判明——原因はPlan版の「baseline-delta方式」が1206文字までのpreface内容を実質無料で1024トークン枠に含める一方、Recovery版の「直接算出方式」は同じ無料枠の恩恵を受けないという計算モデルの違いであり、Recoveryの実内容が大きいことを意味しない。system instructionのみ（shotCount=0）で比較する形にテストのスコープを訂正した（詳細は`RecoveryPromptBuilderTest.kt`のT-P95-59コメント参照）。
-> - **PR-1（GPUバックエンド可否プローブ）は事前API調査完了・プローブ作成済み・コミット済み（25f069e）**——litertlm-android 0.15.0のAAR実体（Gradleキャッシュの`-api.jar`）を`javap -p`で直接調査し、`Backend.GPU()`（引数なしコンストラクタ）の存在と`EngineConfig.backend`パラメータへそのまま渡せることを確認（**API存在=GO**、詳細は§3.5参照）。実機での実際の動作可否（Mali-G68のINT4 block-32量子化対応）は未確認のため、`GpuBackendProbeTest`（androidTest、CPU/GPUを完全同一の`EngineConfig`・`ConversationConfig`・data messageで直接比較する設計）を新設した。JVMスイート無傷確認済み（androidTestのみの変更のため影響なし）。実機実行はオーケストレーターが実施。
-> 全757件Green（skip1）・lint error0（:app:testDebugUnitTest tests=757/skipped=1/failures=0/errors=0・JUnit XML集計で確認済み）。**F-2bは未コミット、報告・検収待ち**
+> - **PR-1（GPUバックエンド可否プローブ）は事前API調査・プローブ作成・実機検証とも完了——結論: GPU=NO_GO確定**（プローブ作成コミット25f069e）——litertlm-android 0.15.0のAAR実体を`javap -p`で調査しGPU API自体は公開されている（存在確認=GO、詳細は§3.5参照）ことを確認したうえで作成した`GpuBackendProbeTest`をA54実機で実行した結果、GPU側はEngine初期化（`modelLoadMs=6286`）までは成功したが初回推論`sendMessage`で`LiteRtLmJniException: Can not find OpenCL library on this device`により失敗（CPU側はTTFT約2.67秒・約9.71tok/sで完走）。A54はOpenCLライブラリをアプリへ公開しておらずLiteRT-LMのGPUバックエンドは実行不能——**GPU=NO_GO確定**（§14「PR-1実機検証結果」参照）。
+> - **PR-2（マスク模範例・カテゴリ条件付きecho検出）は縮退（descope）を裁定——プローブ未実施**（2026-08-12）——根拠: ①本フェーズ全計測でecho発生0件（既存L2防御R1aで実害なし）②L1-bはF-1と同型の品質劣化リスクを便益不明のまま負う③R1bが依存するカテゴリ条件付けはF-1でA/B実測2回により陰性・ロールバック確定済み。Phase 12（品質定量化環境整備後）での再評価へ申し送る（§3.6・§14「PR-2裁定」参照）。
+> 全757件Green（skip1）・lint error0（:app:testDebugUnitTest tests=757/skipped=1/failures=0/errors=0・JUnit XML集計で確認済み）。**PR-1/PR-2の実機結果記録は未コミット、報告・検収待ち（このあとRF-1・ADR-0064が続く）**
 
 続けてF-2（Engineウォームアップ、§3.3）のStep 3（Red）を実施——`LocalAiGateway.warmUp()`宣言（本体`TODO()`）・新設任意interface`EngineWarmable`（`BenchmarkMetricsSource`／`EngineLoadStateSource`と同型）を`LiteRtLmLocalLanguageModel`が実装（本体`TODO()`）・`EventSelectionViewModel`へ`localAiGateway`引数と`warmUpAiIfPossible()`フックを宣言（**Step 4まで`init`から呼ばない**——`warmUp()`が`TODO()`のため、呼ぶと本ViewModelを構築する既存テストが軒並み`NotImplementedError`で壊れるため意図的に未配線）・T-P95-50〜57（当初案T-P95-11〜17はF-1/F-1bが1〜12を消費したため衝突、実装時に50〜57へ採番し直し、§7に改訂記録済み）。全8件`NotImplementedError`でRed（`warmUp()`のTODO由来、EventCategoryClassifier.classifyと同型のscaffold）。全ファイルは**未コミット**の変更（:app:testDebugUnitTest tests=751/skipped=1/failures=8/errors=0〔F-2新規8件のみRed、既存743件は無傷〕・:app:lintDebug error=0/warning=23、JUnit XML集計で確認済み）。**Greenには未着手、報告・検収待ち**
 
@@ -114,9 +115,13 @@ Mali-G68（A54搭載GPU）でLiteRT-LM 0.15のGPUバックエンドAPIが公開�
 
 **事前調査結果（API存在確認、2026-08-12、AAR実体調査）**: Web検索ではなく手元のGradleキャッシュに実際に存在する`litertlm-android-0.15.0.aar`由来のAPI jar（`~/.gradle/caches/8.14.5/transforms/*/transformed/litertlm-android-0.15.0-api.jar`）を`javap -p`で直接調査した。`com.google.ai.edge.litertlm.Backend$GPU.class`が存在し、`public com.google.ai.edge.litertlm.Backend$GPU()`（引数なしコンストラクタ）を確認した。`EngineConfig`のコンストラクタは`backend: Backend`を受け取り（`CPU`／`GPU`／`NPU`／`GOOGLE_TENSOR`いずれのサブ型も可）、`Backend.GPU()`をそのまま渡せることを確認した。**API自体は公開されている（存在確認=GO）**ため、§3.5が定める「API非公開ならプローブを組まずNo-Go記録」の分岐は不採用とし、`GpuBackendProbeTest`（androidTest、`app/src/androidTest/java/com/actionstarter/probe/GpuBackendProbeTest.kt`）を新設した。API存在＝実機での動作保証ではない（モバイルGPU delegateはINT4 block-32量子化・特定演算子に対応しないことが珍しくない）ため、実機Go/No-Goは本プローブの実行結果（オーケストレーター実施）に委ねる。プローブはCPU/GPU双方を完全に同一の`EngineConfig`（`modelPath`・`maxNumTokens`）・同一の`ConversationConfig`・同一のdata message（`PlanPromptBuilder`、Mベースラインと同じ構成）で実行し、TTFT・decode tok/sを直接比較できる設計とした。
 
+**実機検証結果（GPU=NO_GO確定、2026-08-12、詳細は§14「PR-1実機検証結果」参照）**: オーケストレーターが`GpuBackendProbeTest`をA54実機で実行した。CPU側は完走（TTFT約2.67秒・約9.71tok/s・schemaValid）した一方、GPU側はEngine初期化（`modelLoadMs=6286`）までは成功したものの、初回推論（`sendMessage`）で`LiteRtLmJniException: Can not find OpenCL library on this device`により失敗した。A54（SCG21）はMali-G68 GPUを搭載するが、OSがOpenCLライブラリをアプリへ公開しておらずLiteRT-LMのGPUバックエンドは実行不能——**GPU=NO_GO確定**。§12確認事項1「GPUバックエンドが動作した場合の本採用可否」は判断対象自体が実機で成立しなかったため**消滅**する。本採用は行わない。
+
 ### 3.6 PR-2: マスク模範例・カテゴリ条件付きecho検出（L1-b／R1b統合）
 
 F-1が確立するカテゴリ推定基盤の上に、(a) L1-b: few-shotの`userTurn`から実タイトル文字列を`[EVENT_TITLE]`等のプレースホルダへ置換する設計、(b) R1b: `ContentSanityChecker`へmodelStepsのdisplay_text echo検出（同カテゴリ限定）を追加する設計、の2案を探索的にプローブし、エコー率とSemantic Contextualizationの質（目視評価）を比較する。採否基準は§12確認事項3で確定する。本フェーズの成果物はプローブ結果と採否提案であり、採用が決まった場合の本実装は次フェーズへ回す（スコープ肥大化回避）。
+
+**裁定（縮退、2026-08-12、詳細は§14「PR-2裁定」参照）**: プローブを実施せず縮退（descope）すると裁定した。根拠は3点——①本フェーズを通じた全計測（M・各A/B・GPU probe含む）でecho発生が0件であり既存L2防御（R1a）で実害が観測されていない、②L1-bの模範例構成変更はF-1が実証した「構成変更が0.6B品質を崩しうる」という同型リスクを便益不明のまま負う、③R1bが依存するカテゴリ条件付けはF-1がA/B実測2回で陰性・ロールバック確定済み（§3.2「F-1c」）。§12確認事項3「L1-b／R1bの採否基準」は判断対象（プローブ結果）自体が存在しないため**縮退により消滅**する。Phase 12（品質定量化環境整備後）での再評価へ申し送る。
 
 ### 3.7 RF-1: `LiteRtLmLocalLanguageModel`重複統合（持ち越し）
 
@@ -325,9 +330,9 @@ LiteRT-LMのリリースノートを定点観測し、対応APIが追加され�
 
 ## §12. ユーザー確認事項（Pass 2）— 全件【確定】（委任パターン、2026-08-11敵対的レビュー反映時に確定）
 
-1. **GPUバックエンドが動作した場合、本採用するか**: 【確定】**プローブ後のユーザー判断として保留**（プローブ自体（PR-1）は実施する。本採用の可否は結果を見てから改めて確認する）。
+1. **GPUバックエンドが動作した場合、本採用するか**: 【確定→NO_GOにより消滅】プローブ（PR-1）を実機実行した結果、GPUバックエンドはOpenCLライブラリ非公開により実行不能と判明した（**GPU=NO_GO確定**、2026-08-12、§3.5・§14「PR-1実機検証結果」参照）。判断すべき対象（GPU動作時の本採用可否）自体が実機で成立しなかったため、本確認事項は消滅する。本採用は行わない。
 2. **ウォームアップのトリガー画面と電池影響の許容度**: 【確定】**トップ画面（`EventSelection`）入場時のみ・都度実行・AI ON時のみ**（§3.3敵対的レビューA-7）。PlanReview画面入場時は除外（同画面は即時自動生成のためウォームアップが無意味）。常時ウォームは採用しない（電池影響を画面遷移ベースの都度実行に限定して抑える）。
-3. **L1-b／R1bの採否基準**: 【確定・暫定基準】**エコー率がベースライン比50%以下、かつ目視品質劣化なしの場合に採用を提案する**（最終的な採用可否はユーザー判断）。
+3. **L1-b／R1bの採否基準**: 【確定→縮退により消滅】PR-2（L1-b／R1b）はプローブを実施せず縮退（descope）すると裁定した（2026-08-12、§3.6・§14「PR-2裁定」参照。根拠: 全計測でecho実害0件・L1-bのF-1同型品質リスク・R1bが依存するF-1のカテゴリ条件付けが陰性確定済み）。判断対象（プローブ結果）自体が存在しないため、本確認事項の採否基準は消滅する。Phase 12（品質定量化環境整備後）での再評価へ申し送る。
 4. **計測のための`AiMetrics`拡張（ピークPSSフィールド追加）の承認可否**: 【確定】**追加しない**。probe専用`PssPeakSampler`（`ModelComparisonProbeTest`実装の転用）で計測要件を満たせるため、本番`AiMetrics`は変更しない。Phase 12のAnalytics基盤設計時に本番計測としての要否を再検討する。
 
 ---
@@ -457,5 +462,29 @@ A54実機（充電中・§4.3統制条件）で`PerformanceBaselineProbeTest`を
 ### F-3裁定（計測以前に構造が答えを出したケース）
 
 F-3（Recovery用maxNumTokensプロファイル縮小）は、実機A/B実測を実施する前に、`LiteRtLmLocalLanguageModel`のEngineがシングルトン（R-7）であるという構造分析だけで「本番配線は不成立」という結論に到達した——F-1／F-4／F-5のように実測して初めて欠陥が判明したケースとは対照的に、**計測サイクルを1回も回さずに構造そのものが答えを出した**（詳細は§3.4「F-3裁定」参照）。見積り関数自体はドーマント設計文書として残す。
+
+### F-2b実機再検証（発動確認、2026-08-12実施）
+
+オーケストレーターがコミットf08859a（F-2b）適用後のA54実機でトップ画面（`EventSelection`）滞在を再計測した。修正前（旧`WARM_UP_EXTRA_HEADROOM_BYTES`＝+1GiB）はPSS 108,062KBのまま20秒経過後もモデル非常駐（§3.3「F-2b」記載の不発）だったのに対し、修正後（新+512MB）はPSSが**526,475KB**まで増加し、ウォームアップが発動しエンジンが常駐したことを実機で確認した。起動時点のavailMemは2,400,692kB≈2.29GiBで、新強化ガード要求1.75GiB（Qwen3-0.6Bの`defaultProfilePeakRamBytes`1.25GiB＋新`WARM_UP_EXTRA_HEADROOM_BYTES`512MB）を上回っており、単体テスト（T-P95-54・T-P95-63）が固定した境界の実機側での成立を裏付けた。F-2bはこれをもって実機検証も完了する。
+
+### PR-1実機検証結果: GPU=NO_GO確定（OpenCLライブラリ非公開、2026-08-12実施）
+
+オーケストレーターが`GpuBackendProbeTest`をA54実機で実行し、`build/agent-logs/phase9.5-gpu-probe-logcat.log`（14行）へ記録した。
+
+**CPU側（完走）**: `modelLoadMs=1092`・`firstTokenS=2.6700296774999996`（TTFT約2.67秒）・`decodeTokPerS=9.706930443053377`（約9.71tok/s）・`peakTotalPssKb=1039485`・`schemaValid=true`。
+
+**GPU側（Engine初期化は成功、推論で失敗）**: `modelLoadMs=6286`・`afterInitTotalPssKb=1459784`まではCPU側と同様に完走したが、続く`sendMessage`（初回推論呼び出し）で`LiteRtLmJniException: Failed to call nativeSendMessage: UNKNOWN: UNKNOWN: Can not find OpenCL library on this device`が発生し失敗した。プローブのGPU_RESULT判定行は`GPU_RESULT=NO_GO reason=INIT_OR_INFERENCE_FAILED`。
+
+**判定**: A54（Samsung Galaxy A54、SoC SCG21・One UI）はハードウェアとしてMali-G68 GPUを搭載しているが、OSがOpenCLライブラリをアプリ（NDK経由）へ公開していないため、LiteRT-LMのGPUバックエンド（内部でOpenCLへ委譲するdelegate実装と見られる）は実行不能——**GPU=NO_GO確定**。§3.5「本採用（production defaultsをGPUへ切替）は結果を踏まえたユーザー判断」（§12確認事項1）は、判断すべき対象自体が実機で成立しなかったため**NO_GOにより消滅**する。
+
+### PR-2裁定: マスク模範例・カテゴリ条件付きecho検出は縮退（2026-08-12）
+
+L1-b（few-shotのuserTurnを`[EVENT_TITLE]`等へマスクする設計）・R1b（`ContentSanityChecker`へのカテゴリ条件付きecho検出追加）について、プローブを実施せず縮退（descope）する判断をオーケストレーターが下した。根拠は3点:
+
+1. **L2防御が実務上十分**: 本フェーズを通じた全計測（M・A/B各回・GPU probe含む）でecho発生は0件——既存のR1a（模範例タイトルのecho検出、常時reject）で実害が観測されていない。
+2. **L1-b自体がF-1と同型のリスクを負う**: few-shotの模範例構成を変更する（`userTurn`をマスクへ差し替える）ことは、F-1がカテゴリ条件選択で実証した「模範例構成の変更がQwen3-0.6Bの0.6B・現行プロンプト予算下での品質を崩しうる」というリスクをそのまま継承する。エコー実害が0件という前提①のもとでは、この構造的リスクに見合う便益が確認できていない。
+3. **R1bがF-1のカテゴリ条件付けに依存する**: R1bの「カテゴリ一致判定」はF-1が確立するはずだったカテゴリ推定基盤の応用だが、F-1自体がA/B実測2回で陰性・ロールバック確定済み（§3.2「F-1c」）——依存するレバー自体が計測駆動フェーズで否定されている。
+
+**結論**: PR-2プローブは実施せず、Phase 12（品質定量化環境の整備後）での再評価へ申し送る。§3.6「本フェーズの成果物はプローブ結果と採否提案」は不成立となり、§12確認事項3「L1-b／R1bの採否基準（エコー率がベースライン比50%以下、かつ目視品質劣化なしの場合に採用を提案）」は**判断対象（プローブ結果）自体が存在しないため縮退により消滅**する。
 
 ---
