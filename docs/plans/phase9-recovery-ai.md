@@ -3,7 +3,7 @@
 > 対象仕様: §73「Phase 9・Local AI Recovery」・§32「Recovery Option」・§33「Recoveryの優先原則」・§34「ユーザー最終決定」・§15「LLMに禁止すること」・§19「AI OFF時でも動作すること」・§20「Structured Output」・§21「AI Promptの言語非依存化」・§61「MVPに入れない機能」・§88「Developer UX Principle」
 > 前提基盤: Phase 6（`BasicRecoveryEngine`・`RecoveryOption`/`RecoveryContext`/`RecoveryPlan`・S-2/U-3「delay message」除外）・Phase 7（`LocalLanguageModel.generateRecovery`契約scaffold・`AIRecoveryResponse`型・§18申し送り5）・Phase 8（`LocalAiPlanContextualizer`overlay方式・B1裁定）・Phase 8.5（`ModelSelector`自動選択・ADR-0062 modelPath配線是正・§12 Qwenエコー実例）
 > 種別: 新機能（起案のみ・コード変更禁止）
-> 承認状態: **コミット1 Green検収合格・コミット済み（`dca7150`）。コミット2（L2/L3/L5品質防御ハーネス）Green検収合格・コミット済み（`81eec58`）。コミット3（UI配線: RecoveryOptionText/RecoveryScreen/AppContainer）Green完了・検収待ち（:app:testDebugUnitTest tests=719/skipped=1/failures=0/errors=0〔JUnit XML集計で照合、既存713件無傷〕・:app:lintDebug error=0/warning=23〔--rerun-tasksで再確認・コミット2から不変〕。resolveRecoveryOptionExplanationにaiExplanation非null・非空優先分岐を実装、RecoveryScreenのexplanation Textへminlines=2（レイアウト安定swap・A-4）、AppContainerへlocalAiRecoveryContextualizer（localAiPlanContextualizerと同型のLinkageError防御）をby lazy新設しRecoveryViewModel初期化子へ配線。C1/C2から持ち越しのRefactor候補（LiteRtLmLocalLanguageModelのbuildConversationConfig/buildRecoveryConversationConfig等の重複）は評価のうえ本ターンでは非実施と判断（理由は完了報告参照）。まだコミットしていない（コミット3メッセージは検収時に受領予定）**
+> 承認状態: **コミット1（`dca7150`）・コミット2（`81eec58`）・コミット3（`3c0ce4c`）とも実装完了・コミット済み。A54実機受け入れ（§10）2026-08-11実施・合格（§14参照）。ADR-0063正式起票済み（`DECISIONS.md`）。Phase 9（仕様§73 Local AI Recovery）完了**
 
 ---
 
@@ -400,3 +400,48 @@ enum class SanityRejectReason { FEW_SHOT_ECHO, MIN_QUALITY, TITLE_COPY, FABRICAT
 
 1. **A-8（JSONクレンジング共通化）の前提誤り**: `SchemaValidator`に「前置き文/コードフェンスを剥がしてJSONを抽出する」処理は実在しない。`grep`実測と`SchemaValidatorTest.tSch19_markdownFencedJson_isInvalidNotSilentlyStripped`（テスト名が「黙って剥がさず不合格にする」という逆方針を明示）で確認済み。`RecoverySchemaValidator`は「共通処理の再利用」ではなく「同一の非寛容パース方針の独立採用」として設計した（§3.4）。
 2. **A-6（Mutex直列化）の調査過程の自己訂正**: 当初の調査で`ai/adapter/LiteRtLmLocalLanguageModel.kt`の`engineLifecycleMutex`のみを確認し、これが`obtainEngine`（Engine取得）のみを保護し実際の推論呼び出し（`Conversation.sendMessage`）はmutexの外側で実行されることを発見したため、「Plan/Recovery推論は直列化されていない未対策の隙間」と一度結論した（この時点で計画書へも誤った結論を反映していた）。その後、`AiFallbackReasonTest.kt`のコメント（「T-GW-15のMutex直列化採用」）を手がかりに`LocalAiGateway.kt`を再確認したところ、**`LocalAiGateway`自身が別途`inferenceMutex`（T-GW-15、既存テスト`tGw15_concurrentCalls_neverOverlapInsideModel`が回帰ロック済み）を持ち、`generatePlan`の`checkInstalledModel`〜`invokeModel`（実推論呼び出しを含む）の全区間を`inferenceMutex.withLock { }`で包んでいる**ことを確認した。当初の結論は調査範囲が不足しており誤りだったため訂正し、正しくは「`generateRecovery`が既存`inferenceMutex`パターンを踏襲すれば、Gatewayレベルで既に実推論を含めた完全な直列化が成立する」である（§8・§9決定7を訂正済みの内容へ更新）。
+
+---
+
+## §14. A54実機受け入れ結果（2026-08-11実施・合格）
+
+オーケストレーターがA54（SCG21）実機で計画書§10の受け入れ手順を実施し、adb/スクリーンショットで直接取得した実測事実を以下に記録する（脚色禁止・観測されたとおりに記載）。
+
+**実施環境**: A54（SCG21）・日常使用状態（Phase 8.5§12・§9と同一運用条件）・実施時刻21:36〜21:40・ワイヤレスデバッグ接続・Phase 9最終ビルド（コミット`3c0ce4c`）を`installDebug`・実施直前の空きメモリ`availMem`＝2.24GiB（`kill-all`後測定）・`selected_model_id`＝`auto`のまま変更なし（§10-4の前提条件）。
+
+### 1. プラン側エコー防御の実機通過（§10-5相当）
+
+「歯科検診」という予定（23:30開始へ移動して作成）のプラン画面において、23:05のステップに正当なAI生成文言「歯科検診を受ける場所を確認する」が描画された。これは**同カテゴリの正当な出力がR1a／R2で誤爆しないこと**の実機確認であり、敵対的レビューが最も重視した懸念（単一ルールでは「本物の歯科検診の予定に対しAIが正当に出力したケースまで誤って弾いてしまう」というR1分割の動機、§4.2「R1分割（両レビュー一致・最重要）」）への実機裏付けとなる。
+
+**限界の正直な記載**: エコーが実際に発生し、それを防御機構が退けた（Retry昇格→Fallback縮退）という「発生→防御作動」の外形を実機で意図的に再現することは、モデル出力が確率的事象であるため区別不能である（同一入力でも毎回エコーするとは限らない）。したがって本項が実機で確認したのは「エコーが発生しなかった（あるいは発生しURetryで解消した）正常系」のみであり、**防御機構そのものの動作保証はJVMユニットテスト（T-P9-19「PrimaryがエコーしL2がrejectしRetryで解消」・T-P9-20「Primary/Retry双方がエコーしFallbackへ縮退」、いずれもPhase 8.5§12.5の実例「歯科検診」エコーをそのまま固定化した実例接地テスト）が担う**、という役割分担を明記する。
+
+証拠: `docs/evidence/screenshots/phase9/a54-p9-plan-after.png`
+
+### 2. Recovery AI差し替え = 合格（§10-3）
+
+Execution画面開始後、DEBUG「遅延をシミュレート」操作でRecovery画面へ遷移した。表示されたexplanationは、まずBasic静的文言「ステップを省略せず、現在のプランのまま進めます。」が即時表示され、その後約25秒以内（ウォームエンジン状態）にAI生成文言「歯科検診の予約を必ずしも行う必要がある」へ差し替わった。
+
+差し替え前後で以下がいずれも不変であることを確認した（§13相当の構造保証、および計画書§3.5のレイアウト安定swapの実機成立）:
+- タイトル文言
+- 到着予定時刻21:59（`resolveRecoveryOptionExplanation`とは独立したETAラベル行、testTag`recovery_option_eta_<id>`）
+- カード寸法（`minLines = 2`予約により、explanationの文字数がBasic→AIで変化してもタップターゲットの位置がガタつかない）
+
+証拠: `docs/evidence/screenshots/phase9/a54-p9-recovery-basic.png`（Basic文言、差し替え前）→`docs/evidence/screenshots/phase9/a54-p9-recovery-after.png`（AI文言、差し替え後）
+
+### 3. 品質の正直な記録
+
+AI生成explanation「歯科検診の予約を必ずしも行う必要がある」は、Qwen3-0.6Bというモデル規模なりに文意がぎこちない（「必ずしも行う必要がある」という不自然な言い回し）。**品質防御ハーネス（L2）の通過自体は正当である**——few-shotエコーではない・R2(c)の動詞相当表現を含む・数字/時刻の捏造を含まない、という判定基準はいずれも満たしている。文意の自然さ自体の向上はハーネスの守備範囲外であり、Phase 9.5（L1: few-shot再設計）・Phase 12（Analytics定量化基盤によるfallback率・reject理由の定量把握）へ既に申し送り済みの既知の限界として扱う（§4.6・§4.5参照）。
+
+### 4. modelPath配線の実機確認（§10-4）
+
+`selected_model_id`＝`auto`のまま変更せず、Plan・Recovery双方の生成が完走した。これは`generateRecovery`専用の解決経路が存在しない（`ModelSelector`によるauto解決をPlan/Recoveryが共有している）ことの実機確認であり、T-P9-27（born-green回帰）が机上で保証していた設計が実機でも成立することを確認した。
+
+### 5. 後処理
+
+テスト実行に伴う通知の残留を防ぐため、アプリのforce-stopを実施した。受け入れ手順で作成したテスト予定「歯科検診」はカレンダーに残存させたまま（削除はユーザー判断に委ねる）。
+
+### 6. 受け入れ判定
+
+**計画書§10が定める主目的（Recovery AI差し替えの実機成立・エコー防御の実機下での非誤爆・modelPath共有経路の実機確認・レイアウト安定swapの実機成立）はすべて合格**。Phase 9（仕様§73 Local AI Recovery）を完了と判定する。
+
+証拠一式（5枚、`docs/evidence/screenshots/phase9/`）: `a54-p9-top.png`・`a54-p9-plan-basic.png`・`a54-p9-plan-after.png`・`a54-p9-recovery-basic.png`・`a54-p9-recovery-after.png`
