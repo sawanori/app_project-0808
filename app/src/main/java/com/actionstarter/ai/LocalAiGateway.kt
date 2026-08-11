@@ -135,6 +135,19 @@ import java.util.Locale
  *   末尾・既定値付きパラメータとして追加しており、既存呼び出し元（名前付き引数で構築する
  *   `SettingsAiSafetyTest`等）との後方互換を保つ——ADR-0053の`ModelStorageImpl(context,
  *   catalog=..., preferences=null)`と同型のパターン。
+ *
+ *   **既定値へ`engineLoadStateSource`を自動配線（Phase 9.5新設、計画書§3.10 F-5b、
+ *   実機A/B実測で発見した統合ギャップの修正）**: 既定値は`ModelSelectorImpl(deviceCapability,
+ *   modelStorage, engineLoadStateSource = model as? EngineLoadStateSource)`——先行パラメータ
+ *   [model]をKotlinの既定値式から参照する（Kotlinの既定値式は同一コンストラクタ内の先行
+ *   パラメータを参照可能。ADR-0053の`ModelStorageImpl`と同型の既定値パターン）。**旧既定値
+ *   `ModelSelectorImpl(deviceCapability, modelStorage)`（`engineLoadStateSource`省略＝`null`）
+ *   のままだと、`modelSelector`を明示的に渡さない全ての呼び出し元でF-5（§3.10）のロード済み
+ *   免除が機能しない**——`AppContainer`は明示配線済みのため無関係だが、`PerformanceBaselineProbeTest`
+ *   （`modelSelector`引数を渡さず本既定値に委ねている）はこの経路を踏んでおり、実機A/B実測で
+ *   warm試行が依然`auto: no candidate fits`で即Fallbackすることが判明した（T-P95-49で回帰
+ *   ロック）。既定値を本来あるべき自動配線へ変更することで、`modelSelector`を明示的に渡さない
+ *   将来の呼び出し元でもF-5が同様に機能する。
  */
 class LocalAiGateway(
     private val model: LocalLanguageModel,
@@ -143,7 +156,8 @@ class LocalAiGateway(
     private val deviceCapability: DeviceCapability,
     private val preferences: AiPreferences,
     private val requestTimeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
-    private val modelSelector: ModelSelector = ModelSelectorImpl(deviceCapability, modelStorage)
+    private val modelSelector: ModelSelector =
+        ModelSelectorImpl(deviceCapability, modelStorage, engineLoadStateSource = model as? EngineLoadStateSource)
 ) {
     private val schemaValidator = SchemaValidator()
     private val contentSanityChecker = ContentSanityChecker()

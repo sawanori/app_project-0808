@@ -5,6 +5,7 @@ import android.content.Context
 import com.actionstarter.ai.adapter.requiresEngineReload
 import com.actionstarter.ai.model.DeviceCapability
 import com.actionstarter.ai.model.DeviceCapabilityImpl
+import com.actionstarter.ai.model.ModelCatalog
 import com.actionstarter.ai.model.ModelCatalogEntry
 import com.actionstarter.ai.model.ModelLicense
 import com.actionstarter.ai.model.ModelSelectorImpl
@@ -1746,5 +1747,60 @@ class LocalAiGatewayTest {
             result !is AiResult.Fallback || (result as AiResult.Fallback).reason != AiFallbackReason.OUT_OF_MEMORY_PREVENTED
         )
         assertEquals(1, model.generatePlanCallCount)
+    }
+
+    // T-P95-49（F-5b、実機A/B実測で発見した既定値配線ギャップ、計画書§3.10追記）: 異常→正常 -
+    // T-P95-48はModelSelectorImplを明示構築してengineLoadStateSourceを渡していたため、
+    // LocalAiGateway自身の既定値`modelSelector: ModelSelector = ModelSelectorImpl(deviceCapability,
+    // modelStorage)`（engineLoadStateSource省略＝null）は一切検証していなかった。オーケストレーター
+    // 実施のA/B実機実測（build/agent-logs/phase9.5-f45-ab-logcat.log）で、この既定値経由で構築される
+    // 呼び出し元（`PerformanceBaselineProbeTest.probePlanBaseline`／`probeRecoveryBaseline`が実例、
+    // いずれも`modelSelector`引数を渡していないことをソース確認済み）ではF-5免除が発動せず、warm試行が
+    // 依然`auto: no candidate fits`で即Fallbackすることが判明した。AppContainerは明示配線済みのため
+    // 無関係（本番は無傷）。
+    //
+    // 本テストはLocalAiGatewayを`modelSelector`引数を省略して構築し、既定値経由の配線を直接検証する。
+    // ModelSelectorImplの候補は既定でModelSelector.DEFAULT_AUTO_CANDIDATES（実カタログ、sizeBytes・
+    // sha256とも実物）になるため、実物344,437,808バイトのQwen3-0.6Bファイルを用意できない都合上、
+    // 本テストはcheckInstalledModelのサイズ照合より先（＝ModelSelectorImpl.select()がロード済み候補を
+    // 除外しなくなったこと）までを、Fallback理由がOUT_OF_MEMORY_PREVENTED（"auto: no candidate
+    // fits"）からMODEL_CORRUPTED（サイズ不一致——select()が実際にQwenを返した証拠）へ遷移することで
+    // 検証する（select()がnullを返す限りcheckInstalledModelのサイズ照合には到達し得ないため、
+    // MODEL_CORRUPTEDへの遷移はselect()の修正が効いたことの確実な証拠になる）。Success自体の再確認は
+    // 実機`PerformanceBaselineProbeTest`のA/B再実測（オーケストレーター実施）に委ねる。
+    @Test
+    fun tP95_49_defaultModelSelector_autoSelection_loadedCandidateNoLongerExcludedByOomGuard() = runTest {
+        val storage = installedModelStorageWithEntries(listOf(ModelCatalog.QWEN3_0_6B_INT4_BLOCK32))
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_49")
+            .apply { selectedModelId = AiPreferences.AUTO_SELECT_MODEL_ID }
+        val loadedPath = storage.finalFile(ModelCatalog.QWEN3_0_6B_INT4_BLOCK32).absolutePath
+        val model = LoadAwareFakeModel(loadedPath = loadedPath, planRawJson = validSingleStepResponse())
+        val gateway = LocalAiGateway(
+            // modelSelectorを意図的に省略し、LocalAiGateway自身の既定値
+            // `ModelSelectorImpl(deviceCapability, modelStorage)`へ委ねる
+            // （`PerformanceBaselineProbeTest`が実際に使っている構築パターンと同型、F-5bの回帰ロック）。
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapabilityWith(totalMemBytes = 8L * GB, availMemBytes = 100L * 1024 * 1024, "arm64-v8a"),
+            preferences = preferences
+        )
+
+        val result = gateway.generatePlan(planningContext())
+
+        assertTrue(
+            "既定値modelSelector経由でもFallbackへは至るはずです（availMemが極端に低いため何らかの" +
+                "ガードには掛かる。reasonの遷移で選定成否を判別する）(T-P95-49、F-5b): $result",
+            result is AiResult.Fallback
+        )
+        val fallback = result as AiResult.Fallback
+        assertEquals(
+            "select()がQwenを候補として返した証拠として、Fallback理由はOUT_OF_MEMORY_PREVENTED" +
+                "（旧既定値バグ＝select()がロード済み候補を除外）ではなくMODEL_CORRUPTED" +
+                "（実カタログの実サイズ344,437,808バイトとfixtureサイズの不一致、" +
+                "checkInstalledModelのサイズ照合）へ遷移するべきです(T-P95-49、F-5b、A/B実測で発見)",
+            AiFallbackReason.MODEL_CORRUPTED,
+            fallback.reason
+        )
     }
 }
