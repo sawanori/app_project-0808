@@ -280,14 +280,18 @@ class ModelComparisonProbeTest {
             installModel(storage, entry, pushedModel)
             preferences.aiEnabled = true
 
+            // Phase 9.5 コミット0（`docs/plans/phase9.5-performance-quality.md`§2発見1）:
+            // 旧`modelPathProvider`コンストラクタ引数はPhase 8.5（ADR-0062決定5）で廃止済み
+            // （modelPathはLocalAiGateway経由でgeneratePlan/generateRecovery呼び出しごとに
+            // 明示的に渡される設計へ変更された）。本ファイルは追随漏れでコンパイル不能になって
+            // いたため機械的に除去した（挙動変更なし、storageは既にgatewayへ渡している）。
             val model = if (shotCount != null && maxNumTokens != null) {
                 LiteRtLmLocalLanguageModel(
-                    modelPathProvider = { storage.installedModelPath()!! },
                     shotCount = shotCount,
                     maxNumTokens = maxNumTokens
                 )
             } else {
-                LiteRtLmLocalLanguageModel(modelPathProvider = { storage.installedModelPath()!! })
+                LiteRtLmLocalLanguageModel()
             }
 
             val gateway = LocalAiGateway(
