@@ -3,7 +3,7 @@
 > 対象仕様: §18「モデル配布」（"端末性能によってモデルを選択できる構造を検討する。"）・§19「AI OFF時でも動作すること」
 > 前提基盤: Phase 7 P7-C4/C6/C8（`DeviceCapability`/`ModelStorage`/`AiPreferences`/`ModelCatalog`確定）・ADR-0048（4型interface化）・ADR-0053（`installedEntry`のselectedModelId優先解決）・ADR-0057（`defaultProfilePeakRamBytes`）・phase8-a54-ram-tier-fix.md §10（実機根拠）
 > 種別: 新機能（Phase 9より先行実装、ユーザー決定）。F-A/F-Bの2コミット構成を提案。
-> 承認状態: **Step 2アーキテクトレビュー済み（Pass 1 CRITICAL 1件修正反映）・ユーザー承認済み（§11含む・2026-08-11）。Step 4（F-A Green）完了・F-B Red待ち**
+> 承認状態: **Step 2アーキテクトレビュー済み（Pass 1 CRITICAL 1件修正反映）・ユーザー承認済み（§11含む・2026-08-11）。F-A Green完了・コミット済み（9ec7218）。F-B Green完了・コミット2待ち（ADR-0062起票済み・:app:testDebugUnitTest tests=681/skipped=1/failures=0・:app:lintDebug error=0）**
 
 ---
 
@@ -197,6 +197,21 @@ Qwen3-1.7Bは自動選択の候補に**含めない**（P7-C8既知: 0.6Bより�
 | T-P85-22 | エッジ | 明示選択中のモデルを削除した直後のUI状態（§7参照） | [Red] |
 | T-P85-23 | 回帰 | 既存18件中`selectedModel`単数依存分を新シグネチャで書き換え、意図・アサーションは維持 | [既存書換] |
 
+**Green段階での追補（§11確認事項1・2のテスト網羅性確保）**: 本表（起票時点=Step 3着手前）には
+§11確認事項1「行内注記（`isMemoryInsufficient`）」・確認事項2「『自動』行の一文説明」に
+独立IDが割り当てられていなかった（§11はStep 2完了後に確定した事項だが、本表への反映漏れが
+あった）。Green実装（本コミット）に伴い、`SettingsViewModelTest.
+uiState_models_isMemoryInsufficient_trueOnlyForEntriesExceedingCurrentAvailableMemory`（1件）と
+`SettingsScreenTest`の5件（`autoRow_displaysLabelAndDescription_andSelectionInvokesCallback`・
+`modelRow_insufficientMemory_showsWarningText`・`modelRow_sufficientMemory_
+doesNotShowWarningText`・`otherSpecificRow_downloadButton_disabledWhileAnotherSpecificRowIsDownloading`・
+`allRows_downloadButtons_enabledWhenNoRowIsDownloading`）を追加した（計6件、Red先行ではなく
+Green段階での追加である点を完了報告で開示済み）。また、`onDownloadRequested_success_
+transitionsToInstalled_andPersistsSelectedModelId`（T-P85-23の機械的書換で温存されていたが
+本計画の確定設計「ダウンロード完了は選択を自動変更しない」と矛盾する齟齬）を
+`onDownloadRequested_success_transitionsToInstalled_doesNotChangeSelectedModelId`へ改名し
+アサーションを是正した（既存18件の頭数はそのまま、内容修正）。
+
 ### 全体回帰
 
 | ID | 内容 |
@@ -221,7 +236,9 @@ Qwen3-1.7Bは自動選択の候補に**含めない**（P7-C8既知: 0.6Bより�
 
 ## §8. ADR起票方針
 
-起票直前の再確認（既存慣行）: `grep -n "^### ADR-" DECISIONS.md | tail -3`を計画書起案時点で実行した結果、最新確定ADRは**ADR-0061**（本Phase 8で本計画書起案者自身が起票）。したがって本計画の決定は**ADR-0062**（暫定）として、Step 4実装完了後に同じ手順で再確認のうえ`DECISIONS.md`へ正式起票する。記録する決定:
+起票直前の再確認（既存慣行）: `grep -n "^### ADR-" DECISIONS.md | tail -3`を計画書起案時点で実行した結果、最新確定ADRは**ADR-0061**（本Phase 8で本計画書起案者自身が起票）。したがって本計画の決定は**ADR-0062**として、Step 4実装完了後（F-A・F-B双方完了時点）に同じ手順で再確認のうえ`DECISIONS.md`へ正式起票する方針とした。
+
+**起票済み（F-B Green完了時点、2026-08-11）**: F-B完了に伴い`DECISIONS.md`へADR-0062を正式起票した（起票直前に再grepし、ADR-0061が引き続き最新であることを確認済み）。記録した決定は下記5点に加え、§11確認事項1・2（Settings行内注記・「自動」行の一文説明）を決定6として統合記録した。以下は起案時点の当初記述:
 1. `AiPreferences.selectedModelId`の既定値をGemma4固定から`"auto"`センチネルへ変更する（2026-08-10決定の改訂）
 2. 明示選択時は代替なしで縮退する（`ModelSelector`を経由しない）。ただし`ModelStorage.installedEntry()`の既存ファイル欠落フォールバックはスコープ外として維持する
 3. Qwen3-1.7Bを自動選択の対象外とする（P7-C8既定の品質劣化・非推奨判断の踏襲）

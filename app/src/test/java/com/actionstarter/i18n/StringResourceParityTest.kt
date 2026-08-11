@@ -261,10 +261,13 @@ class StringResourceParityTest {
     //
     // **P7-C6追補（T-SET-7、F97 Settings画面）**: 105 + 21（Settings画面新規21キー、
     // [tSet7_settingsNewKeys_existInBothLocales]の一覧と対応）= 126へ更新した。
+    // **Phase 8.5 F-B追補（計画書§3設計F-B-5・§11確認事項1、ADR-0062）**: 126 + 4（「自動」行・
+    // 推奨バッジ・メモリ不足注記用の新規4キー、[tP85_settingsFBNewKeys_existInBothLocales]の
+    // 一覧と対応）= 130へ更新した。
     @Test
     fun tP11p1_keyCount_reflectsPhase11NetChange_andBothLocalesStayInSync() {
-        assertEquals("en key count after P7-C6 (126 = 105 + 21 Settings keys)", 126, enStrings.size)
-        assertEquals("ja key count after P7-C6 (126 = 105 + 21 Settings keys)", 126, jaStrings.size)
+        assertEquals("en key count after Phase 8.5 F-B (130 = 126 + 4 new Settings keys)", 130, enStrings.size)
+        assertEquals("ja key count after Phase 8.5 F-B (130 = 126 + 4 new Settings keys)", 130, jaStrings.size)
     }
 
     // T-SET-7（計画書§12.6、P7-C6・F97）: 正常系 - Settings画面の新規21キーがen/ja両方に存在する
@@ -299,6 +302,25 @@ class StringResourceParityTest {
         for (key in settingsNewKeys) {
             assertTrue("P7-C6 new key '$key' missing from en strings.xml", key in enStrings)
             assertTrue("P7-C6 new key '$key' missing from ja strings.xml", key in jaStrings)
+        }
+    }
+
+    // Phase 8.5 F-B（計画書§3設計F-B-5・§11確認事項1、ADR-0062）: 正常系 - モデル一覧「自動」行・
+    // 推奨バッジ・メモリ不足注記用の新規4キーがen/ja両方に存在する（tSet7_settingsNewKeysと同型の
+    // パリティ回帰ガード）。
+    @Test
+    fun tP85_settingsFBNewKeys_existInBothLocales() {
+        val settingsFBNewKeys = listOf(
+            "settings_model_option_auto",
+            "settings_model_option_auto_description",
+            "settings_model_recommended_badge",
+            "settings_model_insufficient_memory_warning"
+        )
+
+        assertEquals("Phase 8.5 F-B Settings screen must add exactly 4 new keys", 4, settingsFBNewKeys.size)
+        for (key in settingsFBNewKeys) {
+            assertTrue("Phase 8.5 F-B new key '$key' missing from en strings.xml", key in enStrings)
+            assertTrue("Phase 8.5 F-B new key '$key' missing from ja strings.xml", key in jaStrings)
         }
     }
 

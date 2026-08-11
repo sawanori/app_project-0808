@@ -40,7 +40,11 @@ import com.actionstarter.features.planreview.PlanReviewScreen
 import com.actionstarter.features.planreview.PlanReviewUiState
 import com.actionstarter.features.recovery.RecoveryScreen
 import com.actionstarter.features.recovery.RecoveryUiState
+import com.actionstarter.ai.model.ModelCatalogEntry
+import com.actionstarter.ai.model.ModelLicense
 import com.actionstarter.features.settings.ModelDownloadStatus
+import com.actionstarter.features.settings.ModelOption
+import com.actionstarter.features.settings.ModelOptionUiState
 import com.actionstarter.features.settings.SettingsScreen
 import com.actionstarter.features.settings.SettingsUiState
 import org.junit.Assert.assertTrue
@@ -358,6 +362,38 @@ class FontScaleResilienceTest {
         composeTestRule.onNodeWithText(context.getString(R.string.execution_five_min_later_button)).assertIsDisplayed()
     }
 
+    /**
+     * Phase 8.5 F-B追加（計画書`docs/plans/phase8.5-adaptive-model-selection.md`、ADR-0062）。
+     * [SettingsUiState.models]が単数`modelStatus`から複数行へ変わったことに伴い、本ファイルの
+     * fontScale耐性検証（「要素がクリップしないか」であり特定モデルの内容自体は無関係）向けに
+     * [ModelOption.Specific]側の行を1件だけ持つ状態を組み立てる。
+     */
+    private val fontScaleTestEntry = ModelCatalogEntry(
+        id = "font-scale-test-model",
+        displayName = "Font Scale Test Model",
+        downloadUrl = "https://example.invalid/font-scale-test-model.litertlm",
+        sha256 = "0".repeat(64),
+        sizeBytes = 1_000_000L,
+        peakRamBytes = 1L,
+        contextLength = 1,
+        quantization = "test",
+        license = ModelLicense.APACHE_2_0,
+        requiresNoticeFile = false
+    )
+
+    private fun fontScaleTestSettingsUiState(status: ModelDownloadStatus): SettingsUiState = SettingsUiState(
+        models = listOf(
+            ModelOptionUiState(
+                option = ModelOption.Specific(fontScaleTestEntry),
+                status = status,
+                isRecommended = false,
+                isSelected = false,
+                requiredBytesForDownload = 1_500_000L
+            )
+        ),
+        availableBytes = 2_000_000L
+    )
+
     // T-SET-8（計画書§12.6、P7-C6・F97）: 正常系 - SettingsScreenがfontScale=1.5でもAIトグル・
     // モデル状態・ダウンロードボタン・容量表示がクリップせず表示される（未DL状態、要素密度が
     // 最も高い分岐）。
@@ -365,16 +401,17 @@ class FontScaleResilienceTest {
     fun tSet8_settingsScreen_fontScale1_5x_mainElementsStayDisplayed() {
         composeTestRule.setContent {
             DeviceConfigurationOverride(DeviceConfigurationOverride.FontScale(1.5f)) {
-                SettingsScreen(uiState = SettingsUiState(modelStatus = ModelDownloadStatus.NotInstalled))
+                SettingsScreen(uiState = fontScaleTestSettingsUiState(status = ModelDownloadStatus.NotInstalled))
             }
         }
+        val tagId = fontScaleTestEntry.id
 
         composeTestRule.onNodeWithTag("settings_ai_toggle").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("settings_model_status_text").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("settings_download_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_model_status_text_$tagId").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_download_button_$tagId").assertIsDisplayed()
         // Robolectric既定ビューポート（320×470dp）をfontScale=1.5x×2枚のCardが超えるため、
         // 容量表示はperformScrollTo()が必要（本ファイルの既存T-P11F-3/5と同型の対応）。
-        composeTestRule.onNodeWithTag("settings_capacity_required_text").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_capacity_required_text_$tagId").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("settings_capacity_available_text").performScrollTo().assertIsDisplayed()
     }
 
@@ -385,12 +422,13 @@ class FontScaleResilienceTest {
     fun tSet8_settingsScreen_japaneseLocaleWithFontScale1_5x_mainElementsStayDisplayed() {
         composeTestRule.setContent {
             DeviceConfigurationOverride(DeviceConfigurationOverride.FontScale(1.5f)) {
-                SettingsScreen(uiState = SettingsUiState(modelStatus = ModelDownloadStatus.Installed))
+                SettingsScreen(uiState = fontScaleTestSettingsUiState(status = ModelDownloadStatus.Installed))
             }
         }
+        val tagId = fontScaleTestEntry.id
 
         composeTestRule.onNodeWithTag("settings_ai_toggle").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("settings_model_status_text").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("settings_delete_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_model_status_text_$tagId").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("settings_delete_button_$tagId").assertIsDisplayed()
     }
 }

@@ -220,6 +220,16 @@
     <string name="settings_ai_unsupported_abi_reason">This device\'s processor isn\'t supported by Private AI.</string>
     <string name="settings_model_section_title">On-device model</string>
     <string name="settings_model_name_label">Model</string>
+    <!-- Phase 8.5 F-B (plan doc §3 design F-B-5, §11 confirmations 1-2, ADR-0062). New strings for
+         the "Auto" row and recommendation badge in the model list. -->
+    <string name="settings_model_option_auto">Automatic (recommended)</string>
+    <string name="settings_model_option_auto_description">Automatically picks Gemma 4 or Qwen 3 based on this device\'s free memory.</string>
+    <string name="settings_model_recommended_badge">Recommended for this device</string>
+    <!-- Phase 8.5 F-B §11 confirmation 1 (ADR-0062): per-row warning shown when
+         DeviceCapability.hasAvailableMemory() reports this device's current free memory can't
+         cover this model's requirement (defaultProfilePeakRamBytes + MEMORY_SAFETY_MARGIN_BYTES).
+         Evaluated independently of download status; no removal prompt is shown (confirmed answer). -->
+    <string name="settings_model_insufficient_memory_warning">This model may not run reliably with this device\'s current available memory.</string>
     <string name="settings_model_status_not_installed">Not downloaded</string>
     <string name="settings_model_status_downloading_format">Downloading… %1$d%%</string>
     <string name="settings_model_status_installed">Downloaded and verified</string>

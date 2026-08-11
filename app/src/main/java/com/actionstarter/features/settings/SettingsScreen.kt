@@ -17,10 +17,11 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,32 +29,43 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.actionstarter.R
+import com.actionstarter.ai.model.ModelCatalogEntry
 import com.actionstarter.ai.model.ModelDownloadFailureReason
 
 /**
- * F97実装（計画書§7.1・§12.6・§13.5 S-6範囲裁定、P7-C6）。Settings画面（AIトグル・モデル状態・
- * DL/削除・容量表示のみ、S-6裁定によりフル機能Settingsは対象外）。
+ * F97実装（計画書§7.1・§12.6・§13.5 S-6範囲裁定、P7-C6／Phase 8.5 F-B）。Settings画面
+ * （AIトグル・モデル一覧「自動」＋各モデルのDL/削除・容量表示。S-6裁定によりフル機能Settingsは
+ * 対象外）。
  *
  * §10.6の疎結合規約により、画面遷移・ViewModelアクションはラムダ引数として受け取り、
- * NavController／ViewModelを直接参照しない（他画面と同型）。刷新済みテーマ
- * （`ui/theme`のティール配色・カード・余白）に合わせ、Card区画（AIトグル区画／モデル区画）で
- * 構成する。`ActionStarterNavHost`のScaffoldが既にsafe-drawing insetsを適用済みのため、
- * 本Composable自身はstatusBars等のpaddingを追加しない（[com.actionstarter.features.
- * eventselection.EventSelectionScreen]のKDoc「edge-to-edge insetsについての設計判断」と同型）。
+ * NavController／ViewModelを直接参照しない。
  *
- * testTag規約: "settings_back_button" / "settings_ai_toggle" /
- * "settings_ai_unsupported_reason" / "settings_model_status_text" /
- * "settings_download_progress" / "settings_download_button"（初回DL・retry兼用） /
- * "settings_delete_button" / "settings_capacity_required_text" /
- * "settings_capacity_available_text" / "settings_capacity_insufficient_warning"。
+ * **Phase 8.5 F-Bでの変更（計画書§3設計F-B-4、ADR-0062）**: モデル区画が単一モデルの状態表示から
+ * [SettingsUiState.models]をループする複数行表示へ変わった。「DL中は他行のDL/削除ボタンを
+ * 無効化」（T-P85-21・§7「DL中に別モデルのダウンロードが要求される」）は
+ * [ModelListSection]が`uiState.models.any { it.status is Downloading }`から導出し、
+ * [ModelOptionRow]／[ModelStatusContent]へ`isDownloadOrDeleteEnabled`として配線する
+ * （DL中の行自体はボタンを描画しないため、自行を除外する特別扱いは不要）。§11確認事項1
+ * （ADR-0062）の「行内注記」は[ModelOptionUiState.isMemoryInsufficient]が`true`の行に
+ * `settings_model_insufficient_memory_warning`を表示する（DL状態と独立、削除提案はしない）。
+ *
+ * testTag規約（行ごとに`ModelOption`のid相当のsuffixを付与、[modelOptionTagId]参照）:
+ * "settings_back_button" / "settings_ai_toggle" / "settings_ai_unsupported_reason" /
+ * "settings_model_row_&lt;id&gt;" / "settings_model_select_&lt;id&gt;" /
+ * "settings_model_recommended_badge_&lt;id&gt;" / "settings_model_insufficient_memory_warning_&lt;id&gt;" /
+ * "settings_model_status_text_&lt;id&gt;" / "settings_download_progress_&lt;id&gt;" /
+ * "settings_download_button_&lt;id&gt;" / "settings_delete_button_&lt;id&gt;" /
+ * "settings_capacity_required_text_&lt;id&gt;" / "settings_capacity_available_text" /
+ * "settings_capacity_insufficient_warning_&lt;id&gt;"。
  */
 @Composable
 fun SettingsScreen(
     uiState: SettingsUiState,
     onNavigateBack: () -> Unit = {},
     onAiEnabledToggled: (Boolean) -> Unit = {},
-    onDownloadRequested: () -> Unit = {},
-    onDeleteRequested: () -> Unit = {}
+    onModelSelected: (ModelOption) -> Unit = {},
+    onDownloadRequested: (ModelCatalogEntry) -> Unit = {},
+    onDeleteRequested: (ModelCatalogEntry) -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -76,15 +88,23 @@ fun SettingsScreen(
         Spacer(Modifier.height(20.dp))
         AiToggleSection(uiState = uiState, onAiEnabledToggled = onAiEnabledToggled)
         Spacer(Modifier.height(16.dp))
-        ModelSection(
+        ModelListSection(
             uiState = uiState,
+            onModelSelected = onModelSelected,
             onDownloadRequested = onDownloadRequested,
             onDeleteRequested = onDeleteRequested
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            text = stringResource(R.string.settings_capacity_available_format, uiState.availableBytes.toGigabytes()),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag("settings_capacity_available_text")
         )
     }
 }
 
-/** AIトグル区画（T-SET-1〜3）。 */
+/** AIトグル区画（T-SET-1〜3・T-P85-20）。多モデル化と無関係、無変更。 */
 @Composable
 private fun AiToggleSection(uiState: SettingsUiState, onAiEnabledToggled: (Boolean) -> Unit) {
     Card(
@@ -135,13 +155,30 @@ private fun AiToggleSection(uiState: SettingsUiState, onAiEnabledToggled: (Boole
     }
 }
 
-/** モデル区画（T-SET-4〜6。状態表示・DL/削除導線・容量表示）。 */
+/** [ModelOption]をtestTag／状態管理のキーへ変換する（[ModelOption.Auto]は固定文字列）。 */
+private fun modelOptionTagId(option: ModelOption): String = when (option) {
+    ModelOption.Auto -> "auto"
+    is ModelOption.Specific -> option.entry.id
+}
+
+/**
+ * モデル区画（T-SET-4〜6・T-P85-16〜22。Phase 8.5 F-Bで単一モデル表示から複数行表示へ変更）。
+ * [SettingsUiState.models]を行ごとにループし、非対応端末（[SettingsUiState.isDeviceSupported]
+ * が`false`）では一覧全体を無効化する（T-P85-20）。
+ *
+ * [anyRowDownloading]（T-P85-21）: いずれかの行が`Downloading`中なら、他行のDL/削除ボタンを
+ * 無効化する（§7「DL中に別モデルのダウンロードが要求される」、二重起動防止をUI層で担う設計）。
+ * DL中の行自体は[ModelStatusContent]の`Downloading`分岐がボタンを描画しないため、自行を除く
+ * 特別扱いは不要。
+ */
 @Composable
-private fun ModelSection(
+private fun ModelListSection(
     uiState: SettingsUiState,
-    onDownloadRequested: () -> Unit,
-    onDeleteRequested: () -> Unit
+    onModelSelected: (ModelOption) -> Unit,
+    onDownloadRequested: (ModelCatalogEntry) -> Unit,
+    onDeleteRequested: (ModelCatalogEntry) -> Unit
 ) {
+    val anyRowDownloading = uiState.models.any { it.status is ModelDownloadStatus.Downloading }
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -153,34 +190,113 @@ private fun ModelSection(
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            Spacer(Modifier.height(8.dp))
-            Row {
-                Text(
-                    text = stringResource(R.string.settings_model_name_label) + ": ",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = uiState.selectedModel.displayName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
+            uiState.models.forEach { row ->
+                Spacer(Modifier.height(12.dp))
+                ModelOptionRow(
+                    uiState = uiState,
+                    row = row,
+                    isDownloadOrDeleteEnabled = !anyRowDownloading,
+                    onModelSelected = onModelSelected,
+                    onDownloadRequested = onDownloadRequested,
+                    onDeleteRequested = onDeleteRequested
                 )
             }
-            Spacer(Modifier.height(4.dp))
-            ModelStatusContent(
-                status = uiState.modelStatus,
-                onDownloadRequested = onDownloadRequested,
-                onDeleteRequested = onDeleteRequested
-            )
-            Spacer(Modifier.height(12.dp))
-            CapacitySection(uiState)
         }
     }
 }
 
 @Composable
+private fun ModelOptionRow(
+    uiState: SettingsUiState,
+    row: ModelOptionUiState,
+    isDownloadOrDeleteEnabled: Boolean,
+    onModelSelected: (ModelOption) -> Unit,
+    onDownloadRequested: (ModelCatalogEntry) -> Unit,
+    onDeleteRequested: (ModelCatalogEntry) -> Unit
+) {
+    val tagId = modelOptionTagId(row.option)
+    Column(modifier = Modifier.testTag("settings_model_row_$tagId")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(
+                selected = row.isSelected,
+                onClick = { onModelSelected(row.option) },
+                enabled = uiState.isDeviceSupported,
+                modifier = Modifier.testTag("settings_model_select_$tagId")
+            )
+            val labelRes = when (row.option) {
+                ModelOption.Auto -> R.string.settings_model_option_auto
+                is ModelOption.Specific -> null
+            }
+            Text(
+                text = labelRes?.let { stringResource(it) } ?: (row.option as ModelOption.Specific).entry.displayName,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+            if (row.isRecommended) {
+                Text(
+                    text = stringResource(R.string.settings_model_recommended_badge),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.testTag("settings_model_recommended_badge_$tagId")
+                )
+            }
+        }
+        if (row.option == ModelOption.Auto) {
+            Text(
+                text = stringResource(R.string.settings_model_option_auto_description),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        // §11確認事項1（ADR-0062）: 現在の空きメモリでは動作しない可能性がある行への注記。
+        // DL状態とは独立（未DLでも表示する）。削除提案はしない（確定回答どおり注記のみ）。
+        if (row.isMemoryInsufficient) {
+            Text(
+                text = stringResource(R.string.settings_model_insufficient_memory_warning),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.testTag("settings_model_insufficient_memory_warning_$tagId")
+            )
+        }
+        val entry = (row.option as? ModelOption.Specific)?.entry
+        val status = row.status
+        if (entry != null && status != null) {
+            ModelStatusContent(
+                tagId = tagId,
+                status = status,
+                enabled = isDownloadOrDeleteEnabled,
+                onDownloadRequested = { onDownloadRequested(entry) },
+                onDeleteRequested = { onDeleteRequested(entry) }
+            )
+            Text(
+                text = stringResource(R.string.settings_capacity_required_format, row.requiredBytesForDownload.toGigabytes()),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("settings_capacity_required_text_$tagId")
+            )
+            if (uiState.availableBytes < row.requiredBytesForDownload) {
+                Text(
+                    text = stringResource(R.string.settings_capacity_insufficient_warning),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.testTag("settings_capacity_insufficient_warning_$tagId")
+                )
+            }
+        }
+    }
+}
+
+/**
+ * [enabled]（T-P85-21）: `false`のときDL/再試行/削除ボタンを無効化する（他行がDL中の場合、
+ * §7「UI層で他行のDL/削除ボタンを無効化」）。`Downloading`分岐自体はボタンを持たないため
+ * 影響を受けない。
+ */
+@Composable
 private fun ModelStatusContent(
+    tagId: String,
     status: ModelDownloadStatus,
+    enabled: Boolean,
     onDownloadRequested: () -> Unit,
     onDeleteRequested: () -> Unit
 ) {
@@ -190,13 +306,13 @@ private fun ModelStatusContent(
                 text = stringResource(R.string.settings_model_status_not_installed),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.testTag("settings_model_status_text")
+                modifier = Modifier.testTag("settings_model_status_text_$tagId")
             )
-            Spacer(Modifier.height(8.dp))
             Button(
                 onClick = onDownloadRequested,
+                enabled = enabled,
                 shape = MaterialTheme.shapes.large,
-                modifier = Modifier.testTag("settings_download_button")
+                modifier = Modifier.testTag("settings_download_button_$tagId")
             ) {
                 Text(stringResource(R.string.settings_download_button))
             }
@@ -207,14 +323,13 @@ private fun ModelStatusContent(
                 text = stringResource(R.string.settings_model_status_downloading_format, status.percent),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.testTag("settings_model_status_text")
+                modifier = Modifier.testTag("settings_model_status_text_$tagId")
             )
-            Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(
                 progress = { status.percent / 100f },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .testTag("settings_download_progress")
+                    .testTag("settings_download_progress_$tagId")
             )
         }
 
@@ -223,13 +338,13 @@ private fun ModelStatusContent(
                 text = stringResource(R.string.settings_model_status_installed),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.testTag("settings_model_status_text")
+                modifier = Modifier.testTag("settings_model_status_text_$tagId")
             )
-            Spacer(Modifier.height(8.dp))
             OutlinedButton(
                 onClick = onDeleteRequested,
+                enabled = enabled,
                 shape = MaterialTheme.shapes.large,
-                modifier = Modifier.testTag("settings_delete_button")
+                modifier = Modifier.testTag("settings_delete_button_$tagId")
             ) {
                 Text(stringResource(R.string.settings_delete_button))
             }
@@ -240,13 +355,13 @@ private fun ModelStatusContent(
                 text = stringResource(failureReasonTextRes(status.reason)),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.testTag("settings_model_status_text")
+                modifier = Modifier.testTag("settings_model_status_text_$tagId")
             )
-            Spacer(Modifier.height(8.dp))
             Button(
                 onClick = onDownloadRequested,
+                enabled = enabled,
                 shape = MaterialTheme.shapes.large,
-                modifier = Modifier.testTag("settings_download_button")
+                modifier = Modifier.testTag("settings_download_button_$tagId")
             ) {
                 Text(stringResource(R.string.settings_retry_button))
             }
@@ -263,34 +378,6 @@ private fun failureReasonTextRes(reason: ModelDownloadFailureReason): Int = when
     ModelDownloadFailureReason.HTTP_ERROR,
     ModelDownloadFailureReason.SIZE_EXCEEDED,
     ModelDownloadFailureReason.STORAGE_ERROR -> R.string.settings_model_status_failed_generic
-}
-
-/** T-SET-5。必要容量・空き容量の常時表示、不足時は追加で警告を出す。 */
-@Composable
-private fun CapacitySection(uiState: SettingsUiState) {
-    Column {
-        Text(
-            text = stringResource(R.string.settings_capacity_required_format, uiState.requiredBytesForDownload.toGigabytes()),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.testTag("settings_capacity_required_text")
-        )
-        Text(
-            text = stringResource(R.string.settings_capacity_available_format, uiState.availableBytes.toGigabytes()),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.testTag("settings_capacity_available_text")
-        )
-        if (uiState.hasInsufficientStorage) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = stringResource(R.string.settings_capacity_insufficient_warning),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.testTag("settings_capacity_insufficient_warning")
-            )
-        }
-    }
 }
 
 /** バイト数を10進GB（1e9基準、計画書§0の「2.59GB」表記と同じ単位系）へ変換する。 */

@@ -1595,3 +1595,36 @@ P7-C2c（品質ハーネス由来の新設部品へのRed補完サイクル）�
 **検証方法**: `:app:testDebugUnitTest --tests "com.actionstarter.ai.model.DeviceCapabilityTest"`でtests=15/failures=0/errors=0（新規8件・更新1件・既存維持6件、全件Green、JUnit XML集計で確認）。`:app:testDebugUnitTest`全体でtests=647/skipped=1/failures=0/errors=0（既存639＋新規8、`app/build/test-results/**/*.xml`集計で確認）。`:app:lintDebug`でBUILD SUCCESSFUL・error 0・warning 22（既存分と同数、`app/build/reports/lint-results-debug.xml`集計で確認）。実機A54での受け入れ手順（計画書§8）は本ADR起票時点で未実施のまま残る——Phase 8 C4完了の最終条件。
 
 **再検討トリガー**: A54実機の`totalMem`実測値が5GiB未満だった場合（想定外の重カーブアウト）、本ADRの閾値を再検討する。Phase 9以降で表記4GB機のTIER_1混入が実機報告された場合、中点(5GiB)自体を見直す。
+
+---
+
+### ADR-0062: 空きRAM別モデル自動選択（`ModelSelector`新設）を導入し、`AiPreferences.selectedModelId`の既定値を実モデルidから「自動」センチネルへ変更する（Phase 8.5、A54実機実測の恒常Basic縮退への対処）
+
+- 日付: 2026-08-11 ／ ステータス: 採用（`docs/plans/phase8.5-adaptive-model-selection.md`のユーザー承認後、F-A/F-B（Step 4）実装完了時点で確定） ／ 決定者: domain-implementer（Step 4実装時判断、オーケストレーターへの報告を前提とした判断） ／ 起案agent: domain-implementer ／ 関連仕様§: §18「モデル配布」・§19「AI OFF時でも動作すること」、ADR-0048（4型interface化）、ADR-0053（`installedEntry`のselectedModelId優先解決）、ADR-0057（`defaultProfilePeakRamBytes`）、ADR-0061（`DeviceCapability`のRAM段閾値是正）
+
+- **ADR番号の付番根拠**: 起票直前に`grep -n "^### ADR-" DECISIONS.md`を再実行し、最新確定ADRがADR-0061（本書1571行、A54 RAM段是正）であることを確認した。計画書§8の起案時点の前提（「最新確定ADRはADR-0061」）と一致しており、齟齬はない。F-A（コミット9ec7218、ModelSelector新設・Engine再ロード対応）は本ADRを暫定扱いのまま先行実装され、計画書§8が明示するとおり「Step 4実装完了後（F-A・F-B双方が完了した時点）」に正式起票する運用に従い、F-B完了時点の本タイミングで確定させる。
+
+**背景**: A54実機（表記6GB RAM、ADR-0061で対応可能と判定されるようになった端末）での受け入れ確認（`phase8-a54-ram-tier-fix.md`§10.3）で、既定モデルGemma4 E2B（`defaultProfilePeakRamBytes`=2.0GiB＋安全マージン512MB=2.5GiB要求）に対し、日常使用状態の実測availMemが2.0〜2.3GiB程度しかなく、`LocalAiGateway`の§8.6 #7 OOM事前ガードが恒常的に発火してBasic縮退することが判明した。Qwen3-0.6B（`defaultProfilePeakRamBytes`=1.25GiB＋マージン=1.75GiB要求）へ手動（`run-as`経由の`selectedModelId`書き換え）で切り替えると実機でAI推論に成功した。この結果、「表記6GB機で通常操作からLocal AIへ到達できない」という構造的なギャップが判明し、Phase 9（仕様§73 Recovery AI化）着手前に先行対処することをユーザーが決定した。
+
+**決定**:
+1. `AiPreferences.selectedModelId`の既定値を実モデルid（`ModelCatalog.GEMMA_4_E2B_IT.id`、2026-08-10決定）から新設の`AUTO_SELECT_MODEL_ID`（`"auto"`）センチネルへ変更した。既にSettings経由で`selectedModelId`を明示書き込み済みの既存ユーザーは、SharedPreferencesに値が存在する限りこの既定値変更の影響を受けない（§11確認事項3）。
+2. `ai/model/ModelSelector.kt`を新設した。`candidates: List<ModelCatalogEntry>`（既定`DEFAULT_AUTO_CANDIDATES` = `[GEMMA_4_E2B_IT, QWEN3_0_6B_INT4_BLOCK32]`、品質順）のうち「導入済み（`finalFile().isFile`）かつ現在のavailMemで動作可能（`hasAvailableMemory(defaultProfilePeakRamBytes + MEMORY_SAFETY_MARGIN_BYTES)`）」な最初の候補を選ぶ。明示選択時（`selectedModelId`が`"auto"`以外）は`ModelSelector`を経由せず、`ModelStorage.installedEntry()`の既存解決（ADR-0053）のまま代替なしで縮退する。`ModelStorageImpl.installedEntry()`の既存ファイル欠落フォールバック（ADR-0053）は本ADRのスコープ外として維持する（§2「重要な発見1」・§11確認事項4）。
+3. `MEMORY_SAFETY_MARGIN_BYTES`（512MB）を`LocalAiGateway`のprivate定数から`DeviceCapability`のpublic companion定数へ昇格し、`LocalAiGateway`（OOM事前ガード）と`ModelSelectorImpl`（自動選択のavailMem適合判定）の単一情報源とした。
+4. Qwen3-1.7Bを自動選択の対象外とする（P7-C8既定の品質劣化・非推奨判断の踏襲）。カタログには残置しUI非表示のみとし、Phase 9以降で削除を含め再検討する申し送り事項とする（§11確認事項5）。
+5. **（アーキテクトレビューPass 1 CRITICAL対応）** `LocalLanguageModel.generatePlan`へ`modelPath: String`引数を追加し、`LocalAiGateway`が検証・選択したモデルと`LiteRtLmLocalLanguageModel`が実ロードするモデルを構造的に一致させた。旧`modelPathProvider`コンストラクタ引数（Gatewayの選択結果とEngineの実ロード対象が独立に解決され得た構造的バグの原因）を廃止した。`LiteRtLmLocalLanguageModel`のEngineキャッシュへパス変化検知（`EngineLoadPolicy.requiresEngineReload`、litertlm非依存の純関数として分離しJVMテスト可能にした）を追加し、モデル切替時に明示的な再ロード（`closeEngineAndClearLocked()`→新規Engine生成）を行う。SHA検証キャッシュも単一スロット（`sha256VerifiedEntryId: String?`）からper-idの`Set`（`sha256VerifiedEntryIds`）へ変更し、モデル切替のたびに大容量ファイルを再ハッシュする不具合を解消した。
+6. **（§11確認事項1・2、Settings UI）** Settingsのモデル一覧を「自動」＋カタログ候補の複数行へ拡張した（`SettingsUiState.models: List<ModelOptionUiState>`）。各行に`isMemoryInsufficient: Boolean`（`hasAvailableMemory`不適合時`true`、行内注記のみを表示し削除提案はしない）と、「自動」行への一文説明（空き容量に応じてモデルを選ぶ旨）を追加した。段ベースの推奨バッジ（TIER_1→Qwen0.6B行・TIER_2→Gemma4行、既存`classify()`を再利用）も追加した。
+
+**代替案と却下理由**:
+
+| 代替案 | 却下理由 |
+|---|---|
+| `MEMORY_SAFETY_MARGIN_BYTES`を`ModelSelector`側に独自複製する | 512MBという同一の意味を持つ値が`LocalAiGateway`と2箇所で独立宣言され、将来ドリフトするリスクがある |
+| `ModelSelector`に`AiPreferences`まで注入し「明示/自動の分岐」自体を内部で持たせる | 責務が肥大化する（3依存）。`LocalAiGateway.checkInstalledModel()`が既に分岐点として確立しているため、分岐はGateway側に残し`ModelSelector`は「autoならどれを選ぶか」の1責務に絞った |
+| `ModelStorageImpl.installedEntry()`のファイル欠落フォールバックも本ADRの対象に含めて是正する | 「ファイルが存在しない」という別種の異常への既存のグレースフルデグレード（ADR-0053）であり、本ADRが導入する「availMemに収まるか」という新しい判定軸とは独立の関心事。同時に変更するとテスト範囲がADR-0053の再検証にまで広がりスコープが肥大化する（§11確認事項4で対象外と確定） |
+| Gemma4のDL済みかつavailMem不適合な行に削除提案を出す | ユーザーの明示的な所有物（DL済みファイル）を能動的に削除誘導するのは過剰。行内注記（警告文言）のみに留める（§11確認事項1で確定） |
+
+**影響範囲**: 新設2ファイル（`ai/model/ModelSelector.kt`・`ai/adapter/EngineLoadPolicy.kt`）。変更: `ai/model/DeviceCapability.kt`（定数昇格）・`ai/AiPreferences.kt`（`AUTO_SELECT_MODEL_ID`新設・既定値変更）・`ai/LocalLanguageModel.kt`／`ai/adapter/LiteRtLmLocalLanguageModel.kt`（`modelPath`引き回し）・`ai/LocalAiGateway.kt`（auto分岐・`modelSelector`注入・`AiMetrics.selectedModelId`追加）・`features/settings/SettingsUiState.kt`／`SettingsViewModel.kt`／`SettingsScreen.kt`（複数行UI）・`di/AppContainer.kt`（`modelSelector`配線）・`values(-ja)/strings.xml`（新規4キー）。既存`ai/model/ModelStorage.kt`・`ai/model/ModelCatalog.kt`は無改修（決定2参照）。
+
+**検証方法**: F-Aコミット（9ec7218）時点でテスト全件Green・lint error 0を確認済み。F-B完了時点（本ADR起票時点）で`:app:testDebugUnitTest`全体でtests=681/skipped=1/failures=0/errors=0（既存675＋§11確認事項1のテスト網羅性確保のためGreen段階で追加した6件、`app/build/test-results/**/*.xml`集計で確認）。`:app:lintDebug`でBUILD SUCCESSFUL・error 0・warning 23（MissingTranslation/ExtraTranslationは0件、ja/enパリティ維持を確認。warning差分1件は`settings_model_name_label`の`UnusedResources`——P7-C6コミット128a9c6由来の既存未使用リソースであり本ADRの変更が原因ではないことをgit historyで確認済み、`app/build/reports/lint-results-debug.xml`集計で確認）。実機A54での受け入れ手順（計画書§9）は本ADR起票時点で未実施のまま残る。
+
+**再検討トリガー**: 実機A54受け入れ（計画書§9）でavailMem実測がQwen3-0.6Bの要求量（1.75GiB）すら下回るケースが確認された場合、`DEFAULT_AUTO_CANDIDATES`へさらに軽量なモデルの追加を検討する。`ModelStorageImpl.installedEntry()`のファイル欠落フォールバック（決定2で対象外とした既知ギャップ）がPhase 9以降で実害として報告された場合、是正を再検討する。

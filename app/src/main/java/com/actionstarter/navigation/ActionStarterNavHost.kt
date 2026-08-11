@@ -410,7 +410,8 @@ fun ActionStarterNavHost(
                     uiState = uiState,
                     onNavigateBack = { navController.popBackStack() },
                     onAiEnabledToggled = viewModel::onAiEnabledToggled,
-                    onDownloadRequested = { viewModel.onDownloadRequested() },
+                    onModelSelected = viewModel::onModelSelected,
+                    onDownloadRequested = { entry -> viewModel.onDownloadRequested(entry) },
                     onDeleteRequested = viewModel::onDeleteRequested
                 )
             }

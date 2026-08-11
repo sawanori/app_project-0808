@@ -213,6 +213,16 @@
     <string name="settings_ai_unsupported_abi_reason">この端末のプロセッサはプライベートAIに対応していません。</string>
     <string name="settings_model_section_title">端末内モデル</string>
     <string name="settings_model_name_label">モデル</string>
+    <!-- Phase 8.5 F-B（計画書§3設計F-B-5、§11確認事項1・2、ADR-0062）。モデル一覧の「自動」行と
+         推奨バッジ用の新規文言。 -->
+    <string name="settings_model_option_auto">自動（推奨）</string>
+    <string name="settings_model_option_auto_description">端末の空きメモリに応じて、Gemma 4またはQwen 3のいずれかを自動的に選びます。</string>
+    <string name="settings_model_recommended_badge">この端末におすすめ</string>
+    <!-- Phase 8.5 F-B §11確認事項1（ADR-0062）: DeviceCapability.hasAvailableMemory()が、この
+         端末の現在の空きメモリではこのモデルの要求量（defaultProfilePeakRamBytes +
+         MEMORY_SAFETY_MARGIN_BYTES）を満たせないと判定した行に表示する注記。DL状態とは独立に
+         評価する。削除提案はしない（確定回答どおり）。 -->
+    <string name="settings_model_insufficient_memory_warning">現在の空きメモリでは、このモデルが正しく動作しない可能性があります。</string>
     <string name="settings_model_status_not_installed">未ダウンロード</string>
     <string name="settings_model_status_downloading_format">ダウンロード中… %1$d%%</string>
     <string name="settings_model_status_installed">ダウンロード済み・検証済み</string>

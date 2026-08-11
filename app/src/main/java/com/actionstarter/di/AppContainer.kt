@@ -466,10 +466,11 @@ class AppContainer(
                     permissionGate = permissionGate
                 )
             }
-            // F97実配線（計画書§7.1・§14 P7-C6）: SettingsViewModelは他画面と異なり
+            // F97実配線（計画書§7.1・§14 P7-C6／Phase 8.5 F-B）: SettingsViewModelは他画面と異なり
             // sharedPlanViewModelを一切参照しない（Settings画面は選択済みイベント／確定Planの
-            // どちらにも関心を持たない独立した設定画面のため）。selectedModelはコンストラクタの
-            // 既定値（ModelCatalog.GEMMA_4_E2B_IT）をそのまま使う。
+            // どちらにも関心を持たない独立した設定画面のため）。availableModelsはコンストラクタの
+            // 既定値（Gemma4・Qwen0.6B、ModelSelector.DEFAULT_AUTO_CANDIDATESと同じ候補集合）を
+            // そのまま使う。
             initializer {
                 SettingsViewModel(
                     aiPreferences = aiPreferences,
