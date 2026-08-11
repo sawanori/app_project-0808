@@ -357,7 +357,8 @@ class PlanPromptBuilder {
             (numerator + denominator - 1) / denominator
 
         /**
-         * locale=ja模範プール（P7-C5b・ADR-0057で2件→4件へ拡張。品質ハーネス§3の方向性に加え、
+         * locale=ja模範プール（P7-C5b・ADR-0057で2件→4件、Phase 9.5 F-1b（計画書§3.2・§14
+         * 「A/B再実測（F-1）」）で4件→8件〔各カテゴリ2件〕へ拡張。品質ハーネス§3の方向性に加え、
          * P7-C5実機実測（計画書§14.8）で判明した「浅いSemantic Contextualization」の是正として
          * Fable 5が直接指定した3例（結婚式／歯科検診／出張）を反映した。action_typeは
          * [com.actionstarter.ai.schema.PlanActionType]の確定7値のみを使用）。
@@ -371,6 +372,17 @@ class PlanPromptBuilder {
          * 歯科検診に手順を計らる」のような当たり前・不自然な出力の是正が本サイクルの主目的の
          * ため）。3件目（出張）は`gather_belongings`でaction_type側の多様性を、4件目
          * （打ち合わせ、既存を維持）は構造的な多様性を補う。
+         *
+         * **F-1b追加分（5〜8件目、計画書§14「A/B再実測（F-1）」）**: 実機A/B実測で、カテゴリ絞り
+         * 込みが各カテゴリ1件しかないと実質1-shot化し、パターン多様性の喪失によりQwen3-0.6Bの
+         * 出力がイベントtitleの丸写し（`SanityRejectReason.TITLE_COPY`）へ退化することが判明した
+         * （§14参照）。各カテゴリへ2件目（誕生日会／健康診断／旅行／商談）を追加し、
+         * `buildFewShot`のカテゴリ絞り込み結果が常に2件（＝実質2-shot）になるようにする。
+         * 新規4件は既存4件とタイトルが重複せず（[com.actionstarter.ai.prompt.
+         * EventCategoryClassifierTest]の対象外・本ファイルT-P95-10が回帰ロック）、
+         * カテゴリ固有ステップのdisplay_textは動詞形でR2(c)相当のチェックを自ら通過する
+         * （T-P95-11が回帰ロック、`ContentSanityChecker.containsVerbLikeExpression`の観点で
+         * 作成時に自己検査済み）。
          */
         private val JAPANESE_FEW_SHOT_SEEDS = listOf(
             FewShotSeed(
@@ -412,13 +424,56 @@ class PlanPromptBuilder {
                     "prepare_items" to "資料を準備する",
                     "leave" to "出発する"
                 )
+            ),
+            FewShotSeed(
+                userTurn = "[EVENT] title=\"誕生日会\" category=social locale=ja → produce steps",
+                eventType = "social",
+                eventTitle = "誕生日会",
+                modelSteps = listOf(
+                    "finish_current_task" to "今の作業を切り上げる",
+                    "prepare_items" to "プレゼントを用意する",
+                    "leave" to "出発する"
+                )
+            ),
+            FewShotSeed(
+                userTurn = "[EVENT] title=\"健康診断\" category=medical locale=ja → produce steps",
+                eventType = "medical",
+                eventTitle = "健康診断",
+                modelSteps = listOf(
+                    "finish_current_task" to "今の作業を切り上げる",
+                    "prepare_items" to "問診票を記入しておく",
+                    "leave" to "出発する"
+                )
+            ),
+            FewShotSeed(
+                userTurn = "[EVENT] title=\"旅行\" category=travel locale=ja → produce steps",
+                eventType = "travel",
+                eventTitle = "旅行",
+                modelSteps = listOf(
+                    "finish_current_task" to "今の作業を切り上げる",
+                    "gather_belongings" to "着替えと充電器を準備する",
+                    "leave" to "出発する"
+                )
+            ),
+            FewShotSeed(
+                userTurn = "[EVENT] title=\"商談\" category=business_meeting locale=ja → produce steps",
+                eventType = "business_meeting",
+                eventTitle = "商談",
+                modelSteps = listOf(
+                    "finish_current_task" to "今の作業を切り上げる",
+                    "prepare_items" to "名刺と提案書を確認する",
+                    "leave" to "出発する"
+                )
             )
         )
 
         /**
-         * locale=en模範プール（P7-C5b・ADR-0057で2件→4件へ拡張、[JAPANESE_FEW_SHOT_SEEDS]と
-         * 同じ4テーマ〔wedding／dental checkup／business trip／team meeting〕・同じ順序で構成し
-         * ja/en間の模範の質を揃えた）。
+         * locale=en模範プール（P7-C5b・ADR-0057で2件→4件、[JAPANESE_FEW_SHOT_SEEDS]と同じ4テーマ
+         * 〔wedding／dental checkup／business trip／team meeting〕・同じ順序で構成しja/en間の
+         * 模範の質を揃えた。Phase 9.5 F-1b（計画書§3.2・§14「A/B再実測（F-1）」）で4件→8件
+         * 〔各カテゴリ2件〕へ拡張。F-1b追加分（5〜8件目）の設計根拠は
+         * [JAPANESE_FEW_SHOT_SEEDS]のKDoc「F-1b追加分」と同一、ja側〔誕生日会／健康診断／旅行／
+         * 商談〕と同じ4テーマ・同じ順序）。
          */
         private val ENGLISH_FEW_SHOT_SEEDS = listOf(
             FewShotSeed(
@@ -458,6 +513,46 @@ class PlanPromptBuilder {
                 modelSteps = listOf(
                     "finish_current_task" to "Wrap up what you are doing",
                     "prepare_items" to "Prepare your materials",
+                    "leave" to "Head out"
+                )
+            ),
+            FewShotSeed(
+                userTurn = "[EVENT] title=\"Birthday party\" category=social locale=en → produce steps",
+                eventType = "social",
+                eventTitle = "Birthday party",
+                modelSteps = listOf(
+                    "finish_current_task" to "Wrap up what you are doing",
+                    "prepare_items" to "Bring a gift",
+                    "leave" to "Head out"
+                )
+            ),
+            FewShotSeed(
+                userTurn = "[EVENT] title=\"Health checkup\" category=medical locale=en → produce steps",
+                eventType = "medical",
+                eventTitle = "Health checkup",
+                modelSteps = listOf(
+                    "finish_current_task" to "Wrap up what you are doing",
+                    "prepare_items" to "Prepare your health questionnaire",
+                    "leave" to "Head out"
+                )
+            ),
+            FewShotSeed(
+                userTurn = "[EVENT] title=\"Vacation trip\" category=travel locale=en → produce steps",
+                eventType = "travel",
+                eventTitle = "Vacation trip",
+                modelSteps = listOf(
+                    "finish_current_task" to "Wrap up what you are doing",
+                    "gather_belongings" to "Pack a change of clothes and charger",
+                    "leave" to "Head out"
+                )
+            ),
+            FewShotSeed(
+                userTurn = "[EVENT] title=\"Client negotiation\" category=business_meeting locale=en → produce steps",
+                eventType = "business_meeting",
+                eventTitle = "Client negotiation",
+                modelSteps = listOf(
+                    "finish_current_task" to "Wrap up what you are doing",
+                    "prepare_items" to "Confirm your business cards and proposal",
                     "leave" to "Head out"
                 )
             )

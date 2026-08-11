@@ -415,25 +415,28 @@ class PlanPromptBuilderTest {
         )
     }
 
-    // QH-14g: 正常系 - P7-C5b（品質ハーネス強化）でja/enとも模範プールを2件→4件へ拡張した
-    // （結婚式/歯科検診/出張/打ち合わせ、Wedding/Dental checkup/Business trip/Team meeting）
-    // ことの回帰ロック。shotCountを利用可能数以上（10）にしても4件に丸められる
-    // （既存のクランプ仕様、コメント「上限超過は最大件数へ丸める」との整合）。
+    // QH-14g（F-1b更新: A/B実測で発見した1-shot品質退化〔§14「A/B再実測（F-1）」〕を受け、
+    // 各カテゴリ2件×4カテゴリへ増強したことに伴い4件→8件へ期待値を更新。現状〔F-1b前〕は
+    // 4件のためRed）: 正常系 - F-1bでja/enとも模範プールを4件→8件（各カテゴリ2件）へ拡張した
+    // （結婚式/歯科検診/出張/打ち合わせ+誕生日会/健康診断/旅行/商談、
+    // Wedding/Dental checkup/Business trip/Team meeting+Birthday party/Health checkup/
+    // Vacation trip/Client negotiation）ことの回帰ロック。shotCountを利用可能数以上（10）にしても
+    // 8件に丸められる（既存のクランプ仕様、コメント「上限超過は最大件数へ丸める」との整合）。
     @Test
-    fun qh14g_buildFewShot_expandedSeedPool_clampsAtFourForBothLocales() {
+    fun qh14g_buildFewShot_expandedSeedPool_clampsAtEightForBothLocales() {
         val builder = PlanPromptBuilder()
 
         val japaneseExamples = builder.buildFewShot(Locale.JAPAN, shotCount = 10)
         val englishExamples = builder.buildFewShot(Locale.US, shotCount = 10)
 
         assertEquals(
-            "P7-C5bでja模範プールは4件へ拡張されているはずです(QH-14g): $japaneseExamples",
-            4,
+            "F-1bでja模範プールは8件へ拡張されているはずです(QH-14g): $japaneseExamples",
+            8,
             japaneseExamples.size
         )
         assertEquals(
-            "P7-C5bでen模範プールは4件へ拡張されているはずです(QH-14g): $englishExamples",
-            4,
+            "F-1bでen模範プールは8件へ拡張されているはずです(QH-14g): $englishExamples",
+            8,
             englishExamples.size
         )
     }
@@ -600,20 +603,27 @@ class PlanPromptBuilderTest {
     // buildFewShotのカテゴリ条件選択（Plan限定）。
     // ------------------------------------------------------------------
 
-    // T-P95-7: 正常 - 推定カテゴリに一致する模範例のみが返る（不一致の模範例は含まれない）
+    // T-P95-7（F-1b更新: A/B実測で発見した1-shot品質退化〔§14「A/B再実測（F-1）」〕を受け、
+    // 各カテゴリのseedを2件へ増強したことに伴い期待値を1→2へ更新。現状〔F-1b前〕はmedicalが
+    // 1件しかないためRed）: 正常 - 推定カテゴリに一致する模範例が全件（2件）返る
+    // （不一致カテゴリの模範例は含まれない）
     @Test
-    fun tP95_7_buildFewShot_eventTitleMatchesMedicalCategory_returnsOnlyMedicalExample() {
+    fun tP95_7_buildFewShot_eventTitleMatchesMedicalCategory_returnsAllMedicalExamples() {
         val examples = PlanPromptBuilder().buildFewShot(Locale.JAPAN, shotCount = 2, eventTitle = "歯科検診の予約")
 
         assertEquals(
-            "medicalカテゴリのeventTitleを渡した場合、medical模範(歯科検診)のみが返るべきです" +
-                "(T-P95-7、計画書§3.2)",
-            1,
+            "medicalカテゴリのeventTitleを渡した場合、medical模範2件(歯科検診・健康診断)が" +
+                "返るべきです(T-P95-7、F-1b、計画書§3.2)",
+            2,
             examples.size
         )
         assertTrue(
-            "返された模範はmedical(歯科検診)であるべきです(T-P95-7)",
-            examples.single().userTurn.contains("歯科検診")
+            "medical模範に歯科検診が含まれるべきです(T-P95-7)",
+            examples.any { it.userTurn.contains("歯科検診") }
+        )
+        assertTrue(
+            "medical模範に健康診断が含まれるべきです(T-P95-7、F-1b新規)",
+            examples.any { it.userTurn.contains("健康診断") }
         )
     }
 
@@ -641,6 +651,105 @@ class PlanPromptBuilderTest {
         )
     }
 
+    // ------------------------------------------------------------------
+    // F-1b（計画書§3.2・§14「A/B再実測（F-1）」、プール不変条件テスト）: A/B実測で発見した
+    // 1-shot品質退化（各カテゴリのseedが1件しかないためfew-shotが実質1-shot化しTITLE_COPYへ
+    // 退化）を受け、各カテゴリのseedを2件へ増強する。T-P95-9は現状（F-1b前）は各カテゴリ1件の
+    // ためRed。T-P95-10・11は現状の4件でも既に成立する不変条件（born-green）だが、F-1bで
+    // 追加する新規4件を含めて満たされ続けることを回帰ロックする。
+    // ------------------------------------------------------------------
+
+    // T-P95-9（F-1b、プール不変条件）: 正常 - 全4カテゴリ×ja/enとも、一致する模範がちょうど2件
+    // 返る（F-1bの目的そのものの回帰ロック。現状〔F-1b前〕は各カテゴリ1件しかないためRed）
+    @Test
+    fun tP95_9_buildFewShot_everyCategoryEveryLocale_returnsExactlyTwoMatchingExamples() {
+        val representativeTitlesByLocale = mapOf(
+            Locale.JAPAN to listOf("結婚式の準備", "歯科検診の予約", "大阪への出張", "取引先との打ち合わせ"),
+            Locale.US to listOf("Friend's wedding", "Annual dental checkup", "Business trip to Tokyo", "Team meeting prep")
+        )
+
+        representativeTitlesByLocale.forEach { (locale, titles) ->
+            titles.forEach { title ->
+                val examples = PlanPromptBuilder().buildFewShot(locale, shotCount = 2, eventTitle = title)
+                assertEquals(
+                    "locale=$locale、eventTitle=\"$title\"は一致カテゴリの模範ちょうど2件を" +
+                        "返すべきです(T-P95-9、F-1b)",
+                    2,
+                    examples.size
+                )
+            }
+        }
+    }
+
+    // T-P95-10（F-1b、プール不変条件・回帰ロック）: 正常・回帰 - 全模範例のタイトルが
+    // locale内で相互に重複しない（F-1bで新規追加する4件が既存4件と重複していないことを含む）
+    @Test
+    fun tP95_10_buildFewShot_allSeedTitles_areMutuallyDistinctWithinEachLocale() {
+        val titlePattern = Regex("title=\"([^\"]*)\"")
+        val builder = PlanPromptBuilder()
+
+        listOf(Locale.JAPAN, Locale.US).forEach { locale ->
+            val examples = builder.buildFewShot(locale, shotCount = MAX_AVAILABLE_SHOT_COUNT_PROBE)
+            val titles = examples.map { titlePattern.find(it.userTurn)?.groupValues?.get(1).orEmpty() }
+
+            assertEquals(
+                "locale=${locale}の模範タイトルは相互に重複しないべきです(T-P95-10、F-1b): $titles",
+                titles.toSet().size,
+                titles.size
+            )
+        }
+    }
+
+    // T-P95-11（F-1b、プール不変条件・自己検査）: 正常・回帰 - 全模範例のカテゴリ固有ステップ
+    // （finish_current_task／leaveの定型2ステップを除いた中間ステップ）のdisplay_textが、
+    // ContentSanityChecker.containsVerbLikeExpression相当の動詞形チェック（R2(c)）を通過する
+    // （「display_textは動詞形であること・作成後にContentSanityCheckerの観点で自己検査する」
+    // というF-1b新規例文の作成規律をテストとして固定する。中間ステップに限定する理由:
+    // finish_current_task/leaveは全模範例で共有する定型文であり、F-1bが増やそうとしている
+    // 「予定の意味を理解した個別具体的な行動」の多様性とは無関係な既存の定型ボイラープレートの
+    // ため対象外とする）。
+    @Test
+    fun tP95_11_buildFewShot_categorySpecificStepDisplayText_passesVerbLikeExpressionCheck() {
+        val builder = PlanPromptBuilder()
+
+        listOf(Locale.JAPAN, Locale.US).forEach { locale ->
+            val examples = builder.buildFewShot(locale, shotCount = MAX_AVAILABLE_SHOT_COUNT_PROBE)
+            examples.forEach { example ->
+                val steps = extractDisplayTexts(example.modelTurn)
+                assertEquals(
+                    "各模範例はfinish_current_task・カテゴリ固有・leaveの3ステップ構成である" +
+                        "べきです(T-P95-11の前提、F-1b): $steps",
+                    3,
+                    steps.size
+                )
+                val categorySpecificStep = steps[1]
+                assertTrue(
+                    "カテゴリ固有ステップのdisplay_text \"$categorySpecificStep\" が動詞形チェック" +
+                        "(R2(c)相当)を通過しません(T-P95-11、F-1b自己検査)",
+                    containsVerbLikeExpressionForSelfCheck(categorySpecificStep)
+                )
+            }
+        }
+    }
+
+    /**
+     * [com.actionstarter.ai.schema.ContentSanityChecker.containsVerbLikeExpression]相当の
+     * 軽量再実装（本テストファイルの既存方針どおりproductionクラスをimportしない、
+     * [qh14f_buildFewShot_examples_neverCopyTheirOwnEventTitleIntoDisplayText]の
+     * コメント「production クラスをimportせず自己完結した軽量チェックとして再実装する」と
+     * 同じ規約）。[tP95_11_buildFewShot_categorySpecificStepDisplayText_passesVerbLikeExpressionCheck]
+     * の自己検査に使う。
+     */
+    private fun containsVerbLikeExpressionForSelfCheck(text: String): Boolean {
+        val trimmed = text.trim().trimEnd('。', '.', '！', '!', '、', ',')
+        if (trimmed.isEmpty()) return false
+
+        if (JAPANESE_VERB_ENDING_SUFFIXES_PROBE.any { trimmed.endsWith(it) }) return true
+
+        val lower = trimmed.lowercase()
+        return ENGLISH_VERB_WORDS_PROBE.any { lower.contains(it) }
+    }
+
     companion object {
         /** [qh14f_buildFewShot_examples_neverCopyTheirOwnEventTitleIntoDisplayText]用: 実際の
          * seed数に関わらず全件を取得するための十分大きいshotCount（[PlanPromptBuilder.buildFewShot]
@@ -652,5 +761,16 @@ class PlanPromptBuilderTest {
          * 軽量チェックとして再実装する）。 */
         private const val MIN_TITLE_LENGTH_FOR_COPY_CHECK = 6
         private const val TITLE_COPY_OCCUPANCY_THRESHOLD = 0.8
+
+        /** [ContentSanityChecker.containsVerbLikeExpression][com.actionstarter.ai.schema.
+         * ContentSanityChecker]と同一の語彙（[containsVerbLikeExpressionForSelfCheck]用、
+         * F-1b、本テストファイルの既存方針どおりproductionクラスをimportしない）。 */
+        private val JAPANESE_VERB_ENDING_SUFFIXES_PROBE = listOf(
+            "る", "く", "ぐ", "す", "つ", "ぬ", "ぶ", "む", "う", "て", "で", "ください"
+        )
+        private val ENGLISH_VERB_WORDS_PROBE = listOf(
+            "bring", "check", "confirm", "prepare", "take", "leave", "head", "pack",
+            "call", "get", "finish", "skip", "keep", "switch", "change", "hurry"
+        )
     }
 }
