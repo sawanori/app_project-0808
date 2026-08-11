@@ -7,9 +7,10 @@
 > - **M**（ベースライン計測、コミット9606135）・**F-4/F-5**（Recovery pairing交差一致緩和・warmゲート2層修正、288e9b9）・**F-5b**（既定値配線ギャップ修正、2acd2f2）・**A/B（F-4/F-5/F-5b）**（Recovery完全蘇生3/3確認、08de59a）は完了・コミット済み。
 > - **F-1／F-1b／F-1c**（few-shotカテゴリ条件選択、Plan限定）は実装→A/B実測2回（`TITLE_COPY`→`MIN_QUALITY`）→撤退基準発動→**不採用・ロールバック確定**（09f4d99→12a14d6→608a478）。`EventCategoryClassifier`等はドーマント基盤（Phase 12実験材料）として残置。詳細は§14「A/B再実測（F-1）」「A/B判定（F-1b）」、結論は§3.2「F-1c」参照。
 > - **F-2（Engineウォームアップ）はStep 3（Red）・Step 4（Green）とも実装済み・コミット済み（3dcb207）**——`LocalAiGateway.warmUp()`（aiEnabled→Tier→ABI→`resolveInstalledEntry`→強化availMemガード→`inferenceMutex.tryLock()`によるin-flightスキップ→`(model as? EngineWarmable)?.warmUpEngine`、例外は`warmUpEngine`呼び出しのみ捕捉しno-op化）・新設任意interface`EngineWarmable`を`LiteRtLmLocalLanguageModel`が実装（`obtainEngine`へ委譲）・`EventSelectionViewModel.init`から`warmUpAiIfPossible()`を1回実配線・`AppContainer`配線（実装時に`LinkageError`回帰〔ナビゲーションフロー起点での`localAiGateway`未捕捉伝播、13件失敗〕を発見し`eventSelectionLocalAiGateway`ガードで解消、§3.3参照）。T-P95-50〜57は全件Green。
+> - **F-2b（ウォームアップのヘッドルーム再調整）は実機検証結果を受けて実装済み**——A54実機でF-2ウォームアップが**不発**（トップ画面20秒滞在後もPSS108MB＝モデル非常駐）と判明。実際に解決されたQwen3-0.6B（`defaultProfilePeakRamBytes`＝1.25GiB）に対し旧強化ガード要求2.25GiB（1.25GiB＋旧+1GiB）へ起動時availMem2.28GiBが僅差（約34MB）で近接し、`warmUp()`実評価時点にはアプリ自身の起動消費で閾値割れしていた（**+1GiBは6GB端末で常閉の門**）。`WARM_UP_EXTRA_HEADROOM_BYTES`を1GiB→**512MB**（通常ガード`MEMORY_SAFETY_MARGIN_BYTES`と同値）へ再調整し、強化ガードと通常ガードの数式が一致（旧非対称設計は解消）。T-P95-54を新閾値の境界（1バイト手前）へ再設計・対となるT-P95-63（ちょうど→呼ぶ）を新設し境界2点を回帰ロック（詳細は§3.3「F-2b」参照）。
 > - **F-3（Recovery用maxNumTokensプロファイル縮小）は結論確定・クローズ・コミット済み（b956fdd）**——Step 3（Red）でアーキテクチャ論点（`LiteRtLmLocalLanguageModel`のEngineは1個・`maxNumTokens`は`generatePlan`／`generateRecovery`共有）を発見し、**F-3裁定（2026-08-12）: 本番配線は不成立として縮退（descope）**——Plan/Recoveryの大きい方を採用=無益、プロファイル不一致リロード=Recovery（時間クリティカル）に1.4秒ロードを差し込む最悪UXのいずれも不採用。計測を1回も実施せず構造分析だけで結論に到達した（§14「F-3裁定」参照）。`RecoveryPromptBuilder.estimateMaxNumTokens`はGreen実装済み（T-P95-58〜62、preface文字数からの直接算出方式・下限上限は`PlanPromptBuilder`と共有）だが「Recoveryトークン予算分析を記録するドーマント設計文書」として`generateRecovery`へは配線しない（`EventCategoryClassifier`と同方針、KDocに裁定を明記）。`LiteRtLmLocalLanguageModel`側の宣言のみスタブは将来性なしのため削除。**実装時の追加発見**: 当初のT-P95-59（「同一shotCount・maxOutputTokenでRecovery≤Plan」）はDEFAULT_SHOT_COUNT=2で実測すると成立しない（Recovery=1664>Plan=1280）ことが判明——原因はPlan版の「baseline-delta方式」が1206文字までのpreface内容を実質無料で1024トークン枠に含める一方、Recovery版の「直接算出方式」は同じ無料枠の恩恵を受けないという計算モデルの違いであり、Recoveryの実内容が大きいことを意味しない。system instructionのみ（shotCount=0）で比較する形にテストのスコープを訂正した（詳細は`RecoveryPromptBuilderTest.kt`のT-P95-59コメント参照）。
-> - **PR-1（GPUバックエンド可否プローブ）は事前API調査完了・プローブ作成済み**——litertlm-android 0.15.0のAAR実体（Gradleキャッシュの`-api.jar`）を`javap -p`で直接調査し、`Backend.GPU()`（引数なしコンストラクタ）の存在と`EngineConfig.backend`パラメータへそのまま渡せることを確認（**API存在=GO**、詳細は§3.5参照）。実機での実際の動作可否（Mali-G68のINT4 block-32量子化対応）は未確認のため、`GpuBackendProbeTest`（androidTest、CPU/GPUを完全同一の`EngineConfig`・`ConversationConfig`・data messageで直接比較する設計）を新設した。JVMスイート無傷確認済み（androidTestのみの変更のため影響なし）。実機実行はオーケストレーターが実施。
-> 全756件Green（skip1）・lint error0（:app:testDebugUnitTest tests=756/skipped=1/failures=0/errors=0・JUnit XML集計で確認済み）。**PR-1は未コミット、報告・検収待ち**
+> - **PR-1（GPUバックエンド可否プローブ）は事前API調査完了・プローブ作成済み・コミット済み（25f069e）**——litertlm-android 0.15.0のAAR実体（Gradleキャッシュの`-api.jar`）を`javap -p`で直接調査し、`Backend.GPU()`（引数なしコンストラクタ）の存在と`EngineConfig.backend`パラメータへそのまま渡せることを確認（**API存在=GO**、詳細は§3.5参照）。実機での実際の動作可否（Mali-G68のINT4 block-32量子化対応）は未確認のため、`GpuBackendProbeTest`（androidTest、CPU/GPUを完全同一の`EngineConfig`・`ConversationConfig`・data messageで直接比較する設計）を新設した。JVMスイート無傷確認済み（androidTestのみの変更のため影響なし）。実機実行はオーケストレーターが実施。
+> 全757件Green（skip1）・lint error0（:app:testDebugUnitTest tests=757/skipped=1/failures=0/errors=0・JUnit XML集計で確認済み）。**F-2bは未コミット、報告・検収待ち**
 
 続けてF-2（Engineウォームアップ、§3.3）のStep 3（Red）を実施——`LocalAiGateway.warmUp()`宣言（本体`TODO()`）・新設任意interface`EngineWarmable`（`BenchmarkMetricsSource`／`EngineLoadStateSource`と同型）を`LiteRtLmLocalLanguageModel`が実装（本体`TODO()`）・`EventSelectionViewModel`へ`localAiGateway`引数と`warmUpAiIfPossible()`フックを宣言（**Step 4まで`init`から呼ばない**——`warmUp()`が`TODO()`のため、呼ぶと本ViewModelを構築する既存テストが軒並み`NotImplementedError`で壊れるため意図的に未配線）・T-P95-50〜57（当初案T-P95-11〜17はF-1/F-1bが1〜12を消費したため衝突、実装時に50〜57へ採番し直し、§7に改訂記録済み）。全8件`NotImplementedError`でRed（`warmUp()`のTODO由来、EventCategoryClassifier.classifyと同型のscaffold）。全ファイルは**未コミット**の変更（:app:testDebugUnitTest tests=751/skipped=1/failures=8/errors=0〔F-2新規8件のみRed、既存743件は無傷〕・:app:lintDebug error=0/warning=23、JUnit XML集計で確認済み）。**Greenには未着手、報告・検収待ち**
 
@@ -92,6 +93,10 @@ Phase 9はA54実機受け入れに合格したが（`docs/plans/phase9-recovery-
 **`EventSelectionViewModel`実配線**: `init`から`refresh()`の直後に`warmUpAiIfPossible()`を1回だけ呼ぶ（`refresh()`自体はON_RESUME再チェック・`onRetry`からも呼ばれ画面滞在中に複数回発生しうるため、「画面入場時のみ」の粒度に合わせ`init`側に置いた）。`localAiGateway`は末尾・既定`null`の新規コンストラクタ引数とし、`null`なら`warmUpAiIfPossible()`は`?.let`でno-op（既存テストとの後方互換）。
 
 **`AppContainer`実配線と実装時に発見した`LinkageError`回帰**: `EventSelectionViewModel`初期化子へ素の`localAiGateway`をそのまま渡す設計にしたところ、`NavigationFlowTest`・`CalendarNavigationFlowTest`・`NotificationPermissionRequestTest`・`SettingsNavigationTest`（計13件）が`UnsupportedClassVersionError`／`NoClassDefFoundError`で新規に失敗することを実測で発見した——`EventSelectionViewModel`はナビゲーションフローの起点（最初に構築されるViewModel）であり、`localAiGateway`（`by lazy`）の評価を`localAiPlanContextualizer`・`localAiRecoveryContextualizer`（既存の`LinkageError`防御）より前のタイミングで踏み抜くため、JDK 21未満の実行環境（本テストJVM）特有の`LinkageError`が未捕捉のまま伝播していた（Phase 8で`PlanReviewViewModel`配線時に発生したのと同型の再発、`AppContainer.localAiPlanContextualizer`のKDoc「実測で新規10件が失敗」参照）。既存の2箇所と同じ`try { localAiGateway } catch (e: LinkageError) { null }`パターンを踏襲した新規`eventSelectionLocalAiGateway: LocalAiGateway?`プロパティを追加し、これを`EventSelectionViewModel`へ渡すことで解消した（実機ART環境では本チェックは発生しない）。
+
+**F-2b: ウォームアップのヘッドルームを512MBへ再調整（実機検証、2026-08-12）**: F-2実装（`WARM_UP_EXTRA_HEADROOM_BYTES`＝+1GiB）をA54実機（6GB端末）で検証したところ、トップ画面（`EventSelection`）へ20秒滞在してもPSSが108MBのままでウォームアップが**不発**（モデル非常駐）と判明した。起動時点のavailMemスナップショットは2,393,044kB≈2.28GiBで、実際に解決されたモデル（Qwen3-0.6B、`defaultProfilePeakRamBytes`＝1.25GiB）に対する旧強化ガード要求2.25GiB（1.25GiB＋旧+1GiB）にわずか約34MBの差で近接しており、`warmUp()`が実際に評価される時点（Compose UI初期化等でさらにメモリ消費が進んだ後）には閾値を割り込んでいた——起動直後のスナップショットと実評価時点は同一ではなく、後者はアプリ自身の起動消費でさらに目減りする。結果として**+1GiBはこの6GB端末では常閉の門**になっていた（P7-C8で「Gemma4の公称8GB前提が実測2.5GiB相当だった」と判明したのと同型の「保守しすぎたガードが実測で暴かれる」パターンの再発）。
+
+これを受け`WARM_UP_EXTRA_HEADROOM_BYTES`を1GiB→**512MB**へ再調整した。根拠は`DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES`（通常推論ガードの512MB）と同値へ揃えること——直後の`generatePlan`/`generateRecovery`が+512MBのマージンで許可される以上、同一メモリを数秒早く確保するだけの行為（ウォームアップ）に独自の倍マージンを課す合理性はない。ウォームアップの真のコストは「温存したのに使われなかった場合の遊休常駐」であり、これは`onTrimMemory`連動アンロード（未実装、上記「LMKマージン強化」§9再検討トリガー参照）の領分であって、起動判定のマージンを厚くしても解決しない。この変更により強化ガードと通常ガードの数式が完全に一致し、旧来の「通常ガードは通るが強化ガードは通らない」非対称設計（採用A-6原案）は境界として存在しなくなった。境界はT-P95-54（新閾値の1バイト手前→呼ばない）・T-P95-63（新閾値ちょうど→呼ぶ、`>=`判定の境界を含む）が回帰ロックする（いずれも実際に解決されたQwen3-0.6Bの`defaultProfilePeakRamBytes`＝1.25GiBを使うfixture、`fakeQwen06bLikeEntry()`で実施——Phase 8.5由来の既存fixtureを流用し、実機で発見された事実に基づく境界値とした）。全757件Green（skip1）・lint error0で確認済み。完了報告後、実機再検証はオーケストレーターが実施する。
 
 ### 3.4 F-3: Recovery用maxNumTokensプロファイル縮小（P5）
 
@@ -236,16 +241,19 @@ LiteRT-LMのリリースノートを定点観測し、対応APIが追加され�
 ### `LocalAiGateway.warmUp()`（F-2、JVM、Gateway層ゲーティング・敵対的レビューA-5/A-6/A-7）
 **採番改訂（実装時）**: 当初案のT-P95-11〜17はF-1／F-1bが実際にT-P95-1〜12を消費したため衝突する。実装時にT-P95-50〜57へ採番し直した（値・意味とも当初案から不変、in-flightスキップ〔T-P95-55〕を1件追加）。
 
+**採番改訂（F-2b実装時）**: T-P95-54はF-2b（実機検証、§3.3「F-2b」）で`WARM_UP_EXTRA_HEADROOM_BYTES`が通常ガードの`MEMORY_SAFETY_MARGIN_BYTES`と同値（512MB）になったことに伴い、当初の「通常ガードは満たすが強化ガードは満たさない非対称ケース」という前提そのものが境界として存在しなくなったため、「強化ガード自体の境界（1バイト手前）」を精密に固定する内容へ再設計した（ID・分類は維持）。対となる境界（ちょうど→呼ぶ）はT-P95-58〜62（F-3、`RecoveryPromptBuilderTest`）と衝突しないT-P95-63として新規追加した。
+
 | ID | 分類 | 内容 |
 |---|---|---|
 | T-P95-50 | 異常 | `aiEnabled=false`のとき`warmUp()`はadapterのEngine準備を一切呼ばない |
 | T-P95-51 | 異常 | Tier非対応（`TIER_0_UNSUPPORTED`）のとき`warmUp()`は何もしない |
 | T-P95-52 | 異常 | ABI非対応のとき`warmUp()`は何もしない |
 | T-P95-53 | 異常 | モデル未解決（未導入／破損）のとき`warmUp()`は何もしない |
-| T-P95-54 | 異常 | availMemが通常ガード（+512MB）は満たすが強化ガード（+1GiB、`WARM_UP_EXTRA_HEADROOM_BYTES`）を満たさないとき`warmUp()`は何もしない（通常推論は許可されるがウォームアップは見送られる非対称ケース） |
+| T-P95-54 | 異常 | 【F-2b改訂】強化ガード（`defaultProfilePeakRamBytes`＝1.25GiB＋新`WARM_UP_EXTRA_HEADROOM_BYTES`＝512MB＝1.75GiB）の1バイト手前では`warmUp()`は何もしない。実際にF-2実機検証で解決されたQwen3-0.6B相当のfixture（`fakeQwen06bLikeEntry()`）を使用 |
 | T-P95-55 | 異常 | 生成in-flight中（`inferenceMutex`取得中）に`warmUp()`を呼んでも、ロック解放を待たず即座にno-opでEngine準備を呼ばない（`tryLock()`による非ブロッキングスキップ） |
 | T-P95-56 | 正常 | 全ガード通過時のみadapterのEngine準備が呼ばれる |
 | T-P95-57 | 正常・回帰 | ウォームアップ後の`generatePlan`が通常どおり成功し、Engine準備（`warmUpEngine`）を再度呼ばない（Engine再利用は既存`EngineLoadPolicy.requiresEngineReload`／adapter内部の関心事、新規ロック機構を導入しない） |
+| T-P95-63 | 正常 | 【F-2b新設、T-P95-54の対】強化ガードちょうど（1.75GiB）では`warmUp()`がEngine準備を呼ぶ（`hasAvailableMemory`は`>=`判定、境界値そのものを含む） |
 
 ### 実機プローブ（androidTest、M/PR-1/PR-2）
 | ID | 内容 |
@@ -340,6 +348,8 @@ LiteRT-LMのリリースノートを定点観測し、対応APIが追加され�
 | A-6 | Gemini | ウォームアップは「使われるかどうか分からない」任意の先行投資であり、通常推論と同じavailMemマージンでは保守性が不足する（LMK誘発リスク） | §3.3へ`WARM_UP_EXTRA_HEADROOM_BYTES`＝+1GiB（通常ガード512MBより厳格）を明記。`onTrimMemory`連動アンロードは本フェーズ非実装とし§9再検討トリガーへ記載 |
 | A-7 | オーケストレーター実機検証 | PlanReview画面は入場と同時に生成が自動開始されるため、その手前でのウォームアップは効果を持たない | トリガー候補から「PlanReview画面入場時」を削除。トップ画面（`EventSelection`）入場時のみ・都度・in-flight時スキップに確定（§3.3・§12確認事項2） |
 | A-8 | Gemini（修正採用） | 夜間・充電中の計測で、端末がDozeやCPUスロットリングへ入ると計測値が不安定化する | §4.3へ計測バッチ実行中の`svc power stayon true`（給電中のためDoze非突入と併せてスロットリング回避）・バッチ終了後の`false`復帰を明記。プローブは非UIのためキーガード解除は不要と付記 |
+
+**A-6の実機後日談（F-2b、2026-08-12）**: A-6「保守性が不足する」という懸念の**方向は正**だったが、+1GiBという**数値は過剰だった**と実測が判定した（A54実機でウォームアップが常閉の門と化し、§3.3「F-2b」参照）——保守側に振ったマージンが行き過ぎて機能そのものを無効化する具体例として記録する。
 
 ### 棄却（理由を記録）
 

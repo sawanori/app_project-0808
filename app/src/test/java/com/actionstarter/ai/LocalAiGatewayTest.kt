@@ -1948,32 +1948,71 @@ class LocalAiGatewayTest {
         )
     }
 
-    // T-P95-54（F-2、強化閾値境界・採用A-6）: 異常 - availMemが通常ガード（+512MB）は満たすが
-    // 強化ガード（+1GiB、WARM_UP_EXTRA_HEADROOM_BYTES）を満たさないときwarmUp()は何もしない
-    // （通常推論は許可されるがウォームアップは見送られる非対称ケース）。
-    // fakeInstalledEntry().defaultProfilePeakRamBytes=1MBのため、通常ガード閾値は約513MB・
-    // 強化ガード閾値は約1025MB。availMemBytes=700MBは前者のみ満たす。
+    // T-P95-54（F-2→F-2b、強化ガード境界・計画書§3.3「F-2b」）: 異常 - 強化ガード
+    // （defaultProfilePeakRamBytes + WARM_UP_EXTRA_HEADROOM_BYTES）の1バイト手前では
+    // warmUp()は何もしない。
+    // **F-2bによる再設計（旧T-P95-54からの変更点）**: F-2b（実機検証、計画書§3.3）で
+    // `WARM_UP_EXTRA_HEADROOM_BYTES`を1GiB→512MBへ変更し`DeviceCapability.
+    // MEMORY_SAFETY_MARGIN_BYTES`（通常ガードの512MB）と同値になったため、旧来の「通常ガードは
+    // 満たすが強化ガードは満たさない」非対称ケースは境界として存在しなくなった（両ガードの
+    // 数式が完全に同一のため、どちらか一方だけを満たすavailMem値は存在しない）。本テストは
+    // 「強化ガード自体の境界」を精密に固定する役割へ再設計し、`fakeQwen06bLikeEntry()`
+    // （defaultProfilePeakRamBytes=1.25GiB、実カタログ`ModelCatalog.QWEN3_0_6B_INT4_BLOCK32`と
+    // 同値——F-2実機検証で実際に解決されたモデルそのもの）を使う。新閾値=1.25GiB+512MB=1.75GiB。
+    // 対の境界（1.75GiBちょうど→呼ばれる）はT-P95-63参照。
     @Test
-    fun tP95_54_warmUp_availMemSatisfiesNormalGuardButNotEnhancedGuard_neverCallsEngineWarmable() = runTest {
+    fun tP95_54_warmUp_availMemOneByteBelowEnhancedGuard_neverCallsEngineWarmable() = runTest {
         val model = WarmableFakeModel()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_54")
+            .apply { selectedModelId = fakeQwen06bLikeEntry().id }
         val gateway = LocalAiGateway(
             model = model,
-            modelStorage = installedModelStorage(),
+            modelStorage = installedModelStorageWithEntry(fakeQwen06bLikeEntry()),
             modelVerifier = verifier(),
             deviceCapability = deviceCapabilityWith(
                 totalMemBytes = 8L * GB,
-                availMemBytes = 700L * 1024 * 1024,
+                availMemBytes = GB + GB / 4 + GB / 2 - 1,
                 "arm64-v8a"
             ),
-            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_54")
+            preferences = preferences
         )
 
         gateway.warmUp()
 
         assertEquals(
-            "通常ガードは満たすが強化ガード(+1GiB)を満たさないときwarmUp()はEngine準備を" +
-                "呼んではいけません(T-P95-54、F-2、採用A-6)",
+            "強化ガード閾値(1.25GiB+512MB=1.75GiB)の1バイト手前ではwarmUp()はEngine準備を" +
+                "呼んではいけません(T-P95-54、F-2b)",
             0,
+            model.warmUpEngineCallCount
+        )
+    }
+
+    // T-P95-63（F-2b、強化ガード境界・T-P95-54の対）: 正常 - 強化ガードちょうどでは
+    // warmUp()がEngine準備を呼ぶ（`DeviceCapabilityImpl.hasAvailableMemory`は`>=`判定、
+    // 境界値そのものを含む）。
+    @Test
+    fun tP95_63_warmUp_availMemExactlyAtEnhancedGuard_callsEngineWarmable() = runTest {
+        val model = WarmableFakeModel()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_63")
+            .apply { selectedModelId = fakeQwen06bLikeEntry().id }
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorageWithEntry(fakeQwen06bLikeEntry()),
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapabilityWith(
+                totalMemBytes = 8L * GB,
+                availMemBytes = GB + GB / 4 + GB / 2,
+                "arm64-v8a"
+            ),
+            preferences = preferences
+        )
+
+        gateway.warmUp()
+
+        assertEquals(
+            "強化ガード閾値(1.75GiB)ちょうどではwarmUp()はEngine準備を呼ぶべきです" +
+                "(T-P95-63、F-2b、>=判定の境界を含む)",
+            1,
             model.warmUpEngineCallCount
         )
     }

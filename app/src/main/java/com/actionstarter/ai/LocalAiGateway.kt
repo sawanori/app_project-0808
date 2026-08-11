@@ -649,8 +649,10 @@ class LocalAiGateway(
      * （`EventSelection`）入場時に呼ばれる想定のEngine先行ウォームアップ。[generatePlan]・
      * [generateRecovery]と同じ事前ガード列——[preferences].aiEnabled→[deviceCapability].
      * `classify()`（Tier）→[deviceCapability].`isAbiSupported()`（ABI）→[resolveInstalledEntry]
-     * （モデル解決）→強化availMemガード（[WARM_UP_EXTRA_HEADROOM_BYTES]、通常ガードの512MB
-     * （[DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES]）より厳しい+1GiB、採用A-6）——を
+     * （モデル解決）→強化availMemガード（[WARM_UP_EXTRA_HEADROOM_BYTES]、採用A-6。
+     * F-2b実機再調整〔計画書§3.3〕以降は通常ガードの[DeviceCapability.
+     * MEMORY_SAFETY_MARGIN_BYTES]（512MB）と同値。詳細・変更経緯は
+     * [WARM_UP_EXTRA_HEADROOM_BYTES]のKDoc参照）——を
      * **すべて通過した場合のみ**、`model`が任意実装する[EngineWarmable]へEngine準備を委譲する。
      * いずれか1つでも不合格ならno-op（AI OFFユーザー・Tier/ABI非対応端末では実質no-opになり
      * 電池を消費しない、採用A-5）。
@@ -812,15 +814,35 @@ class LocalAiGateway(
         // 参照箇所はgeneratePlan()参照。
 
         /**
-         * Phase 9.5新設（計画書§3.3 F-2、敵対的レビュー採用A-6）。[warmUp]専用の強化availMem
-         * マージン。通常推論の[DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES]（512MB）より厳しい
-         * +1GiB——ウォームアップは「まだ使われるかどうか分からない」任意の先行投資であるため、
-         * 通常推論より保守的な閾値を要求する（通常ガードを通過してもウォームアップは見送られ
-         * うる非対称設計。T-P95-54相当が境界を回帰ロックする想定）。[ModelSelectorImpl]とは
-         * 共有しない（`warmUp`専用の関心事のため、[DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES]
-         * のような複数消費者間の単一情報源化は不要）。
+         * Phase 9.5新設（計画書§3.3 F-2、敵対的レビュー採用A-6）。**F-2b（実機再調整、
+         * 計画書§3.3「F-2b」、2026-08-12）で1GiB→512MBへ変更済み**。[warmUp]専用の強化availMem
+         * マージン。
+         *
+         * **F-2b実機検証で判明した経緯**: A54実機（6GB端末）でトップ画面20秒滞在後もPSSが
+         * 108MBのままでウォームアップが不発（モデル非常駐）と判明した。起動時点のavailMem
+         * スナップショットは2,393,044kB≈2.28GiBで、旧閾値（実際に解決されたQwen3-0.6Bの
+         * defaultProfilePeakRamBytes 1.25GiB＋旧+1GiB＝2.25GiB）にわずか約34MBの差で近接して
+         * おり、`warmUp()`が実際に評価される時点（Compose UI初期化等でさらにメモリ消費が
+         * 進んだ後）には閾値を割り込んでいた——**+1GiBはこの6GB端末では常閉の門**になっていた
+         * （Gemma4の8GB前提が実測2.5GiBへ縮んだP7-C8の問題と同型、「保守しすぎのガードが
+         * 実測でこそ暴かれる」パターンの再発）。
+         *
+         * **512MBへ再調整した根拠**: 通常推論の[DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES]
+         * （512MB）と同値へ揃えた。直後の`generatePlan`/`generateRecovery`が+512MBで許可される
+         * 以上、同一メモリを数秒早く確保するだけの行為（ウォームアップ）へ独自に倍のマージンを
+         * 課す合理性はない。ウォームアップの真のコストは「温存したのに使われなかった場合の
+         * 遊休常駐」であり、これは`onTrimMemory`連動アンロード（未実装、§9再検討トリガーへ
+         * 申し送り済み）の領分であって、起動判定のマージンをここで厚くしても解決しない。
+         *
+         * **旧「非対称設計」の解消**: 本定数が[DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES]と
+         * 同値になったことで、強化ガードと通常ガードの数式は完全に一致し、「通常ガードは通るが
+         * 強化ガードは通らない」非対称ケースは境界として存在しなくなった。強化ガード自体の
+         * 境界はT-P95-54（1バイト手前→呼ばない）・T-P95-63（ちょうど→呼ぶ）が回帰ロックする。
+         * [ModelSelectorImpl]とは共有しない（`warmUp`専用の関心事のため、[DeviceCapability.
+         * MEMORY_SAFETY_MARGIN_BYTES]のような複数消費者間の単一情報源化は不要——値が同じに
+         * なったのは設計判断の帰結であり、定数そのものを統合する必然性ではない）。
          */
-        const val WARM_UP_EXTRA_HEADROOM_BYTES: Long = 1L * 1024 * 1024 * 1024
+        const val WARM_UP_EXTRA_HEADROOM_BYTES: Long = 512L * 1024 * 1024
     }
 }
 
