@@ -9,6 +9,7 @@ import com.actionstarter.ai.InferenceBenchmarkSnapshot
 import com.actionstarter.ai.LocalLanguageModel
 import com.actionstarter.ai.SamplingPolicy
 import com.actionstarter.ai.prompt.PlanPromptBuilder
+import com.actionstarter.ai.prompt.PromptExample
 import com.actionstarter.ai.prompt.RecoveryPromptBuilder
 import com.actionstarter.ai.schema.PlanJsonSchema
 import com.actionstarter.ai.schema.RecoveryJsonSchema
@@ -213,56 +214,18 @@ class LiteRtLmLocalLanguageModel(
     }
 
     override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String =
-        withContext(Dispatchers.IO) {
-            val (activeEngine, modelLoadMs) = obtainEngine(modelPath)
-
-            var conversation: Conversation? = null
-            try {
-                conversation = activeEngine.createConversation(buildConversationConfig(context, samplingPolicy))
-                val dataMessage = buildDataMessage(context, samplingPolicy)
-
-                val ramSampler = NativeHeapPeakSampler().apply { start() }
-                val response = try {
-                    conversation.sendMessage(
-                        dataMessage,
-                        maxOutputToken = MAX_OUTPUT_TOKEN,
-                        thinkingConfig = DISABLED_THINKING_CONFIG,
-                        responseFormat = ResponseFormat.json(PlanJsonSchema.TEXT)
-                    )
-                } finally {
-                    ramSampler.stop()
-                }
-
-                val benchmarkInfo = runCatching { conversation.getBenchmarkInfo() }.getOrNull()
-                lastMetrics = InferenceBenchmarkSnapshot(
-                    modelLoadMs = modelLoadMs,
-                    firstTokenMs = ((benchmarkInfo?.timeToFirstTokenInSecond ?: 0.0) * MILLIS_PER_SECOND).toLong(),
-                    outputTokens = benchmarkInfo?.lastDecodeTokenCount ?: 0,
-                    tokensPerSecond = benchmarkInfo?.lastDecodeTokensPerSecond ?: 0.0,
-                    peakNativeHeapBytes = ramSampler.peakBytes()
-                )
-
-                extractText(response)
-            } catch (t: OutOfMemoryError) {
-                // §13 #8二次防御: 事前ガード（Gateway側§8.6 #7）をすり抜けた残余ケース。
-                // 内部状態（Engine）を破棄し、次回呼び出しで再生成させる（アンロード）。
-                unloadEngine()
-                throw t
-            } finally {
-                try {
-                    conversation?.close()
-                } catch (t: Throwable) {
-                    // close()は非冪等（V-2実測）。後続呼び出しは新規Conversationを生成するため
-                    // ここでの失敗は次回呼び出しに影響しない。呼び出し元の結果を壊さないよう
-                    // 握り潰す（Engine自体はunloadしていないため利用可能なまま）。
-                }
-            }
-        }
+        runInference(
+            modelPath = modelPath,
+            buildConfig = { buildConversationConfig(context, samplingPolicy) },
+            buildMessage = { buildDataMessage(context, samplingPolicy) },
+            responseFormat = ResponseFormat.json(PlanJsonSchema.TEXT)
+        )
 
     /**
-     * Phase 9実装（計画書§3.2・§18申し送り5）。[generatePlan]と同型の構造
-     * （[obtainEngine]→[Conversation]生成→[Conversation.sendMessage]→`finally`で必ず`close()`）を
-     * 踏襲する。**[RecoveryContext]は`locale`を持たないため（計画書§5「非変更」との整合、
+     * Phase 9実装（計画書§3.2・§18申し送り5）。Phase 9.5 RF-1（計画書§3.7、持ち越しリファクタ）で
+     * [generatePlan]との共通シーケンス（[obtainEngine]→[Conversation]生成→
+     * [Conversation.sendMessage]→`finally`で必ず`close()`）を[runInference]へ集約した。
+     * **[RecoveryContext]は`locale`を持たないため（計画書§5「非変更」との整合、
      * `RecoveryPromptBuilder`のクラスKDoc「実装調査で判明した設計ギャップ」参照）、
      * `Locale.getDefault()`を直接使う**。
      */
@@ -271,14 +234,45 @@ class LiteRtLmLocalLanguageModel(
         options: List<RecoveryOption>,
         modelPath: String,
         samplingPolicy: SamplingPolicy
+    ): String {
+        val locale = Locale.getDefault()
+        return runInference(
+            modelPath = modelPath,
+            buildConfig = { buildRecoveryConversationConfig(locale, samplingPolicy) },
+            buildMessage = { buildRecoveryDataMessage(context, options, samplingPolicy) },
+            responseFormat = ResponseFormat.json(RecoveryJsonSchema.TEXT)
+        )
+    }
+
+    /**
+     * Phase 9.5 RF-1（計画書§3.7、持ち越しリファクタ）。[generatePlan]／[generateRecovery]が
+     * それぞれ持っていた共通シーケンス——[obtainEngine]→[Conversation]生成→
+     * [Conversation.sendMessage]→ベンチマーク記録（[lastMetrics]）→`finally`での`close()`——を
+     * 1箇所に集約する。[buildConfig]／[buildMessage]はPlan／Recoveryで異なる`PromptBuilder`を
+     * 参照するため遅延評価の関数引数として受け取る——元の実装が`withContext(Dispatchers.IO)`
+     * 内（[obtainEngine]の直後）でこれらを構築していた評価タイミング・実行スレッドを変えない
+     * （呼び出し元は`{ buildXxxConfig(...) }`という遅延ラムダを渡し、本関数内で[obtainEngine]の
+     * 後に呼び出す）。OOM二次防御（[unloadEngine]呼び出し）・`Conversation.close()`の非冪等性
+     * 対応（§13 #8・V-2実測）を含め、[generatePlan]／[generateRecovery]の元実装から挙動を
+     * 一切変えていない。
+     *
+     * 本ファイルはJVMテストで一切検証できない（class file version不一致、
+     * `AiGatewayTestFixtures`のKDoc参照）ため、統合前後の挙動同値性はメソッド構造の対応表
+     * （持ち越しリファクタのコミット報告参照）で担保し、実機androidTest（§10実機受け入れ手順）
+     * で最終確認する。
+     */
+    private suspend fun runInference(
+        modelPath: String,
+        buildConfig: () -> ConversationConfig,
+        buildMessage: () -> String,
+        responseFormat: ResponseFormat
     ): String = withContext(Dispatchers.IO) {
         val (activeEngine, modelLoadMs) = obtainEngine(modelPath)
-        val locale = Locale.getDefault()
 
         var conversation: Conversation? = null
         try {
-            conversation = activeEngine.createConversation(buildRecoveryConversationConfig(locale, samplingPolicy))
-            val dataMessage = buildRecoveryDataMessage(context, options, samplingPolicy)
+            conversation = activeEngine.createConversation(buildConfig())
+            val dataMessage = buildMessage()
 
             val ramSampler = NativeHeapPeakSampler().apply { start() }
             val response = try {
@@ -286,7 +280,7 @@ class LiteRtLmLocalLanguageModel(
                     dataMessage,
                     maxOutputToken = MAX_OUTPUT_TOKEN,
                     thinkingConfig = DISABLED_THINKING_CONFIG,
-                    responseFormat = ResponseFormat.json(RecoveryJsonSchema.TEXT)
+                    responseFormat = responseFormat
                 )
             } finally {
                 ramSampler.stop()
@@ -303,14 +297,17 @@ class LiteRtLmLocalLanguageModel(
 
             extractText(response)
         } catch (t: OutOfMemoryError) {
-            // §13 #8二次防御（generatePlanと同型）。
+            // §13 #8二次防御: 事前ガード（Gateway側§8.6 #7）をすり抜けた残余ケース。
+            // 内部状態（Engine）を破棄し、次回呼び出しで再生成させる（アンロード）。
             unloadEngine()
             throw t
         } finally {
             try {
                 conversation?.close()
             } catch (t: Throwable) {
-                // close()は非冪等（V-2実測、generatePlanと同型）。
+                // close()は非冪等（V-2実測）。後続呼び出しは新規Conversationを生成するため
+                // ここでの失敗は次回呼び出しに影響しない。呼び出し元の結果を壊さないよう
+                // 握り潰す（Engine自体はunloadしていないため利用可能なまま）。
             }
         }
     }
@@ -392,64 +389,76 @@ class LiteRtLmLocalLanguageModel(
      * 増強済みseedプール・関連テスト（T-P95-1〜11）は削除せず**ドーマント基盤としてコード上に
      * 残置**する（Phase 12実験材料、計画書§3.2「結論」参照）。
      */
-    private fun buildConversationConfig(context: PlanningContext, samplingPolicy: SamplingPolicy): ConversationConfig {
-        val fewShotMessages = promptBuilder.buildFewShot(context.locale, shotCount).flatMap { example ->
-            listOf(Message.user(example.userTurn), Message.model(example.modelTurn))
-        }
-        return ConversationConfig(
-            enableResponseFormat = true,
-            systemInstruction = Contents.of(promptBuilder.buildSystemInstruction(context.locale)),
-            initialMessages = fewShotMessages,
-            samplerConfig = toSamplerConfig(samplingPolicy),
-            thinkingConfig = DISABLED_THINKING_CONFIG,
-            maxOutputToken = MAX_OUTPUT_TOKEN,
-            prefillPrefaceOnInit = true
+    private fun buildConversationConfig(context: PlanningContext, samplingPolicy: SamplingPolicy): ConversationConfig =
+        toConversationConfig(
+            systemInstruction = promptBuilder.buildSystemInstruction(context.locale),
+            fewShotMessages = toMessages(promptBuilder.buildFewShot(context.locale, shotCount)),
+            samplingPolicy = samplingPolicy
         )
-    }
-
-    /**
-     * [PlanPromptBuilder.build]（data message）に、[SamplingPolicy.appendConcisenessConstraint]が
-     * `true`のときのみ固定簡潔化制約文を追記する（品質ハーネス§6「静的制約の追加（2回目のみ）」・
-     * [SamplingPolicy]のKDoc）。
-     */
-    private fun buildDataMessage(context: PlanningContext, samplingPolicy: SamplingPolicy): String {
-        val dataMessage = promptBuilder.build(context)
-        return if (samplingPolicy.appendConcisenessConstraint) {
-            "$dataMessage\n$CONCISENESS_CONSTRAINT_SUFFIX"
-        } else {
-            dataMessage
-        }
-    }
 
     /** [buildConversationConfig]のRecovery版（計画書§3.2）。[locale]は呼び出し元が明示的に渡す。 */
-    private fun buildRecoveryConversationConfig(locale: Locale, samplingPolicy: SamplingPolicy): ConversationConfig {
-        val fewShotMessages = recoveryPromptBuilder.buildFewShot(locale, shotCount).flatMap { example ->
-            listOf(Message.user(example.userTurn), Message.model(example.modelTurn))
-        }
-        return ConversationConfig(
-            enableResponseFormat = true,
-            systemInstruction = Contents.of(recoveryPromptBuilder.buildSystemInstruction(locale)),
-            initialMessages = fewShotMessages,
-            samplerConfig = toSamplerConfig(samplingPolicy),
-            thinkingConfig = DISABLED_THINKING_CONFIG,
-            maxOutputToken = MAX_OUTPUT_TOKEN,
-            prefillPrefaceOnInit = true
+    private fun buildRecoveryConversationConfig(locale: Locale, samplingPolicy: SamplingPolicy): ConversationConfig =
+        toConversationConfig(
+            systemInstruction = recoveryPromptBuilder.buildSystemInstruction(locale),
+            fewShotMessages = toMessages(recoveryPromptBuilder.buildFewShot(locale, shotCount)),
+            samplingPolicy = samplingPolicy
         )
-    }
+
+    /**
+     * Phase 9.5 RF-1（計画書§3.7、持ち越しリファクタ）。[buildConversationConfig]／
+     * [buildRecoveryConversationConfig]が共有する[ConversationConfig]組み立て本体（固定
+     * フィールド6項目）。Plan／Recoveryで異なる[systemInstruction]・[fewShotMessages]（呼び出し
+     * 元がそれぞれの`PromptBuilder`から算出済みの値を渡す）のみを引数化し、それ以外
+     * （`enableResponseFormat`・`thinkingConfig`・`maxOutputToken`・`prefillPrefaceOnInit`）は
+     * 既存の定数・[toSamplerConfig]をそのまま踏襲する（元の2関数の値から変更なし）。
+     */
+    private fun toConversationConfig(
+        systemInstruction: String,
+        fewShotMessages: List<Message>,
+        samplingPolicy: SamplingPolicy
+    ): ConversationConfig = ConversationConfig(
+        enableResponseFormat = true,
+        systemInstruction = Contents.of(systemInstruction),
+        initialMessages = fewShotMessages,
+        samplerConfig = toSamplerConfig(samplingPolicy),
+        thinkingConfig = DISABLED_THINKING_CONFIG,
+        maxOutputToken = MAX_OUTPUT_TOKEN,
+        prefillPrefaceOnInit = true
+    )
+
+    /**
+     * Phase 9.5 RF-1（計画書§3.7、持ち越しリファクタ）。[PromptExample]（[PlanPromptBuilder.
+     * buildFewShot]／[RecoveryPromptBuilder.buildFewShot]共通の戻り値型、litertlm非依存の
+     * ランタイム中立表現、[PromptExample]のクラスKDoc参照）をlitertlm APIの[Message]
+     * （user/model往復ペア）へ変換する。元は[buildConversationConfig]／
+     * [buildRecoveryConversationConfig]の内部に同一ロジックが重複していた。
+     */
+    private fun toMessages(examples: List<PromptExample>): List<Message> =
+        examples.flatMap { example -> listOf(Message.user(example.userTurn), Message.model(example.modelTurn)) }
+
+    /** [PlanPromptBuilder.build]（data message）に[withConcisenessConstraintIfNeeded]を適用する。 */
+    private fun buildDataMessage(context: PlanningContext, samplingPolicy: SamplingPolicy): String =
+        withConcisenessConstraintIfNeeded(promptBuilder.build(context), samplingPolicy)
 
     /** [buildDataMessage]のRecovery版（計画書§3.2）。 */
     private fun buildRecoveryDataMessage(
         context: RecoveryContext,
         options: List<RecoveryOption>,
         samplingPolicy: SamplingPolicy
-    ): String {
-        val dataMessage = recoveryPromptBuilder.build(context, options)
-        return if (samplingPolicy.appendConcisenessConstraint) {
+    ): String = withConcisenessConstraintIfNeeded(recoveryPromptBuilder.build(context, options), samplingPolicy)
+
+    /**
+     * [SamplingPolicy.appendConcisenessConstraint]が`true`のときのみ固定簡潔化制約文を追記する
+     * （品質ハーネス§6「静的制約の追加（2回目のみ）」・[SamplingPolicy]のKDoc）。Phase 9.5 RF-1
+     * （計画書§3.7、持ち越しリファクタ）で[buildDataMessage]／[buildRecoveryDataMessage]の
+     * 重複を集約した共有ヘルパー。
+     */
+    private fun withConcisenessConstraintIfNeeded(dataMessage: String, samplingPolicy: SamplingPolicy): String =
+        if (samplingPolicy.appendConcisenessConstraint) {
             "$dataMessage\n$CONCISENESS_CONSTRAINT_SUFFIX"
         } else {
             dataMessage
         }
-    }
 
     /**
      * [SamplingPolicy.topK]／[SamplingPolicy.temperature]をそのまま転記し、[SamplingPolicy]自体が
