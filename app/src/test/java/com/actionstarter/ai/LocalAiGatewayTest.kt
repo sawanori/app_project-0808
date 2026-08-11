@@ -22,6 +22,7 @@ import com.actionstarter.domain.valueobject.CalendarSource
 import com.actionstarter.domain.valueobject.Coordinate
 import com.actionstarter.domain.valueobject.TransportMode
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
@@ -1801,6 +1802,279 @@ class LocalAiGatewayTest {
                 "checkInstalledModelのサイズ照合）へ遷移するべきです(T-P95-49、F-5b、A/B実測で発見)",
             AiFallbackReason.MODEL_CORRUPTED,
             fallback.reason
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 9.5（計画書§3.3 F-2・§7、敵対的レビュー採用A-5/A-6/A-7、優先繰り上げではなく通常順序）:
+    // LocalAiGateway.warmUp()のRedテスト。
+    // 現状のRed原因: warmUp()の本体が`TODO()`のため、全件`NotImplementedError`によりRedになるのが
+    // 正しい（EventCategoryClassifier.classifyがPhase 9.5 F-1 Step 3で辿ったのと同型のscaffold）。
+    // Step 4（Green）でLocalAiGatewayのKDoc「warmUp」が定める設計（aiEnabled→Tier→ABI→
+    // resolveInstalledEntry→強化availMemガード→inferenceMutex.tryLock()）を実装すること。
+    // ------------------------------------------------------------------
+
+    /** F-2専用fake。[EngineWarmable]を実装し、[warmUpEngine]の呼び出し回数を計測する。 */
+    private class WarmableFakeModel(
+        private val planRawJson: String? = null,
+        private val generatePlanDelayMillis: Long = 0L,
+        /**
+         * T-P95-55専用の同期フック（[CompletableDeferred]ベース）。`runTest`の既定
+         * `StandardTestDispatcher`は`async{}`の子コルーチンを即座には実行しない
+         * （呼び出し元がsuspendして初めてスケジューラが進行させる、Context7
+         * `kotlinx.coroutines`公式README「Eagerly entering child coroutines with
+         * UnconfinedTestDispatcher」が対比的に明記——既定〔Standard〕はこの対象外）ため、
+         * `generatePlan`が実際に走り始めた（＝`inferenceMutex`を確実に取得し終えた）タイミングを
+         * テスト側へ正確に伝える必要がある。`delay`より前でこのコールバックを呼ぶことで、
+         * テストは「`generatePlan`が`inferenceMutex.withLock`の内側まで到達し`delay`で
+         * サスペンドした直後」を確実に捉えられる（[CompletableDeferred.complete]自体は
+         * サスペンドしない単純な呼び出しのため、呼び出し元コルーチンはそのまま`delay`まで
+         * 実行を継続してから初めてサスペンドし、その時点でスケジューラが他コルーチンへ
+         * 制御を渡す——コルーチンは協調的にスケジューリングされ、自らサスペンドするまで
+         * 横取りされない）。
+         */
+        private val onGeneratePlanStarted: (() -> Unit)? = null
+    ) : LocalLanguageModel, EngineWarmable {
+        override val modelIdentifier: String = "warmable-fake-model"
+
+        var warmUpEngineCallCount: Int = 0
+            private set
+        var generatePlanCallCount: Int = 0
+            private set
+
+        override suspend fun warmUpEngine(modelPath: String) {
+            warmUpEngineCallCount += 1
+        }
+
+        override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String {
+            generatePlanCallCount += 1
+            onGeneratePlanStarted?.invoke()
+            if (generatePlanDelayMillis > 0) {
+                delay(generatePlanDelayMillis)
+            }
+            return planRawJson ?: throw UnsupportedOperationException("F-2 warmUp専用テストのため未使用")
+        }
+
+        override suspend fun generateRecovery(
+            context: RecoveryContext,
+            options: List<RecoveryOption>,
+            modelPath: String,
+            samplingPolicy: SamplingPolicy
+        ): String = throw UnsupportedOperationException("F-2 warmUp専用テストのため未使用")
+    }
+
+    // T-P95-50（F-2）: 異常 - aiEnabled=falseのときwarmUp()はadapterのEngine準備を一切呼ばない
+    // （電池保護、採用A-5）
+    @Test
+    fun tP95_50_warmUp_aiDisabled_neverCallsEngineWarmable() = runTest {
+        val model = WarmableFakeModel()
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = false, prefsFileName = "test_ai_prefs_tP95_50")
+        )
+
+        gateway.warmUp()
+
+        assertEquals(
+            "aiEnabled=falseのときwarmUp()はEngine準備を呼んではいけません(T-P95-50、F-2)",
+            0,
+            model.warmUpEngineCallCount
+        )
+    }
+
+    // T-P95-51（F-2）: 異常 - Tier非対応（TIER_0_UNSUPPORTED）のときwarmUp()は何もしない
+    @Test
+    fun tP95_51_warmUp_tierUnsupported_neverCallsEngineWarmable() = runTest {
+        val model = WarmableFakeModel()
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = unsupportedRamDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_51")
+        )
+
+        gateway.warmUp()
+
+        assertEquals(
+            "Tier非対応のときwarmUp()はEngine準備を呼んではいけません(T-P95-51、F-2)",
+            0,
+            model.warmUpEngineCallCount
+        )
+    }
+
+    // T-P95-52（F-2）: 異常 - ABI非対応のときwarmUp()は何もしない
+    @Test
+    fun tP95_52_warmUp_abiUnsupported_neverCallsEngineWarmable() = runTest {
+        val model = WarmableFakeModel()
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = unsupportedAbiDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_52")
+        )
+
+        gateway.warmUp()
+
+        assertEquals(
+            "ABI非対応のときwarmUp()はEngine準備を呼んではいけません(T-P95-52、F-2)",
+            0,
+            model.warmUpEngineCallCount
+        )
+    }
+
+    // T-P95-53（F-2）: 異常 - モデル未導入のときwarmUp()は何もしない
+    @Test
+    fun tP95_53_warmUp_modelNotInstalled_neverCallsEngineWarmable() = runTest {
+        val model = WarmableFakeModel()
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = notInstalledModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_53")
+        )
+
+        gateway.warmUp()
+
+        assertEquals(
+            "モデル未導入のときwarmUp()はEngine準備を呼んではいけません(T-P95-53、F-2)",
+            0,
+            model.warmUpEngineCallCount
+        )
+    }
+
+    // T-P95-54（F-2、強化閾値境界・採用A-6）: 異常 - availMemが通常ガード（+512MB）は満たすが
+    // 強化ガード（+1GiB、WARM_UP_EXTRA_HEADROOM_BYTES）を満たさないときwarmUp()は何もしない
+    // （通常推論は許可されるがウォームアップは見送られる非対称ケース）。
+    // fakeInstalledEntry().defaultProfilePeakRamBytes=1MBのため、通常ガード閾値は約513MB・
+    // 強化ガード閾値は約1025MB。availMemBytes=700MBは前者のみ満たす。
+    @Test
+    fun tP95_54_warmUp_availMemSatisfiesNormalGuardButNotEnhancedGuard_neverCallsEngineWarmable() = runTest {
+        val model = WarmableFakeModel()
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapabilityWith(
+                totalMemBytes = 8L * GB,
+                availMemBytes = 700L * 1024 * 1024,
+                "arm64-v8a"
+            ),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_54")
+        )
+
+        gateway.warmUp()
+
+        assertEquals(
+            "通常ガードは満たすが強化ガード(+1GiB)を満たさないときwarmUp()はEngine準備を" +
+                "呼んではいけません(T-P95-54、F-2、採用A-6)",
+            0,
+            model.warmUpEngineCallCount
+        )
+    }
+
+    // T-P95-55（F-2、in-flightスキップ・§3.3「生成in-flight時はスキップする」）: 異常 -
+    // generatePlan()実行中（inferenceMutex取得中）にwarmUp()を呼んでも、ロック解放を待たず
+    // 即座にno-opでEngine準備を呼ばない（tryLock()による非ブロッキングスキップ、withLockでの
+    // 待機ではない）。
+    //
+    // **タイミング制御にCompletableDeferredを使う理由**: `runTest`の既定`StandardTestDispatcher`は
+    // `async{}`の子コルーチンを即座に実行しない（呼び出し元がsuspendして初めてスケジューラが
+    // 進行させる）ため、単純に`async{ generatePlan }`の直後で`warmUp()`を呼んでも
+    // `generatePlan`側がまだ`inferenceMutex`を取得していない可能性があり、テストが
+    // 偽陽性（`tryLock()`がたまたま成功してもスキップ判定ロジックの欠陥を検出できない）に
+    // なりうる。[WarmableFakeModel.onGeneratePlanStarted]フックを`startedSignal.await()`で
+    // 待つことで、「`generatePlan`が`inferenceMutex.withLock`の内側へ入り、`delay`で
+    // サスペンドした直後」（＝ロック確実に保持中）まで到達してから`warmUp()`を呼ぶ。
+    @Test
+    fun tP95_55_warmUp_generationInFlight_skipsWithoutBlockingOrCallingEngineWarmable() = runTest {
+        val startedSignal = CompletableDeferred<Unit>()
+        val model = WarmableFakeModel(
+            planRawJson = validSingleStepResponse(),
+            generatePlanDelayMillis = 200L,
+            onGeneratePlanStarted = { startedSignal.complete(Unit) }
+        )
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_55")
+        )
+
+        val inFlightGeneration = async { gateway.generatePlan(planningContext()) }
+        // generatePlan()が実際に走り始めinferenceMutexを確実に取得し終えるまで待つ（上記コメント参照）。
+        startedSignal.await()
+        gateway.warmUp()
+        inFlightGeneration.await()
+
+        assertEquals(
+            "生成in-flight中のwarmUp()はスキップされEngine準備を呼んではいけません" +
+                "(T-P95-55、F-2、tryLock()による非ブロッキングスキップ)",
+            0,
+            model.warmUpEngineCallCount
+        )
+    }
+
+    // T-P95-56（F-2）: 正常 - 全ガード通過時のみadapterのEngine準備が呼ばれる
+    @Test
+    fun tP95_56_warmUp_allGuardsPass_callsEngineWarmableExactlyOnce() = runTest {
+        val model = WarmableFakeModel()
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(availMemBytes = 4L * GB),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_56")
+        )
+
+        gateway.warmUp()
+
+        assertEquals(
+            "全ガード通過時はEngine準備がちょうど1回呼ばれるべきです(T-P95-56、F-2)",
+            1,
+            model.warmUpEngineCallCount
+        )
+    }
+
+    // T-P95-57（F-2、正常・回帰）: ウォームアップ後のgeneratePlan()は通常どおり成功し、
+    // Engine準備（warmUpEngine）を再度呼ばない（Engine再利用はadapter内部
+    // 〔EngineLoadPolicy.requiresEngineReload〕の関心事であり、Gatewayが独自の
+    // 「温まっているか」追跡や重複ガードを新設しないことの回帰ロック、§3.3
+    // 「ModelSelector整合」）。
+    @Test
+    fun tP95_57_warmUp_thenGeneratePlan_succeedsWithoutRedundantEngineWarmableCall() = runTest {
+        val model = WarmableFakeModel(planRawJson = validSingleStepResponse())
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(availMemBytes = 4L * GB),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_57")
+        )
+
+        gateway.warmUp()
+        val result = gateway.generatePlan(planningContext())
+
+        assertTrue(
+            "ウォームアップ後のgeneratePlan()は通常どおり成功するべきです(T-P95-57、F-2): $result",
+            result is AiResult.Success
+        )
+        assertEquals(
+            "warmUp()呼び出し中のEngine準備はちょうど1回であるべきです(T-P95-57、F-2)",
+            1,
+            model.warmUpEngineCallCount
+        )
+        assertEquals(
+            "generatePlan()はEngine準備を再度呼ばず、通常のgeneratePlan経路のみを1回通るべきです" +
+                "(T-P95-57、F-2)",
+            1,
+            model.generatePlanCallCount
         )
     }
 }

@@ -436,6 +436,31 @@ class AppContainer(
     }
 
     /**
+     * Phase 9.5 F-2実配線（計画書§3.3、Step 4 Green、実装時の実測発見）。
+     * `EventSelectionViewModel`（[createViewModelFactory]）へ渡す[localAiGateway]の
+     * [LinkageError]防御版。[localAiPlanContextualizer]・[localAiRecoveryContextualizer]と
+     * **同じ理由**（[localAiGateway]の構築＝[LiteRtLmLocalLanguageModel]のインスタンス化は
+     * JDK 21未満の実行環境で`ExceptionInInitializerError`→`NoClassDefFoundError`〔いずれも
+     * [LinkageError]のサブクラス〕に失敗しうる、[localAiPlanContextualizer]のKDoc
+     * 「[LinkageError]防御」参照）だが、**本プロパティが必要になった経緯は異なる**:
+     * `EventSelectionViewModel`はナビゲーションフローの起点（最初に構築されるViewModel）であり、
+     * 素の[localAiGateway]（非nullable）をそのまま渡す設計にすると、`NavigationFlowTest`等の
+     * 既存Robolectricテストが[localAiGateway]の遅延評価を*[localAiPlanContextualizer]より前の
+     * タイミング*で踏み抜き、[LinkageError]が未捕捉のまま伝播して失敗する（実装時の実測発見、
+     * `PlanReviewViewModel`配線時に[localAiPlanContextualizer]のKDoc「実測で新規10件が失敗」が
+     * 記録した経緯と同型の再発）。`EventSelectionViewModel`の`localAiGateway`引数は元々
+     * nullable（既存呼び出し元との後方互換のため既定`null`）なので、本プロパティも同じ
+     * nullable型のまま[LinkageError]を吸収する。
+     */
+    private val eventSelectionLocalAiGateway: LocalAiGateway? by lazy {
+        try {
+            localAiGateway
+        } catch (e: LinkageError) {
+            null
+        }
+    }
+
+    /**
      * `ActionStarterNavHost`（統合サイクル・integration owner所有）から呼び出される単一
      * `ViewModelProvider.Factory`。[sharedPlanViewModel]はactivity-scopedの共有ViewModel
      * （計画書§10.1）であり、[PlanReviewViewModel]／[RecoveryViewModel]／[ExecutionViewModel]が
@@ -455,10 +480,18 @@ class AppContainer(
     fun createViewModelFactory(sharedPlanViewModel: SharedPlanViewModel): ViewModelProvider.Factory =
         viewModelFactory {
             initializer {
+                // Phase 9.5 F-2実配線（計画書§3.3、Step 4 Green）: localAiGatewayを渡し、
+                // トップ画面（EventSelection）入場のたびにLocal AI Engineの先行ウォームアップ
+                // （EventSelectionViewModel.warmUpAiIfPossible→LocalAiGateway.warmUp）を
+                // 発動させる。素のlocalAiGatewayではなくeventSelectionLocalAiGateway
+                // （LinkageError防御版、上記プロパティのKDoc参照）を渡す——実測で、素のまま
+                // 渡すとNavigationFlowTest等の既存テストがLinkageErrorを未捕捉のまま踏み抜く
+                // ことが判明したため。
                 EventSelectionViewModel(
                     calendarService = calendarService,
                     permissionGate = permissionGate,
-                    savedStateHandle = createSavedStateHandle()
+                    savedStateHandle = createSavedStateHandle(),
+                    localAiGateway = eventSelectionLocalAiGateway
                 )
             }
             // P4-C8実配線（`docs/plans/phase4-basic-engine.md`P4-C8行、仕様§13の完全実装）:

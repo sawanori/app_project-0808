@@ -645,6 +645,64 @@ class LocalAiGateway(
     }
 
     /**
+     * Phase 9.5新設（計画書§3.3 F-2、敵対的レビュー採用A-5・A-6・A-7）。トップ画面
+     * （`EventSelection`）入場時に呼ばれる想定のEngine先行ウォームアップ。[generatePlan]・
+     * [generateRecovery]と同じ事前ガード列——[preferences].aiEnabled→[deviceCapability].
+     * `classify()`（Tier）→[deviceCapability].`isAbiSupported()`（ABI）→[resolveInstalledEntry]
+     * （モデル解決）→強化availMemガード（[WARM_UP_EXTRA_HEADROOM_BYTES]、通常ガードの512MB
+     * （[DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES]）より厳しい+1GiB、採用A-6）——を
+     * **すべて通過した場合のみ**、`model`が任意実装する[EngineWarmable]へEngine準備を委譲する。
+     * いずれか1つでも不合格ならno-op（AI OFFユーザー・Tier/ABI非対応端末では実質no-opになり
+     * 電池を消費しない、採用A-5）。
+     *
+     * **in-flightスキップ（§3.3「生成in-flight時はスキップする」）**: [inferenceMutex]を
+     * `tryLock()`（非suspend、既にロック中なら即座に`false`を返す）で取得を試みる想定。取得
+     * できない（＝[generatePlan]／[generateRecovery]の実行中、または既に別のウォームアップが
+     * 進行中）場合は即座にno-opで戻る——`withLock`（suspendしてロック解放を待つ）は使わない。
+     * ロード完了を待ってから温める設計ではなく、「今まさに使われているなら温める必要がない
+     * （既に温まっているかこれからロードされる）」という前提に立つ。
+     *
+     * **`ModelSelector`との整合（§3.3「ModelSelector整合」）**: ウォームアップ後にavailMemが
+     * 悪化し[resolveInstalledEntry]が別モデルを解決するケースは、既存
+     * `com.actionstarter.ai.adapter.requiresEngineReload`の再ロード検知にそのまま委ねる
+     * （新規のキャンセル・再評価機構は設けない、過剰設計回避）。
+     *
+     * **例外を外へ出さない（§8.5の契約を踏襲、Step 4実装済み）**: ウォームアップは「まだ使われる
+     * かどうか分からない」任意の先行投資であり、失敗してもユーザー操作をブロックしてはならない。
+     * [EngineWarmable.warmUpEngine]呼び出しのみを`try`で囲む（ガード判定自体は[generatePlan]・
+     * [generateRecovery]と同じく無防備のまま——既存メソッド群と同じリスクモデルを踏襲し、
+     * 実際にネイティブ層へ踏み込む唯一の境界だけに安全網を置く）。
+     * [kotlinx.coroutines.CancellationException]は握り潰さず再送出する（§8.7原則3・T-GW-13と
+     * 同型、`viewModelScope`のキャンセルがウォームアップコルーチンへ正しく伝播するようにする）。
+     *
+     * Step 4（Green）で実装済み。
+     */
+    suspend fun warmUp() {
+        if (!preferences.aiEnabled) return
+        if (deviceCapability.classify() == DeviceTier.TIER_0_UNSUPPORTED) return
+        if (!deviceCapability.isAbiSupported()) return
+
+        val entry = resolveInstalledEntry() ?: return
+
+        val requiredPeakMemoryBytes = entry.defaultProfilePeakRamBytes + WARM_UP_EXTRA_HEADROOM_BYTES
+        if (!deviceCapability.hasAvailableMemory(requiredPeakMemoryBytes)) return
+
+        if (!inferenceMutex.tryLock()) return
+        try {
+            val modelPath = modelStorage.finalFile(entry).absolutePath
+            (model as? EngineWarmable)?.warmUpEngine(modelPath)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            // ウォームアップは失敗しても無害なno-op（§19精神）。generatePlan/generateRecoveryと
+            // 異なり戻り値を持たないため、AiFallbackReason相当の理由分類・記録は行わない
+            // （ユーザー操作をブロックしないことが最優先、クラスKDoc「例外を外へ出さない」参照）。
+        } finally {
+            inferenceMutex.unlock()
+        }
+    }
+
+    /**
      * @param entry [checkInstalledModel]が確定した導入済みエントリ（[runValidationPipeline]と
      *   同型のPlan/Recovery共通パターン）。
      */
@@ -752,6 +810,17 @@ class LocalAiGateway(
         // privateで定義されていたが、ModelSelectorImplと単一情報源を共有するため
         // DeviceCapability.MEMORY_SAFETY_MARGIN_BYTESへ昇格した（値・意味とも無変更）。
         // 参照箇所はgeneratePlan()参照。
+
+        /**
+         * Phase 9.5新設（計画書§3.3 F-2、敵対的レビュー採用A-6）。[warmUp]専用の強化availMem
+         * マージン。通常推論の[DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES]（512MB）より厳しい
+         * +1GiB——ウォームアップは「まだ使われるかどうか分からない」任意の先行投資であるため、
+         * 通常推論より保守的な閾値を要求する（通常ガードを通過してもウォームアップは見送られ
+         * うる非対称設計。T-P95-54相当が境界を回帰ロックする想定）。[ModelSelectorImpl]とは
+         * 共有しない（`warmUp`専用の関心事のため、[DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES]
+         * のような複数消費者間の単一情報源化は不要）。
+         */
+        const val WARM_UP_EXTRA_HEADROOM_BYTES: Long = 1L * 1024 * 1024 * 1024
     }
 }
 

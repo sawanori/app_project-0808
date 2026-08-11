@@ -4,6 +4,7 @@ import android.os.Debug
 import android.os.SystemClock
 import com.actionstarter.ai.BenchmarkMetricsSource
 import com.actionstarter.ai.EngineLoadStateSource
+import com.actionstarter.ai.EngineWarmable
 import com.actionstarter.ai.InferenceBenchmarkSnapshot
 import com.actionstarter.ai.LocalLanguageModel
 import com.actionstarter.ai.SamplingPolicy
@@ -134,7 +135,7 @@ class LiteRtLmLocalLanguageModel(
     private val shotCount: Int = PlanPromptBuilder.DEFAULT_SHOT_COUNT,
     private val maxNumTokens: Int = defaultMaxNumTokensFor(shotCount),
     private val threadCount: Int = DEFAULT_THREAD_COUNT
-) : LocalLanguageModel, BenchmarkMetricsSource, EngineLoadStateSource {
+) : LocalLanguageModel, BenchmarkMetricsSource, EngineLoadStateSource, EngineWarmable {
 
     override val modelIdentifier: String = "litert-lm:qwen3-0.6b-dynamic-int4-block32"
 
@@ -193,6 +194,23 @@ class LiteRtLmLocalLanguageModel(
      * `AiGatewayTestFixtures`のKDoc参照）ため、本メソッドの正しさは実機androidTestでのみ確認可能。
      */
     override fun loadedModelPath(): String? = loadedModelPath
+
+    /**
+     * Phase 9.5新設（計画書§3.3 F-2、[EngineWarmable]実装、Step 4実装済み）。[LocalAiGateway.warmUp]が
+     * 全ガード通過後に呼ぶEngine先行準備エントリ。[obtainEngine]（既存・実装済み・
+     * [generatePlan]/[generateRecovery]と同じ再利用判定）をそのまま呼ぶ薄い委譲——未ロードなら
+     * 新規ロード、[requiresEngineReload]が不要と判定すれば既存Engineをそのまま再利用する。
+     * **戻り値（`Pair<Engine, Long>`）は捨てる**——ウォームアップの目的はEngineを起こすことのみで、
+     * `Conversation`は作らない（[generatePlan]・[generateRecovery]と異なり、[obtainEngine]の後続で
+     * `createConversation`を呼ばない）。呼び出し元の[LocalAiGateway.warmUp]が例外を捕捉するため、
+     * 本メソッド自身は追加の例外処理を行わない。
+     *
+     * 本ファイルはJVMテストで一切検証できない（class file version不一致、
+     * `AiGatewayTestFixtures`のKDoc参照）ため、実装の正しさは実機androidTestでのみ確認可能。
+     */
+    override suspend fun warmUpEngine(modelPath: String) {
+        obtainEngine(modelPath)
+    }
 
     override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String =
         withContext(Dispatchers.IO) {

@@ -3,7 +3,12 @@
 > 対象仕様: §73「Phase 9・Local AI Recovery」の性能・品質フォローアップ、§57「性能指標」、§11.1〜§11.3実機実測系。直接の起点はPhase 9計画書§4.6「Phase 9.5候補（実機計測ループ要）」と、同計画書Step 4（コミット3 Green）報告が持ち越したリファクタ候補
 > 前提基盤: Phase 9（Local AI Recovery完了・A54実機受け入れ合格、ADR-0063）・Phase 8.5（`ModelSelector`自動選択・ADR-0062）・Phase 7（LiteRT-LM基盤・P7-C0/C5/C8実機実測、`LiteRtLmProbeTest`／`ModelComparisonProbeTest`のprobe規約確立）
 > 種別: 計測駆動フェーズ（コミット0・M実施済み。F-4/F-5はコード変更を伴う優先繰り上げ機能）
-> 承認状態: **敵対的レビュー反映済み（§13）。コミット0（androidTestコンパイル復旧）・Mベースライン計測（§14、30試行）実施済み。実測で発見した2件の設計欠陥（Recovery pairing全滅・Planウォームゲート自爆）を受け優先繰り上げしたF-4/F-5は、F-5当初Red実装がRed検収で修正層の誤同定により差し戻され（§13「Red検収時点の追加訂正」、§3.10）、二層構成（`ModelSelector`層＋`LocalAiGateway`層、単一`EngineLoadStateSource`共有）へ訂正しコミット済み（288e9b9）。コミット後の実機A/B実測でF-4成立・F-5未発動（`LocalAiGateway`既定値`modelSelector`がengineLoadStateSource未配線という統合ギャップ）が判明し、F-5b（既定値へ自動配線）をGreen実装・コミット済み（2acd2f2）。**F-5bコミット後の実機A/B再測定でRecovery完全蘇生を確認済み**（§14「A/B再実測」、F-5b後3/3 Success、retried=false・sanity clean、コミット08de59a）。**F-1（few-shotカテゴリ条件選択、Plan限定スコープ、§3.2）は実装・A/B実測・撤退まで完結し、不採用（ロールバック）確定**: F-1実配線（コミット09f4d99）→実機A/Bで`TITLE_COPY`品質退化検出→F-1b（各カテゴリ2件へプール増強、コミット12a14d6）→実機A/Bで`MIN_QUALITY`品質退化が継続（理由は変わったが可用性の退行は解消せず）→計測駆動フェーズの撤退基準発動→F-1c（本番配線ロールバック、コミット待ち）。詳細経緯は§14「A/B再実測（F-1）」「A/B判定（F-1b）→撤退基準発動→F-1c」、結論は§3.2「F-1c: ロールバック（結論）」参照。`EventCategoryClassifier`・カテゴリ絞り込みロジック・増強済みseedプール（各カテゴリ2件、計16 seed）・T-P95-1〜12は削除せずドーマント基盤（Phase 12実験材料）としてKDoc明記のうえ残置。ロールバック後: `LiteRtLmLocalLanguageModel.buildConversationConfig`は常に全件混合（`eventTitle`非配線）（:app:testDebugUnitTest tests=743/skipped=1/failures=0/errors=0〔全件Green、T-P95-12＝重要検証「eventTitleなし選択結果がF-1導入前ベースラインと構造的に完全一致」を含む〕・:app:lintDebug error=0/warning=23、JUnit XML集計で確認済み）。**F-1cはコミット指示済み、コミット実行中。続けてF-2（Engineウォームアップ）のStep 3（Red）へ着手予定**
+> 承認状態: **敵対的レビュー反映済み（§13）。以下、完了項目は要約のみ（詳細はコミットログ・各節参照）**:
+> - **M**（ベースライン計測、コミット9606135）・**F-4/F-5**（Recovery pairing交差一致緩和・warmゲート2層修正、288e9b9）・**F-5b**（既定値配線ギャップ修正、2acd2f2）・**A/B（F-4/F-5/F-5b）**（Recovery完全蘇生3/3確認、08de59a）は完了・コミット済み。
+> - **F-1／F-1b／F-1c**（few-shotカテゴリ条件選択、Plan限定）は実装→A/B実測2回（`TITLE_COPY`→`MIN_QUALITY`）→撤退基準発動→**不採用・ロールバック確定**（09f4d99→12a14d6→608a478）。`EventCategoryClassifier`等はドーマント基盤（Phase 12実験材料）として残置。詳細は§14「A/B再実測（F-1）」「A/B判定（F-1b）」、結論は§3.2「F-1c」参照。
+> - **F-2（Engineウォームアップ）はStep 3（Red）・Step 4（Green）とも実装済み**——`LocalAiGateway.warmUp()`（aiEnabled→Tier→ABI→`resolveInstalledEntry`→強化availMemガード→`inferenceMutex.tryLock()`によるin-flightスキップ→`(model as? EngineWarmable)?.warmUpEngine`、例外は`warmUpEngine`呼び出しのみ捕捉しno-op化）・新設任意interface`EngineWarmable`を`LiteRtLmLocalLanguageModel`が実装（`obtainEngine`へ委譲）・`EventSelectionViewModel.init`から`warmUpAiIfPossible()`を1回実配線・`AppContainer`配線（実装時に`LinkageError`回帰〔ナビゲーションフロー起点での`localAiGateway`未捕捉伝播、13件失敗〕を発見し`eventSelectionLocalAiGateway`ガードで解消、§3.3参照）。T-P95-50〜57は全件Green（:app:testDebugUnitTest tests=751/skipped=1/failures=0/errors=0・:app:lintDebug error=0/warning=23、JUnit XML集計で確認済み）。**未コミット、報告・検収待ち**
+
+続けてF-2（Engineウォームアップ、§3.3）のStep 3（Red）を実施——`LocalAiGateway.warmUp()`宣言（本体`TODO()`）・新設任意interface`EngineWarmable`（`BenchmarkMetricsSource`／`EngineLoadStateSource`と同型）を`LiteRtLmLocalLanguageModel`が実装（本体`TODO()`）・`EventSelectionViewModel`へ`localAiGateway`引数と`warmUpAiIfPossible()`フックを宣言（**Step 4まで`init`から呼ばない**——`warmUp()`が`TODO()`のため、呼ぶと本ViewModelを構築する既存テストが軒並み`NotImplementedError`で壊れるため意図的に未配線）・T-P95-50〜57（当初案T-P95-11〜17はF-1/F-1bが1〜12を消費したため衝突、実装時に50〜57へ採番し直し、§7に改訂記録済み）。全8件`NotImplementedError`でRed（`warmUp()`のTODO由来、EventCategoryClassifier.classifyと同型のscaffold）。全ファイルは**未コミット**の変更（:app:testDebugUnitTest tests=751/skipped=1/failures=8/errors=0〔F-2新規8件のみRed、既存743件は無傷〕・:app:lintDebug error=0/warning=23、JUnit XML集計で確認済み）。**Greenには未着手、報告・検収待ち**
 
 ---
 
@@ -78,6 +83,12 @@ Phase 9はA54実機受け入れに合格したが（`docs/plans/phase9-recovery-
 **ModelSelector整合**: ウォームアップ後にavailMemが悪化し`select()`が別モデルを解決した場合は、既存`EngineLoadPolicy.requiresEngineReload`の再ロード検知にそのまま委ねる（§2発見5）。ウォームアップ自体を能動的にキャンセル・再評価する新規機構は本フェーズでは設けない（過剰設計回避）。
 
 効果測定は画面入場からTTFTまでのwall timeをウォームアップ有／無でA/B比較する。
+
+**実装注記（Step 4 Green実装済み）**: `LocalAiGateway.warmUp()`は`resolveInstalledEntry()`（`checkInstalledModel()`のサイズ／SHA-256再検証は行わない——ウォームアップは「使われるかもしれない」先行投資でありモデル整合性の最終確認は実際の`generatePlan`／`generateRecovery`実行時に委ねる設計）でエントリを解決し、`entry.defaultProfilePeakRamBytes + WARM_UP_EXTRA_HEADROOM_BYTES`を`hasAvailableMemory`へ渡す。in-flightスキップは`inferenceMutex.tryLock()`（非suspend、取得できなければ即座に`false`）で実装し、取得できた場合のみ`(model as? EngineWarmable)?.warmUpEngine(modelPath)`を`try/finally`で囲んで呼ぶ（`finally`で必ず`unlock()`）。新設任意interface`EngineWarmable`（`BenchmarkMetricsSource`／`EngineLoadStateSource`と同型）を`LiteRtLmLocalLanguageModel`が実装し、既存`obtainEngine(modelPath)`（`generatePlan`／`generateRecovery`と共有する再利用判定）へ戻り値を捨てて委譲する薄い委譲とした——`Conversation`は作らない。`warmUpEngine`呼び出しのみを`catch (CancellationException) { throw }` / `catch (Throwable) {}`で囲み、ウォームアップの失敗を無害なno-opにする（§8.7原則3を踏襲、`viewModelScope`のキャンセルは正しく伝播する）。
+
+**`EventSelectionViewModel`実配線**: `init`から`refresh()`の直後に`warmUpAiIfPossible()`を1回だけ呼ぶ（`refresh()`自体はON_RESUME再チェック・`onRetry`からも呼ばれ画面滞在中に複数回発生しうるため、「画面入場時のみ」の粒度に合わせ`init`側に置いた）。`localAiGateway`は末尾・既定`null`の新規コンストラクタ引数とし、`null`なら`warmUpAiIfPossible()`は`?.let`でno-op（既存テストとの後方互換）。
+
+**`AppContainer`実配線と実装時に発見した`LinkageError`回帰**: `EventSelectionViewModel`初期化子へ素の`localAiGateway`をそのまま渡す設計にしたところ、`NavigationFlowTest`・`CalendarNavigationFlowTest`・`NotificationPermissionRequestTest`・`SettingsNavigationTest`（計13件）が`UnsupportedClassVersionError`／`NoClassDefFoundError`で新規に失敗することを実測で発見した——`EventSelectionViewModel`はナビゲーションフローの起点（最初に構築されるViewModel）であり、`localAiGateway`（`by lazy`）の評価を`localAiPlanContextualizer`・`localAiRecoveryContextualizer`（既存の`LinkageError`防御）より前のタイミングで踏み抜くため、JDK 21未満の実行環境（本テストJVM）特有の`LinkageError`が未捕捉のまま伝播していた（Phase 8で`PlanReviewViewModel`配線時に発生したのと同型の再発、`AppContainer.localAiPlanContextualizer`のKDoc「実測で新規10件が失敗」参照）。既存の2箇所と同じ`try { localAiGateway } catch (e: LinkageError) { null }`パターンを踏襲した新規`eventSelectionLocalAiGateway: LocalAiGateway?`プロパティを追加し、これを`EventSelectionViewModel`へ渡すことで解消した（実機ART環境では本チェックは発生しない）。
 
 ### 3.4 F-3: Recovery用maxNumTokensプロファイル縮小（P5）
 
@@ -205,16 +216,19 @@ LiteRT-LMのリリースノートを定点観測し、対応APIが追加され�
 |---|---|---|
 | T-P95-10 | 正常 | Recovery版`estimateMaxNumTokens`相当が`VERIFIED_WORKING_MAX_NUM_TOKENS`相当の下限を下回らない |
 
-### `LocalAiGateway.warmUp()`（F-2、JVM、Gateway層ゲーティング・敵対的レビューA-5/A-6）
+### `LocalAiGateway.warmUp()`（F-2、JVM、Gateway層ゲーティング・敵対的レビューA-5/A-6/A-7）
+**採番改訂（実装時）**: 当初案のT-P95-11〜17はF-1／F-1bが実際にT-P95-1〜12を消費したため衝突する。実装時にT-P95-50〜57へ採番し直した（値・意味とも当初案から不変、in-flightスキップ〔T-P95-55〕を1件追加）。
+
 | ID | 分類 | 内容 |
 |---|---|---|
-| T-P95-11 | 異常 | `aiEnabled=false`のとき`warmUp()`はadapterのEngine準備を一切呼ばない |
-| T-P95-12 | 異常 | Tier非対応（`TIER_0_UNSUPPORTED`）のとき`warmUp()`は何もしない |
-| T-P95-13 | 異常 | ABI非対応のとき`warmUp()`は何もしない |
-| T-P95-14 | 異常 | モデル未解決（未導入／破損）のとき`warmUp()`は何もしない |
-| T-P95-15 | 異常 | availMemが通常ガード（+512MB）は満たすが強化ガード（+1GiB、`WARM_UP_EXTRA_HEADROOM_BYTES`）を満たさないとき`warmUp()`は何もしない（通常推論は許可されるがウォームアップは見送られる非対称ケース） |
-| T-P95-16 | 正常 | 全ガード通過時のみadapterのEngine準備が呼ばれる |
-| T-P95-17 | 正常・回帰 | ウォームアップ後の`generatePlan`／`generateRecovery`が既存`EngineLoadPolicy.requiresEngineReload`をそのまま経由する（新規ロック機構を導入しない） |
+| T-P95-50 | 異常 | `aiEnabled=false`のとき`warmUp()`はadapterのEngine準備を一切呼ばない |
+| T-P95-51 | 異常 | Tier非対応（`TIER_0_UNSUPPORTED`）のとき`warmUp()`は何もしない |
+| T-P95-52 | 異常 | ABI非対応のとき`warmUp()`は何もしない |
+| T-P95-53 | 異常 | モデル未解決（未導入／破損）のとき`warmUp()`は何もしない |
+| T-P95-54 | 異常 | availMemが通常ガード（+512MB）は満たすが強化ガード（+1GiB、`WARM_UP_EXTRA_HEADROOM_BYTES`）を満たさないとき`warmUp()`は何もしない（通常推論は許可されるがウォームアップは見送られる非対称ケース） |
+| T-P95-55 | 異常 | 生成in-flight中（`inferenceMutex`取得中）に`warmUp()`を呼んでも、ロック解放を待たず即座にno-opでEngine準備を呼ばない（`tryLock()`による非ブロッキングスキップ） |
+| T-P95-56 | 正常 | 全ガード通過時のみadapterのEngine準備が呼ばれる |
+| T-P95-57 | 正常・回帰 | ウォームアップ後の`generatePlan`が通常どおり成功し、Engine準備（`warmUpEngine`）を再度呼ばない（Engine再利用は既存`EngineLoadPolicy.requiresEngineReload`／adapter内部の関心事、新規ロック機構を導入しない） |
 
 ### 実機プローブ（androidTest、M/PR-1/PR-2）
 | ID | 内容 |

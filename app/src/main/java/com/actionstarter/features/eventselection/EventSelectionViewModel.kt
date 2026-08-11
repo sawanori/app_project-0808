@@ -4,6 +4,7 @@ import android.Manifest
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.actionstarter.ai.LocalAiGateway
 import com.actionstarter.services.calendar.CalendarQuerySpec
 import com.actionstarter.services.calendar.CalendarResult
 import com.actionstarter.services.calendar.CalendarService
@@ -34,7 +35,8 @@ import java.time.Instant
 class EventSelectionViewModel(
     private val calendarService: CalendarService,
     private val permissionGate: PermissionGate,
-    private val savedStateHandle: SavedStateHandle
+    private val savedStateHandle: SavedStateHandle,
+    private val localAiGateway: LocalAiGateway? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<EventSelectionUiState>(EventSelectionUiState.Loading)
@@ -70,6 +72,33 @@ class EventSelectionViewModel(
 
     init {
         refresh()
+        warmUpAiIfPossible()
+    }
+
+    /**
+     * Phase 9.5新設（計画書§3.3 F-2、敵対的レビュー採用A-7「トップ画面（`EventSelection`）
+     * 入場時のみ・都度実行」、Step 4実装済み）。トップ画面入場（本ViewModelの構築＝画面入場と
+     * 対応）の都度、Local AI Engineの先行ウォームアップ（[LocalAiGateway.warmUp]）を試みる。
+     *
+     * **[refresh]からではなく[init]から1回だけ呼ぶ理由**: 「画面入場時のみ」は「1回の画面
+     * 入場につき1回」を意味し、[refresh]（ON_RESUME再チェック・[onRetry]からも呼ばれ、
+     * 同一画面滞在中に複数回起こりうる）から呼ぶと過剰発火する。[init]は本ViewModelの構築
+     * （＝画面入場）ごとに厳密に1回だけ実行されるため、トリガー粒度が正確に一致する。
+     *
+     * **[localAiGateway]が`null`ならno-op**: 既存呼び出し元（`localAiGateway`引数を渡さない
+     * `EventSelectionViewModelPermissionTest`等）は`null`のままであり、`?.let`が発火しないため
+     * 既存テストの挙動に一切影響しない（後方互換）。
+     *
+     * **`viewModelScope.launch`で起動する理由**: [LocalAiGateway.warmUp]は`suspend fun`であり、
+     * [init]（非suspendコンテキスト）から直接呼べない。`viewModelScope`はViewModelの破棄
+     * （＝画面離脱）時に自動キャンセルされるため、画面離脱後もウォームアップが居残り続ける
+     * ことはない（[LocalAiGateway.warmUp]のKDoc「[CancellationException]は握り潰さず再送出
+     * する」と対になる設計）。
+     */
+    private fun warmUpAiIfPossible() {
+        localAiGateway?.let { gateway ->
+            viewModelScope.launch { gateway.warmUp() }
+        }
     }
 
     /**
