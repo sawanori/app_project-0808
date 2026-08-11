@@ -365,14 +365,17 @@ class LiteRtLmLocalLanguageModel(
      * `samplerConfig`を持つ[ConversationConfig]を組み立てる（品質ハーネス§3・§4・§10）。
      * `prefillPrefaceOnInit = true`でこのprefaceを会話生成時にprefillする（品質ハーネス§3末尾）。
      *
-     * **Phase 9.5 F-1実配線（計画書§3.2、Step 4 Green）**: [PlanPromptBuilder.buildFewShot]の
-     * `eventTitle`引数へ`context.event.title`（生タイトル）を渡す。[PlanPromptBuilder.build]の
-     * `title`（[com.actionstarter.ai.prompt.PlanPromptBuilder]内部の`truncateForPrompt`で
-     * 切り詰め）とは異なり、こちらはLLMへ埋め込まれず`EventCategoryClassifier.classify`の
-     * キーワード照合にのみ使われるKotlin側の判定材料であるため、切り詰めは行わない。
+     * **Phase 9.5 F-1実配線はロールバック済み（計画書§3.2 F-1c、F-1 A/B判定2連続陰性、
+     * 2026-08-12）**: `eventTitle`引数を渡さず常に全件混合（[PlanPromptBuilder.buildFewShot]の
+     * 既定挙動）を使う——F-1（コミット09f4d99）・F-1b（コミット12a14d6、各カテゴリ2件への増強）
+     * のいずれも実機A/Bで有意な品質退行（1回目`TITLE_COPY`／2回目`MIN_QUALITY`）を示し、計測
+     * 駆動フェーズの撤退基準（計画書§9・§0）が発動したため、本番配線を撤回した。
+     * [EventCategoryClassifier]・[PlanPromptBuilder.buildFewShot]のカテゴリ絞り込みロジック・
+     * 増強済みseedプール・関連テスト（T-P95-1〜11）は削除せず**ドーマント基盤としてコード上に
+     * 残置**する（Phase 12実験材料、計画書§3.2「結論」参照）。
      */
     private fun buildConversationConfig(context: PlanningContext, samplingPolicy: SamplingPolicy): ConversationConfig {
-        val fewShotMessages = promptBuilder.buildFewShot(context.locale, shotCount, eventTitle = context.event.title).flatMap { example ->
+        val fewShotMessages = promptBuilder.buildFewShot(context.locale, shotCount).flatMap { example ->
             listOf(Message.user(example.userTurn), Message.model(example.modelTurn))
         }
         return ConversationConfig(

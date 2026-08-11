@@ -24,6 +24,17 @@ import java.util.Locale
  * **Step 4（Green）で実装済み**: [classify]はキーワード辞書（[JAPANESE_KEYWORDS]・
  * [ENGLISH_KEYWORDS]）・優先順位（[CATEGORY_PRIORITY_ORDER]）を参照するのみで完結する
  * （scaffold段階の設計どおり）。
+ *
+ * **本番配線はF-1 A/B負判定によりロールバック済み・Phase 12実験材料（計画書§3.2 F-1c、
+ * 2026-08-12）**: 本クラス自体・[PlanPromptBuilder.buildFewShot]のカテゴリ絞り込みロジックは
+ * 削除しないが、[com.actionstarter.ai.adapter.LiteRtLmLocalLanguageModel.
+ * buildConversationConfig]からは呼ばれない（`eventTitle`引数を渡さないため常に全件混合経路）。
+ * F-1（コミット09f4d99）・F-1b（各カテゴリ2件への増強、コミット12a14d6）のいずれも実機A/Bで
+ * 有意な品質退行（`TITLE_COPY`→`MIN_QUALITY`）を示し、計測駆動フェーズの撤退基準（計画書§9・
+ * §0）が発動したため本番配線を撤回した——結論は「カテゴリ条件選択は0.6B×現行プロンプト予算
+ * では品質下限を割る」（計画書§3.2「結論」参照）。本クラス・増強済みseedプール・関連テストは
+ * 将来（Phase 12、より大きいモデル・より大きいプロンプト予算での再評価）の実験材料として
+ * コード上に残す。
  */
 class EventCategoryClassifier {
 

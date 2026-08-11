@@ -733,6 +733,97 @@ class PlanPromptBuilderTest {
     }
 
     /**
+     * [PromptExample.modelTurn]を構造的にパースし、`event_type`と各stepの
+     * `action_type`／`display_text`のペア列を取り出す（[extractDisplayTexts]の拡張版、
+     * T-P95-12がJSON文字列の生シリアライズ順に依存しない構造比較を行うために使う）。
+     */
+    private fun extractStructuredModelTurn(modelTurnJson: String): Pair<String, List<Pair<String, String>>> {
+        val json = JSONObject(modelTurnJson)
+        val eventType = json.getString("event_type")
+        val steps = json.getJSONArray("steps")
+        val stepPairs = (0 until steps.length()).map { index ->
+            val step = steps.getJSONObject(index)
+            step.getString("action_type") to step.getString("display_text")
+        }
+        return eventType to stepPairs
+    }
+
+    // T-P95-12（F-1cロールバック、重要検証・計画書§3.2「F-1c」）: 正常・回帰 -
+    // eventTitle省略時（本番のロールバック後の唯一の経路）のbuildFewShotの選択結果が、
+    // F-1/F-1bのプール増強前後を通じてF-1導入前のベースラインと完全に同一（件数だけでなく
+    // userTurn・event_type・各stepのaction_type／display_textの内容そのもの、生JSON文字列の
+    // シリアライズ順ではなく構造的な内容で比較）であることを固定する。F-1b追加分は既存4件の
+    // "末尾"へ追加したため、eventTitleなし（常に先頭shotCount件を採用）の経路は理論上不変の
+    // はずだが、将来のプール変更が誤って順序を崩さないよう実測値そのもの（ご祝儀を用意する／
+    // 保険証を持って出る等の逐語テキスト）を固定してロールバック後の挙動を保証する。
+    @Test
+    fun tP95_12_buildFewShot_withoutEventTitle_matchesPreF1BaselineSeedSequenceExactly() {
+        val builder = PlanPromptBuilder()
+
+        val japaneseExamples = builder.buildFewShot(Locale.JAPAN)
+        assertEquals(2, japaneseExamples.size)
+        assertEquals(
+            "eventTitle省略時のja先頭1件目はF-1導入前と同一のuserTurnであるべきです(T-P95-12)",
+            "[EVENT] title=\"結婚式\" category=social locale=ja → produce steps",
+            japaneseExamples[0].userTurn
+        )
+        assertEquals(
+            "eventTitle省略時のja先頭1件目はF-1導入前と同一のmodelTurn構造であるべきです(T-P95-12)",
+            "social" to listOf(
+                "finish_current_task" to "今の作業を切り上げる",
+                "prepare_items" to "ご祝儀を用意する",
+                "leave" to "出発する"
+            ),
+            extractStructuredModelTurn(japaneseExamples[0].modelTurn)
+        )
+        assertEquals(
+            "eventTitle省略時のja2件目はF-1導入前と同一のuserTurnであるべきです(T-P95-12)",
+            "[EVENT] title=\"歯科検診\" category=medical locale=ja → produce steps",
+            japaneseExamples[1].userTurn
+        )
+        assertEquals(
+            "eventTitle省略時のja2件目はF-1導入前と同一のmodelTurn構造であるべきです(T-P95-12)",
+            "medical" to listOf(
+                "finish_current_task" to "今の作業を切り上げる",
+                "prepare_items" to "保険証を持って出る",
+                "leave" to "出発する"
+            ),
+            extractStructuredModelTurn(japaneseExamples[1].modelTurn)
+        )
+
+        val englishExamples = builder.buildFewShot(Locale.US)
+        assertEquals(2, englishExamples.size)
+        assertEquals(
+            "eventTitle省略時のen先頭1件目はF-1導入前と同一のuserTurnであるべきです(T-P95-12)",
+            "[EVENT] title=\"Wedding\" category=social locale=en → produce steps",
+            englishExamples[0].userTurn
+        )
+        assertEquals(
+            "eventTitle省略時のen先頭1件目はF-1導入前と同一のmodelTurn構造であるべきです(T-P95-12)",
+            "social" to listOf(
+                "finish_current_task" to "Wrap up what you are doing",
+                "prepare_items" to "Bring a monetary gift",
+                "leave" to "Head out"
+            ),
+            extractStructuredModelTurn(englishExamples[0].modelTurn)
+        )
+        assertEquals(
+            "eventTitle省略時のen2件目はF-1導入前と同一のuserTurnであるべきです(T-P95-12)",
+            "[EVENT] title=\"Dental checkup\" category=medical locale=en → produce steps",
+            englishExamples[1].userTurn
+        )
+        assertEquals(
+            "eventTitle省略時のen2件目はF-1導入前と同一のmodelTurn構造であるべきです(T-P95-12)",
+            "medical" to listOf(
+                "finish_current_task" to "Wrap up what you are doing",
+                "prepare_items" to "Bring your insurance card",
+                "leave" to "Head out"
+            ),
+            extractStructuredModelTurn(englishExamples[1].modelTurn)
+        )
+    }
+
+    /**
      * [com.actionstarter.ai.schema.ContentSanityChecker.containsVerbLikeExpression]相当の
      * 軽量再実装（本テストファイルの既存方針どおりproductionクラスをimportしない、
      * [qh14f_buildFewShot_examples_neverCopyTheirOwnEventTitleIntoDisplayText]の

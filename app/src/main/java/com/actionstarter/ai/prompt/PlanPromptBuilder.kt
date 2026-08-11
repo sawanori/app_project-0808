@@ -156,18 +156,22 @@ class PlanPromptBuilder {
      *   カテゴリに一致する模範例のみへ絞り込む（計画書§3.2「推定カテゴリに一致する模範例のみ
      *   （1〜2件）を選ぶ。不一致0件時は現行の全件混合へフォールバックする」）。
      *
-     *   **Step 4（Green）で実配線済み**: [eventTitle]が非nullなら[eventCategoryClassifier.
+     *   **Step 4（Green）で実装済み**: [eventTitle]が非nullなら[eventCategoryClassifier.
      *   classify]でカテゴリを推定し、[FewShotSeed.eventType]が一致する模範例のみへ絞り込む。
      *   一致0件（[EventCategoryClassifier.CATEGORY_UNKNOWN]を含む——`eventType`の4値のいずれとも
      *   一致しないため自動的に0件になる）の場合は現行の全件混合（[seeds]そのまま）へ
      *   フォールバックする（T-P95-8、few-shotが0件になる事態を避ける安全側設計）。
      *
-     *   **本番配線（計画書§3.2「実配線」）**: [com.actionstarter.ai.adapter.
-     *   LiteRtLmLocalLanguageModel.buildConversationConfig]が`context.event.title`（生タイトル、
-     *   [truncateForPrompt]による切り詰めは行わない——本パラメータは[build]のようにLLMへ
-     *   埋め込まれる文字列ではなく、Kotlin側の分類判定にのみ使われ切り詰めの必要がないため）を
-     *   本パラメータへ渡す。これにより`generatePlan`呼び出しのたびに実際のイベントタイトルから
-     *   few-shot選択が発動する。
+     *   **本番配線はF-1 A/B負判定によりロールバック済み・Phase 12実験材料（計画書§3.2 F-1c、
+     *   2026-08-12）**: [com.actionstarter.ai.adapter.LiteRtLmLocalLanguageModel.
+     *   buildConversationConfig]は本パラメータを渡さない（常に`eventTitle=null`の全件混合経路
+     *   のみを使う）。F-1（コミット09f4d99）・F-1b（コミット12a14d6、各カテゴリ2件への増強）の
+     *   いずれも実機A/Bで有意な品質退行（`TITLE_COPY`→`MIN_QUALITY`と理由は変わったが2回とも
+     *   Plan生成3/3がFallback）を示し、計測駆動フェーズの撤退基準（計画書§9・§0）が発動した
+     *   ため本番配線を撤回した。本パラメータ自体・カテゴリ絞り込みロジック・
+     *   [EventCategoryClassifier]・増強済みseedプールは削除せず、将来（Phase 12、より大きい
+     *   モデル・より大きいプロンプト予算での再評価）の実験材料としてコード上に残す（計画書§3.2
+     *   「結論」参照）。
      */
     fun buildFewShot(locale: Locale, shotCount: Int = DEFAULT_SHOT_COUNT, eventTitle: String? = null): List<PromptExample> {
         val seeds = if (locale.language == Locale.JAPANESE.language) JAPANESE_FEW_SHOT_SEEDS else ENGLISH_FEW_SHOT_SEEDS
