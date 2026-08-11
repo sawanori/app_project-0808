@@ -48,8 +48,26 @@ interface AiPreferences {
          * P7-C6（ユーザー確定、2026-08-10）。[selectedModelId]の既定値
          * ＝[ModelCatalog.GEMMA_4_E2B_IT]のid。`const val`にできない理由: プロパティアクセスは
          * コンパイル時定数ではないため`val`とする（実行時には1回だけ解決される）。
+         *
+         * **Phase 8.5 Step 4（Green）で変更（計画書`docs/plans/phase8.5-adaptive-model-selection.md`
+         * §3設計3・§11確認事項3、ADR-0062）**: 既定値を実モデルid（[ModelCatalog.GEMMA_4_E2B_IT]）
+         * から[AUTO_SELECT_MODEL_ID]センチネルへ変更した（2026-08-10「既定モデル=Gemma4」決定の
+         * 承認済み改訂）。A54実機実測（`phase8-a54-ram-tier-fix.md`§10.3）で日常使用の表記6GB機は
+         * Gemma4の要求メモリを恒常的に満たせないことが判明したため。**既にSettings経由で
+         * 明示的に`selectedModelId`を書き込み済みの既存ユーザーはこの既定値変更の影響を受けない**
+         * （SharedPreferencesに値が存在する限りこの既定値は参照されない、§11確認事項3「既存の
+         * 明示選択は現状維持」）。
          */
-        val DEFAULT_SELECTED_MODEL_ID: String = ModelCatalog.GEMMA_4_E2B_IT.id
+        val DEFAULT_SELECTED_MODEL_ID: String = AUTO_SELECT_MODEL_ID
+
+        /**
+         * Phase 8.5新設（計画書§3設計3、ADR-0062）。「自動」選択のセンチネル値。
+         * [selectedModelId]がこの値のとき、[com.actionstarter.ai.LocalAiGateway]は
+         * [com.actionstarter.ai.model.ModelSelector]経由で空きメモリに応じたモデルを選ぶ
+         * （Step 4で配線済み、[com.actionstarter.ai.LocalAiGateway.resolveInstalledEntry]参照）。
+         * どの[com.actionstarter.ai.model.ModelCatalogEntry.id]とも一致しない固定文字列。
+         */
+        const val AUTO_SELECT_MODEL_ID: String = "auto"
     }
 }
 

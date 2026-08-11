@@ -16,6 +16,8 @@ import com.actionstarter.ai.adapter.LiteRtLmLocalLanguageModel
 import com.actionstarter.ai.model.DeviceCapability
 import com.actionstarter.ai.model.DeviceCapabilityImpl
 import com.actionstarter.ai.model.ModelDownloader
+import com.actionstarter.ai.model.ModelSelector
+import com.actionstarter.ai.model.ModelSelectorImpl
 import com.actionstarter.ai.model.ModelStorage
 import com.actionstarter.ai.model.ModelStorageImpl
 import com.actionstarter.ai.model.ModelVerifierImpl
@@ -281,6 +283,14 @@ class AppContainer(
     private val deviceCapability: DeviceCapability = DeviceCapabilityImpl(context)
 
     /**
+     * Phase 8.5新設（計画書`docs/plans/phase8.5-adaptive-model-selection.md`§3設計4、
+     * ADR-0062）。[localAiGateway]の`selectedModelId`＝`"auto"`時の自動選択に使う
+     * （Step 4で`LocalAiGateway.resolveInstalledEntry`内部の分岐へ配線済み）。
+     * `by lazy`は他のAI関連プロパティと同じくR-7（起動を重くしない）を理由とする。
+     */
+    private val modelSelector: ModelSelector by lazy { ModelSelectorImpl(deviceCapability, modelStorage) }
+
+    /**
      * F96実配線の入口（計画書§7.2・§14 P7-C1／P7-C4）。Phase 7完成条件（`ai/`が単体で完結して動く、
      * 仕様§71・計画書§0）を満たすための新規プロパティ。[planningEngine]／
      * [recoveryEngine]の右辺は本サイクルでは無変更（計画書§2.2「Phase 7はAI配線をしない」・
@@ -317,18 +327,16 @@ class AppContainer(
      */
     val localAiGateway: LocalAiGateway by lazy {
         LocalAiGateway(
-            model = LiteRtLmLocalLanguageModel(
-                modelPathProvider = {
-                    checkNotNull(modelStorage.installedModelPath()) {
-                        "LiteRtLmLocalLanguageModel: no model installed (LocalAiGateway should " +
-                            "have guarded MODEL_NOT_INSTALLED before reaching here)"
-                    }
-                }
-            ),
+            // Phase 8.5（計画書§3設計5、ADR-0062、アーキテクトレビューPass 1 CRITICAL対応）:
+            // 旧modelPathProviderラムダ（ModelStorageを独立に再解決していた）は廃止した。
+            // モデルパスはLocalAiGatewayが検証・選択したエントリからgeneratePlan呼び出し時に
+            // 明示的に渡される（LiteRtLmLocalLanguageModelのクラスKDoc参照）。
+            model = LiteRtLmLocalLanguageModel(),
             modelStorage = modelStorage,
             modelVerifier = ModelVerifierImpl(),
             deviceCapability = deviceCapability,
-            preferences = aiPreferences
+            preferences = aiPreferences,
+            modelSelector = modelSelector
         )
     }
 

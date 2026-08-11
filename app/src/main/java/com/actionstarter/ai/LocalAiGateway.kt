@@ -3,6 +3,8 @@ package com.actionstarter.ai
 import com.actionstarter.ai.model.DeviceCapability
 import com.actionstarter.ai.model.DeviceTier
 import com.actionstarter.ai.model.ModelCatalogEntry
+import com.actionstarter.ai.model.ModelSelector
+import com.actionstarter.ai.model.ModelSelectorImpl
 import com.actionstarter.ai.model.ModelStorage
 import com.actionstarter.ai.model.ModelVerificationResult
 import com.actionstarter.ai.model.ModelVerifier
@@ -121,6 +123,12 @@ import kotlinx.coroutines.withTimeout
  * @param preferences F92。AI ON/OFF判定に用いる。
  * @param requestTimeoutMillis 推論タイムアウト（§8.6 #8「仮20,000ms」。G4-D実測〔§11.3〕で
  *   確定するまでの暫定値）。
+ * @param modelSelector Phase 8.5新設（計画書`docs/plans/phase8.5-adaptive-model-selection.md`
+ *   §3設計4、ADR-0062）。`selectedModelId`が[AiPreferences.AUTO_SELECT_MODEL_ID]のとき、
+ *   [resolveInstalledEntry]が導入済みかつ空きメモリに収まる最高品質のモデルを選ぶために使う。
+ *   末尾・既定値付きパラメータとして追加しており、既存呼び出し元（名前付き引数で構築する
+ *   `SettingsAiSafetyTest`等）との後方互換を保つ——ADR-0053の`ModelStorageImpl(context,
+ *   catalog=..., preferences=null)`と同型のパターン。
  */
 class LocalAiGateway(
     private val model: LocalLanguageModel,
@@ -128,7 +136,8 @@ class LocalAiGateway(
     private val modelVerifier: ModelVerifier,
     private val deviceCapability: DeviceCapability,
     private val preferences: AiPreferences,
-    private val requestTimeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS
+    private val requestTimeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
+    private val modelSelector: ModelSelector = ModelSelectorImpl(deviceCapability, modelStorage)
 ) {
     private val schemaValidator = SchemaValidator()
     private val contentSanityChecker = ContentSanityChecker()
@@ -142,9 +151,14 @@ class LocalAiGateway(
      * `by lazy`で1インスタンスのみ生成する設計（R-7）のため、本フィールドの寿命＝プロセスの
      * 寿命と一致する。[checkInstalledModel]は常に[inferenceMutex]内から呼ばれるため、この
      * `var`への書き込みはMutexで直列化されており追加の同期は不要。値は検証済みの
-     * [ModelCatalogEntry.id]（検証対象が変わったら再検証する）。
+     * [ModelCatalogEntry.id]の集合（検証対象から外れたエントリのみ個別に[MutableSet.remove]する）。
+     *
+     * **Phase 8.5でSetへ変更（計画書§3設計7、ADR-0062）**: 単一スロット（`String?`）のままだと、
+     * F-Bのモデル切替UIでユーザーがGemma4⇄Qwen0.6Bを行き来するたびに、既に検証済みのモデルの
+     * SHA-256（最大2.59GB級ファイル）を毎回再計算してしまう。Setへ変更しモデルごとに独立して
+     * 検証済み状態を保持することでこれを解消する。
      */
-    private var sha256VerifiedEntryId: String? = null
+    private val sha256VerifiedEntryIds: MutableSet<String> = mutableSetOf()
 
     /**
      * §71完成条件の中核。[PlanningContext]から[AIPlanResponse]を生成し、[AiResult]で
@@ -178,7 +192,9 @@ class LocalAiGateway(
             // P7-C5実機実測（ADR-0056決定6b）がpeakRamBytesのまま判定すると小コンテキスト・
             // 本番プロファイルの実要求量に対してガードが過大判定することを発見したため
             // （ModelCatalogEntryのKDoc「defaultProfilePeakRamBytes」参照）。
-            val requiredPeakMemoryBytes = installedEntry.defaultProfilePeakRamBytes + MEMORY_SAFETY_MARGIN_BYTES
+            // Phase 8.5: マージン定数はDeviceCapability.MEMORY_SAFETY_MARGIN_BYTESへ昇格した
+            // （ModelSelectorImplと単一情報源を共有するため、計画書§3設計2）。
+            val requiredPeakMemoryBytes = installedEntry.defaultProfilePeakRamBytes + DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES
             if (!deviceCapability.hasAvailableMemory(requiredPeakMemoryBytes)) {
                 return@withLock AiResult.Fallback(
                     AiFallbackReason.OUT_OF_MEMORY_PREVENTED,
@@ -186,7 +202,7 @@ class LocalAiGateway(
                 )
             }
 
-            runValidationPipeline(context)
+            runValidationPipeline(context, installedEntry)
         }
     }
 
@@ -200,20 +216,16 @@ class LocalAiGateway(
      * （クラスKDoc「modelStorage/modelVerifierチェックの配線」参照）。
      */
     private fun checkInstalledModel(): InstalledModelCheck {
-        val entry = modelStorage.installedEntry()
-            ?: return InstalledModelCheck.Failed(
-                AiResult.Fallback(AiFallbackReason.MODEL_NOT_INSTALLED, "ModelStorage.installedEntry() is null (§8.6 #11)")
-            )
+        val entry = resolveInstalledEntry() ?: return InstalledModelCheck.Failed(unresolvedEntryFallback())
         // installedEntry()と同一の解決結果（finalFile）を使う。installedModelPath()を別途
         // 呼ぶと2回目のcatalog走査になり、理論上は間にファイルが変化するTOCTOUの窓も生まれる
-        // ため、同じentryから直接導出する（installedModelPath()自体はLiteRtLmLocalLanguageModel
-        // のmodelPathProvider経由で引き続き使われる、AppContainerのKDoc参照）。
+        // ため、同じentryから直接導出する。
         val file = modelStorage.finalFile(entry)
 
         // 毎回: サイズ照合（軽量）。
         if (file.length() != entry.sizeBytes) {
             modelStorage.delete(entry)
-            sha256VerifiedEntryId = null
+            sha256VerifiedEntryIds.remove(entry.id)
             return InstalledModelCheck.Failed(
                 AiResult.Fallback(
                     AiFallbackReason.MODEL_CORRUPTED,
@@ -223,11 +235,11 @@ class LocalAiGateway(
         }
 
         // プロセス内で当該エントリが未検証のときのみSHA-256を再検証する（§8.6 #12、T-GW-18）。
-        if (sha256VerifiedEntryId != entry.id) {
+        if (entry.id !in sha256VerifiedEntryIds) {
             when (val verification = modelVerifier.verify(file, entry)) {
                 is ModelVerificationResult.Invalid -> {
                     modelStorage.delete(entry)
-                    sha256VerifiedEntryId = null
+                    sha256VerifiedEntryIds.remove(entry.id)
                     return InstalledModelCheck.Failed(
                         AiResult.Fallback(
                             AiFallbackReason.MODEL_CORRUPTED,
@@ -238,7 +250,7 @@ class LocalAiGateway(
                 }
 
                 ModelVerificationResult.Valid -> {
-                    sha256VerifiedEntryId = entry.id
+                    sha256VerifiedEntryIds.add(entry.id)
                 }
             }
         }
@@ -246,10 +258,54 @@ class LocalAiGateway(
         return InstalledModelCheck.Ready(entry)
     }
 
-    private suspend fun runValidationPipeline(context: PlanningContext): AiResult<AIPlanResponse> {
+    /**
+     * Phase 8.5（計画書§3設計4、ADR-0062）。`selectedModelId`が[AiPreferences.
+     * AUTO_SELECT_MODEL_ID]なら[modelSelector]（導入済み×availMem適合の自動選択）、
+     * そうでなければ既存の[ModelStorage.installedEntry]（明示選択、無変更）を使う。
+     */
+    private fun resolveInstalledEntry(): ModelCatalogEntry? =
+        if (preferences.selectedModelId == AiPreferences.AUTO_SELECT_MODEL_ID) {
+            modelSelector.select()
+        } else {
+            modelStorage.installedEntry()
+        }
+
+    /**
+     * Phase 8.5（計画書§3設計4、ADR-0062）。[resolveInstalledEntry]が`null`のときのFallback理由を
+     * 組み立てる。明示選択は既存どおり[AiFallbackReason.MODEL_NOT_INSTALLED]のみ。auto選択は
+     * [modelSelector]の`select()`が`null`を返した理由（候補が1件も導入されていないのか、導入済み
+     * だが全滅なのか）を[ModelSelector.candidates]で判別し、[AiFallbackReason.MODEL_NOT_INSTALLED]
+     * ／[AiFallbackReason.OUT_OF_MEMORY_PREVENTED]を区別する（`select()`の`null`一値だけでは
+     * この情報が失われるため）。`detail`は常に「auto: 」を明記し非サイレントとする。
+     */
+    private fun unresolvedEntryFallback(): AiResult.Fallback {
+        if (preferences.selectedModelId != AiPreferences.AUTO_SELECT_MODEL_ID) {
+            return AiResult.Fallback(AiFallbackReason.MODEL_NOT_INSTALLED, "ModelStorage.installedEntry() is null (§8.6 #11)")
+        }
+        val candidateIds = modelSelector.candidates.map { it.id }
+        val anyCandidateInstalled = modelSelector.candidates.any { modelStorage.finalFile(it).isFile }
+        return if (anyCandidateInstalled) {
+            AiResult.Fallback(
+                AiFallbackReason.OUT_OF_MEMORY_PREVENTED,
+                "auto: no candidate fits available memory (§8.6 #7, candidates=$candidateIds)"
+            )
+        } else {
+            AiResult.Fallback(
+                AiFallbackReason.MODEL_NOT_INSTALLED,
+                "auto: no candidate is installed (§8.6 #11, candidates=$candidateIds)"
+            )
+        }
+    }
+
+    /**
+     * @param entry [checkInstalledModel]が確定した導入済みエントリ（Phase 8.5で追加。
+     *   [invokeModel]へのモデルパス引き回しと[buildMetrics]の`selectedModelId`記録に使う。
+     *   計画書§3設計5・8参照）。
+     */
+    private suspend fun runValidationPipeline(context: PlanningContext, entry: ModelCatalogEntry): AiResult<AIPlanResponse> {
         val startedAtNanos = System.nanoTime()
 
-        val primaryAttempt = invokeModel(context, SamplingPolicy.Primary)
+        val primaryAttempt = invokeModel(context, entry, SamplingPolicy.Primary)
         if (primaryAttempt is ModelAttempt.Failed) return primaryAttempt.fallback
         val primaryRaw = primaryAttempt as ModelAttempt.RawJson
         val primaryValidation = validate(primaryRaw.text, context)
@@ -259,14 +315,15 @@ class LocalAiGateway(
                 buildMetrics(
                     retried = false,
                     elapsedNanos = System.nanoTime() - startedAtNanos,
-                    benchmark = primaryRaw.benchmark
+                    benchmark = primaryRaw.benchmark,
+                    selectedModelId = entry.id
                 )
             )
         }
 
         // ①または②不合格 → retry 1回（新規single-turnセッション相当の SamplingPolicy.Retry で
         // 呼び直す。会話履歴の破棄自体は[model]実装〔P7-C5〕の内部関心事、S-2是正・ADR-0050）。
-        val retryAttempt = invokeModel(context, SamplingPolicy.Retry)
+        val retryAttempt = invokeModel(context, entry, SamplingPolicy.Retry)
         if (retryAttempt is ModelAttempt.Failed) return retryAttempt.fallback
         val retryRaw = retryAttempt as ModelAttempt.RawJson
         val retryValidation = validate(retryRaw.text, context)
@@ -276,7 +333,8 @@ class LocalAiGateway(
                 buildMetrics(
                     retried = true,
                     elapsedNanos = System.nanoTime() - startedAtNanos,
-                    benchmark = retryRaw.benchmark
+                    benchmark = retryRaw.benchmark,
+                    selectedModelId = entry.id
                 )
             )
         }
@@ -301,10 +359,15 @@ class LocalAiGateway(
      * **ベンチマーク値の取得（P7-C5・ADR-0055）**: `model.generatePlan`成功直後に
      * `(model as? BenchmarkMetricsSource)?.lastInferenceMetrics()`を読む。[model]がこの任意
      * interfaceを実装しない場合は`null`のままであり、[buildMetrics]がプレースホルダへ縮退する。
+     *
+     * **[entry]引数追加（Phase 8.5、計画書§3設計5、ADR-0062）**: `modelStorage.
+     * finalFile(entry).absolutePath`を都度計算し[model.generatePlan]へ明示的に渡す
+     * （[LocalLanguageModel.generatePlan]のKDoc「[modelPath]引数追加」参照）。
      */
-    private suspend fun invokeModel(context: PlanningContext, policy: SamplingPolicy): ModelAttempt {
+    private suspend fun invokeModel(context: PlanningContext, entry: ModelCatalogEntry, policy: SamplingPolicy): ModelAttempt {
         return try {
-            val rawJson = withTimeout(requestTimeoutMillis) { model.generatePlan(context, policy) }
+            val modelPath = modelStorage.finalFile(entry).absolutePath
+            val rawJson = withTimeout(requestTimeoutMillis) { model.generatePlan(context, modelPath, policy) }
             val benchmark = (model as? BenchmarkMetricsSource)?.lastInferenceMetrics()
             ModelAttempt.RawJson(rawJson, benchmark)
         } catch (e: TimeoutCancellationException) {
@@ -352,11 +415,15 @@ class LocalAiGateway(
      * 非nullならそこから採用し、`null`（[model]が[BenchmarkMetricsSource]を実装しない場合）
      * なら従来どおりプレースホルダ（`0`）とする（P7-C5・ADR-0055、クラスKDoc参照）。
      * [AiMetrics.totalMs]は引き続きGateway境界で実測する。
+     *
+     * @param selectedModelId Phase 8.5追加（計画書§3設計8、ADR-0062）。実際にロード対象と
+     *   なった[ModelCatalogEntry.id]をそのまま記録する（PIIではない、`T-AIMET-1`参照）。
      */
     private fun buildMetrics(
         retried: Boolean,
         elapsedNanos: Long,
-        benchmark: InferenceBenchmarkSnapshot?
+        benchmark: InferenceBenchmarkSnapshot?,
+        selectedModelId: String
     ): AiMetrics = AiMetrics(
         modelLoadMs = benchmark?.modelLoadMs ?: 0L,
         firstTokenMs = benchmark?.firstTokenMs ?: 0L,
@@ -366,7 +433,8 @@ class LocalAiGateway(
         peakNativeHeapBytes = benchmark?.peakNativeHeapBytes ?: 0L,
         retried = retried,
         schemaValid = true,
-        sanityPassed = true
+        sanityPassed = true,
+        selectedModelId = selectedModelId
     )
 
     /**
@@ -388,25 +456,10 @@ class LocalAiGateway(
 
         private const val NANOS_PER_MILLI: Long = 1_000_000L
 
-        /**
-         * §8.6 #7「必要ピークRAM＋安全マージン」の暫定マージン（512MB）。G4-D実測（§11.3）で
-         * 確定するまでの仮値（§8.6冒頭「タイムアウト閾値の数値は...仮置き」と同じ扱い）。
-         *
-         * **P7-C4での変更**: 必要ピークRAMは`ModelCatalog`の特定エントリを本クラスへ
-         * ハードコードせず、[checkInstalledModel]が解決した導入済み[ModelCatalogEntry]
-         * （実際にロード対象となるモデル）へ本マージンを加える形へ改めた（[generatePlan]参照）。
-         * §17「モデル名を製品仕様として固定しない」との整合、および`ModelStorage`のテスト
-         * fixtureエントリ（本番カタログ非依存）でもOOMガードが正しい値で動作するようにするための
-         * 変更。
-         *
-         * **P7-C5b（ADR-0057）での変更**: 参照する必要ピークRAMのフィールドを
-         * [ModelCatalogEntry.peakRamBytes]（フルコンテキスト実測・プロファイル非依存の単一値）
-         * から[ModelCatalogEntry.defaultProfilePeakRamBytes]（実際に使う既定プロファイルでの
-         * 実効ピーク）へ変更した（[generatePlan]参照）。マージン自体の数値（512MB）は変更していない
-         * ——P7-C5実機実測（ADR-0056決定6b）が発見した過大判定は`peakRamBytes`側の
-         * プロファイル非依存性が原因であり、マージンの大きさの問題ではないと判断したため。
-         */
-        private const val MEMORY_SAFETY_MARGIN_BYTES: Long = 512L * 1024 * 1024
+        // Phase 8.5（計画書§3設計2、ADR-0062）: 旧`MEMORY_SAFETY_MARGIN_BYTES`（512MB）はここに
+        // privateで定義されていたが、ModelSelectorImplと単一情報源を共有するため
+        // DeviceCapability.MEMORY_SAFETY_MARGIN_BYTESへ昇格した（値・意味とも無変更）。
+        // 参照箇所はgeneratePlan()参照。
     }
 }
 
@@ -435,6 +488,14 @@ sealed interface AiResult<out T> {
  * なるケースを判別できるようにするため（品質ハーネス§8「sanity通過率」指標に対応）。
  * §60許可リストの範囲内（真偽値のみでPII/自由文を保持し得ない、[AiMetricsTest]の
  * `noFieldHasStringType_cannotHoldFreeTextOrPii`が回帰ロックする）。
+ *
+ * **[selectedModelId]追加（Phase 8.5、計画書`docs/plans/phase8.5-adaptive-model-selection.md`
+ * §3設計8、ADR-0062）**: 実際にロード対象となった[com.actionstarter.ai.model.
+ * ModelCatalogEntry.id]（例: `"gemma-4-e2b-it"`）。カレンダー本文・イベントタイトル等の自由文
+ * ではなく、開発者が管理する固定カタログの識別子であるためPIIではない。`AiMetricsTest`の
+ * `noFieldHasStringType_cannotHoldFreeTextOrPii`は本フィールドのみを許可された唯一のString型
+ * フィールドとして明示的に除外する（それ以外のString型フィールドが追加された場合は引き続き
+ * 検知する）。
  */
 data class AiMetrics(
     val modelLoadMs: Long,
@@ -445,5 +506,6 @@ data class AiMetrics(
     val peakNativeHeapBytes: Long,
     val retried: Boolean,
     val schemaValid: Boolean,
-    val sanityPassed: Boolean
+    val sanityPassed: Boolean,
+    val selectedModelId: String
 )

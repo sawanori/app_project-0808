@@ -32,8 +32,8 @@ import kotlin.reflect.typeOf
  */
 class AiMetricsTest {
 
-    // 正常系: AiMetricsのフィールド集合が確定9フィールド（品質ハーネスUQ-5のsanityPassed追加後）
-    // と完全一致する
+    // 正常系: AiMetricsのフィールド集合が確定10フィールド（Phase 8.5のselectedModelId追加後、
+    // 計画書docs/plans/phase8.5-adaptive-model-selection.md §3設計8、ADR-0062）と完全一致する
     @Test
     fun fieldNames_matchConfirmedAllowList() {
         val expected = setOf(
@@ -45,7 +45,8 @@ class AiMetricsTest {
             "peakNativeHeapBytes",
             "retried",
             "schemaValid",
-            "sanityPassed"
+            "sanityPassed",
+            "selectedModelId"
         )
 
         val actual = AiMetrics::class.memberProperties.map { it.name }.toSet()
@@ -53,17 +54,24 @@ class AiMetricsTest {
         assertEquals(expected, actual)
     }
 
-    // 正常系: 自由文フィールド（String型）を一切持たない（カレンダー本文・住所等の混入防止、§60）
+    // 正常系: 自由文フィールド（String型）を持たない——ただし`selectedModelId`のみ例外として
+    // 明示許可する（Phase 8.5、開発者管理の固定カタログidでありPIIでも自由文でもないため。
+    // ADR-0062）。それ以外のString型フィールドが追加された場合は引き続き検知する。
     @Test
-    fun noFieldHasStringType_cannotHoldFreeTextOrPii() {
+    fun noFieldHasStringType_onlySelectedModelIdIsAllowed() {
         val stringType: KType = typeOf<String>()
+        val allowedStringFields = setOf("selectedModelId")
 
-        val stringTypedFields = AiMetrics::class.memberProperties.filter { it.returnType == stringType }
+        val stringTypedFields = AiMetrics::class.memberProperties
+            .filter { it.returnType == stringType }
+            .map { it.name }
+            .toSet()
 
-        assertTrue(
-            "AiMetricsにString型フィールドが存在します（自由文・PII混入のリスク、§60）: " +
-                stringTypedFields.map { it.name },
-            stringTypedFields.isEmpty()
+        assertEquals(
+            "AiMetricsのString型フィールドは selectedModelId のみが許可されています" +
+                "（自由文・PII混入のリスク、§60・ADR-0062）",
+            allowedStringFields,
+            stringTypedFields
         )
     }
 }

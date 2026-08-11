@@ -3,7 +3,6 @@ package com.actionstarter.ai
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.actionstarter.ai.model.ModelCatalog
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -84,15 +83,19 @@ class AiPreferencesImplTest {
         )
     }
 
-    // P7-C6（既定モデル=Gemma4-E2B、ユーザー確定）: 正常系 - 初回起動時selectedModelIdが
-    // ModelCatalog.GEMMA_4_E2B_ITのidを返す（nullではない）。
+    // Phase 8.5（既定モデル=auto、ADR-0062・計画書§3設計3・§11確認事項3）: 正常系 -
+    // 初回起動時selectedModelIdはAUTO_SELECT_MODEL_IDセンチネルを返す。
+    // 【期待値更新（P7-C6「既定=Gemma4-E2B」からの正当な契約変更、承認済み）】A54実機実測
+    // （phase8-a54-ram-tier-fix.md§10.3）で日常使用の表記6GB機はGemma4を恒常的にロードできない
+    // ことが判明したため、既定を空きメモリに応じた自動選択へ改訂した。
     @Test
-    fun selectedModelId_freshInstance_defaultsToGemma4EntryId() {
+    fun selectedModelId_freshInstance_defaultsToAutoSelectSentinel() {
         val preferences = freshPreferences("ai_preferences_test_4")
 
         assertEquals(
-            "初回起動時のselectedModelIdはGemma 4 E2Bの既定idであるべきです（P7-C6、ユーザー確定）",
-            ModelCatalog.GEMMA_4_E2B_IT.id,
+            "初回起動時のselectedModelIdは自動選択センチネルであるべきです" +
+                "(Phase 8.5、ADR-0062でP7-C6「既定=Gemma4」から改訂)",
+            AiPreferences.AUTO_SELECT_MODEL_ID,
             preferences.selectedModelId
         )
         assertEquals(AiPreferences.DEFAULT_SELECTED_MODEL_ID, preferences.selectedModelId)

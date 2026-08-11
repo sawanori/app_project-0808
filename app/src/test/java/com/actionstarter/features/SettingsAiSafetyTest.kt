@@ -91,7 +91,10 @@ class SettingsAiSafetyTest {
     private val neverInvokedModel = object : LocalLanguageModel {
         override val modelIdentifier: String = "never-invoked"
 
-        override suspend fun generatePlan(context: PlanningContext, samplingPolicy: SamplingPolicy): String =
+        // Phase 8.5（計画書§3設計5、ADR-0062）: LocalLanguageModel.generatePlanへmodelPath引数が
+        // 追加されたことに伴う機械的なシグネチャ追随のみ。本オブジェクトは「呼ばれてはいけない」
+        // ことの検証専用のためロジック・アサーションは無変更（§2参照）。
+        override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String =
             error("generatePlan must never be invoked in this scenario (AI safety regression, P7-C6)")
 
         override suspend fun generateRecovery(context: RecoveryContext): AIRecoveryResponse =

@@ -52,11 +52,23 @@ interface LocalLanguageModel {
      * [com.actionstarter.ai.schema.ContentSanityChecker.check]の順で検証しパースする。
      * 本メソッド自身はパース・検証を行わない（信頼境界、仕様§20）。
      *
+     * **[modelPath]引数追加（Phase 8.5、計画書`docs/plans/phase8.5-adaptive-model-selection.md`
+     * §3設計5、ADR-0062、アーキテクトレビューPass 1 CRITICAL対応）**: [com.actionstarter.ai.
+     * LocalAiGateway]が検証・選択した[com.actionstarter.ai.model.ModelCatalogEntry]の絶対パスを
+     * 明示的に渡す契約とし、実装（[com.actionstarter.ai.adapter.LiteRtLmLocalLanguageModel]）が
+     * 独自に`ModelStorage`を再解決することによる「検証したモデルと実際にロードするモデルの乖離」
+     * を構造的に防ぐ。旧`modelPathProvider`コンストラクタ引数方式は廃止した。
+     *
+     * @param modelPath ロード対象モデルの絶対パス（呼び出し側が確定済みの値をそのまま渡す）。
      * @param samplingPolicy 使用するサンプリング方針（Fable 5裁定9、既定[SamplingPolicy.Primary]）。
      *   [com.actionstarter.ai.LocalAiGateway]が1回目=[SamplingPolicy.Primary]、
      *   検証不合格による2回目=[SamplingPolicy.Retry]で呼び分ける（クラスKDoc参照）。
      */
-    suspend fun generatePlan(context: PlanningContext, samplingPolicy: SamplingPolicy = SamplingPolicy.Primary): String
+    suspend fun generatePlan(
+        context: PlanningContext,
+        modelPath: String,
+        samplingPolicy: SamplingPolicy = SamplingPolicy.Primary
+    ): String
 
     suspend fun generateRecovery(context: RecoveryContext): AIRecoveryResponse
 }

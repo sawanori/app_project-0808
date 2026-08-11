@@ -87,11 +87,14 @@ import java.util.concurrent.atomic.AtomicLong
  * `peakNativeHeapBytes`はP7-C0 `LiteRtLmProbeTest`の`RamSampler`と同一方式（バックグラウンド
  * スレッドによる定期サンプリング）の[NativeHeapPeakSampler]で取得する。
  *
- * @param modelPathProvider 導入済みモデルの絶対パスを返す関数
- *   （[com.actionstarter.ai.model.ModelStorage.installedModelPath]相当）。呼び出し時点で
- *   未導入なら例外を送出する契約とし、[com.actionstarter.ai.LocalAiGateway]側の§8.6 #11
- *   チェックが先に走ることを前提に、ここでの例外送出はガードをすり抜けた場合の防御的
- *   フォールバックとして扱う。
+ * **Phase 8.5での変更（計画書`docs/plans/phase8.5-adaptive-model-selection.md`§3設計5・6、
+ * ADR-0062、アーキテクトレビューPass 1 CRITICAL対応、Step 4で実装完了）**:
+ * 旧`modelPathProvider: () -> String`コンストラクタ引数（[com.actionstarter.ai.LocalAiGateway]が
+ * 検証・選択したモデルとは独立に`ModelStorage`を再解決してしまい、auto選択時に乖離しうる欠陥が
+ * あった）を廃止した。モデルパスは[generatePlan]の`modelPath`引数として毎回明示的に渡される
+ * （[LocalLanguageModel.generatePlan]のKDoc参照）。[obtainEngine]は要求パスの変化を
+ * `EngineLoadPolicy.requiresEngineReload`で検知し、変化時のみEngineを再生成する
+ * （T-P85-25〜29で検証済み）。
  * @param maxNumTokens コンテキスト長（V-8。§11.2）。**P7-C5b（ADR-0057）でP7-C1の固定値256から
  *   変更した**——P7-C5実機実測（ADR-0056）が、本番プロンプト一式（`systemInstruction`＋
  *   既定2-shot few-shot＋data message）では256では実機`FAILED_PRECONDITION`により推論が
@@ -124,7 +127,6 @@ import java.util.concurrent.atomic.AtomicLong
  */
 @OptIn(ExperimentalApi::class)
 class LiteRtLmLocalLanguageModel(
-    private val modelPathProvider: () -> String,
     private val shotCount: Int = PlanPromptBuilder.DEFAULT_SHOT_COUNT,
     private val maxNumTokens: Int = defaultMaxNumTokensFor(shotCount),
     private val threadCount: Int = DEFAULT_THREAD_COUNT
@@ -137,6 +139,13 @@ class LiteRtLmLocalLanguageModel(
     /** [engineLifecycleMutex]配下でのみ読み書きする遅延生成Engine（R-7）。 */
     private var engine: Engine? = null
 
+    /**
+     * Phase 8.5新設（計画書§3設計6、ADR-0062）。[engine]が現在ロード済みのモデルパス。
+     * [engineLifecycleMutex]配下でのみ読み書きする（[engine]と同じ規律）。[engine]が`null`のときは
+     * 必ず`null`（[closeEngineAndClearLocked]が両方を同時にクリアする）。
+     */
+    private var loadedModelPath: String? = null
+
     /** Engineの生成・破棄（アンロード）を直列化する（§13 #8）。 */
     private val engineLifecycleMutex = Mutex()
 
@@ -145,9 +154,9 @@ class LiteRtLmLocalLanguageModel(
 
     override fun lastInferenceMetrics(): InferenceBenchmarkSnapshot? = lastMetrics
 
-    override suspend fun generatePlan(context: PlanningContext, samplingPolicy: SamplingPolicy): String =
+    override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String =
         withContext(Dispatchers.IO) {
-            val (activeEngine, modelLoadMs) = obtainEngine()
+            val (activeEngine, modelLoadMs) = obtainEngine(modelPath)
 
             var conversation: Conversation? = null
             try {
@@ -200,18 +209,34 @@ class LiteRtLmLocalLanguageModel(
     }
 
     /**
-     * [engine]が未生成なら[modelPathProvider]・[maxNumTokens]・[threadCount]から新規生成し
-     * `initialize()`する（R-7、遅延初期化）。既に生成済みならそれを再利用し、ロード時間は`0`を
+     * [engine]が未生成、または[requiresEngineReload]が再ロード要と判定した場合に[requestedPath]・
+     * [maxNumTokens]・[threadCount]から新規生成し`initialize()`する（R-7、遅延初期化）。
+     * 要求パスが[loadedModelPath]と同一なら既存Engineをそのまま再利用し、ロード時間は`0`を
      * 返す（[InferenceBenchmarkSnapshot.modelLoadMs]のKDoc「再利用した場合は0」参照）。
+     *
+     * **Phase 8.5 Step 4（Green）で実装（計画書§3設計6、ADR-0062、アーキテクトレビューPass 1
+     * CRITICAL対応）**: 要求パスが変化した場合は[closeEngineAndClearLocked]で既存Engineを
+     * 破棄してから新パスで再生成する。`EngineLoadPolicy.requiresEngineReload`はT-P85-25〜27で
+     * 検証済みの判定ロジックをそのまま再利用する。
+     *
+     * @param requestedPath ロード対象モデルの絶対パス（[LocalAiGateway]が検証済みの値を
+     *   [generatePlan]経由でそのまま渡す）。
      */
-    private suspend fun obtainEngine(): Pair<Engine, Long> = engineLifecycleMutex.withLock {
+    private suspend fun obtainEngine(requestedPath: String): Pair<Engine, Long> = engineLifecycleMutex.withLock {
         val existing = engine
-        if (existing != null) return@withLock existing to 0L
+        if (existing != null && !requiresEngineReload(loadedModelPath, requestedPath)) {
+            return@withLock existing to 0L
+        }
+        if (existing != null) {
+            // 要求パスが変化した（モデル切替）。既存Engineを破棄してから新パスで再生成する
+            // （T-GW-16／計画書§3設計6・§7「モデル切替直後の初回推論」）。
+            closeEngineAndClearLocked()
+        }
 
         ExperimentalFlags.enableBenchmark = true
 
         val engineConfig = EngineConfig(
-            modelPath = modelPathProvider(),
+            modelPath = requestedPath,
             backend = Backend.CPU(threadCount = threadCount),
             maxNumTokens = maxNumTokens
         )
@@ -220,17 +245,29 @@ class LiteRtLmLocalLanguageModel(
         created.initialize()
         val modelLoadMs = SystemClock.elapsedRealtime() - loadStartMs
         engine = created
+        loadedModelPath = requestedPath
         created to modelLoadMs
     }
 
     /** OOM二次防御（§13 #8）。[engine]を破棄し、次回[obtainEngine]で再生成させる。 */
     private suspend fun unloadEngine() = engineLifecycleMutex.withLock {
+        closeEngineAndClearLocked()
+    }
+
+    /**
+     * Phase 8.5新設（計画書§3設計6、ADR-0062）。[engine]の破棄と[loadedModelPath]のクリアを行う
+     * 共有ロジック。**[engineLifecycleMutex]を保持中の呼び出し元専用**——`Mutex`は再入不可のため、
+     * [obtainEngine]（既にロック取得済み）から直接呼び、[unloadEngine]（ロックを別途取得する
+     * 既存の公開エントリ）からはロック取得後に呼ぶ。呼び出し元を問わずこの2箇所からのみ呼ぶこと。
+     */
+    private fun closeEngineAndClearLocked() {
         try {
             engine?.close()
         } catch (t: Throwable) {
             // close()は非冪等（V-2）。アンロード目的の破棄では失敗しても内部参照だけ確実にnull化する。
         } finally {
             engine = null
+            loadedModelPath = null
         }
     }
 

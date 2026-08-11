@@ -66,6 +66,17 @@ interface DeviceCapability {
          * 予防的に是正。本Phase時点で§5.3段2を挙動として消費する呼び出し箇所は存在しない）。
          */
         const val TIER_2_MIN_TOTAL_MEM_BYTES: Long = 7L * 1024 * 1024 * 1024
+
+        /**
+         * Phase 8.5で[com.actionstarter.ai.LocalAiGateway]のprivate定数から昇格（計画書
+         * `docs/plans/phase8.5-adaptive-model-selection.md` §3設計2、ADR-0062）。
+         * [hasAvailableMemory]の要求バイト数に加える安全マージン。[com.actionstarter.ai.
+         * LocalAiGateway]（OOM事前ガード）と[com.actionstarter.ai.model.ModelSelector]
+         * （自動選択のavailMem適合判定）の両方が同一シンボルを参照する単一情報源とし、
+         * 512MBという同一の意味を持つ値が2箇所で独立定義されドリフトすることを防ぐ。
+         * 値自体はADR-0057時点から不変（G4-D実機実測〔計画書§11.3〕で確定するまでの仮値）。
+         */
+        const val MEMORY_SAFETY_MARGIN_BYTES: Long = 512L * 1024 * 1024
     }
 }
 

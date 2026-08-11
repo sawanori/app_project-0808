@@ -3,7 +3,7 @@
 > 対象仕様: §5.3・§95.3（Local AI端末対応可否・RAM段判定）
 > 前提基盤: Phase 7 P7-C4（`DeviceCapabilityImpl`実装）・ADR-0048（`DeviceCapability`interface化）・ADR-0057（`defaultProfilePeakRamBytes`プロファイル別是正）／Phase 8 C1-C4（実行画面AI配線・エミュ実機実証済み、`docs/plans/phase8-ai-execution-wiring.md`）
 > 種別: バグ修正計画書。**Phase 8 C4のA54実機最終確認を阻む実行ブロッカーの解消**。Red→Green一体コミットを想定。
-> 承認状態: **ユーザー承認済み・Step 4実装完了（2026-08-11）。残タスクは§8のA54実機受け入れ確認のみ**
+> 承認状態: **完了（2026-08-11）。§8実機受け入れは§10に結果記録済み（閾値修正合格・Qwen0.6BでAI文言実機描画）**
 
 ---
 

@@ -115,11 +115,18 @@ internal object AiGatewayTestFixtures {
     fun unsupportedAbiDeviceCapability(): DeviceCapability =
         deviceCapabilityWith(totalMemBytes = 8L * GB, availMemBytes = 8L * GB, abis = arrayOf("armeabi-v7a"))
 
-    /** [prefsFileName]はテストごとに一意にすること（SharedPreferencesファイルの衝突回避）。 */
+    /**
+     * [prefsFileName]はテストごとに一意にすること（SharedPreferencesファイルの衝突回避）。
+     *
+     * **Phase 8.5での変更（ADR-0062）**: `selectedModelId`の既定値が`AiPreferences.
+     * AUTO_SELECT_MODEL_ID`へ変わったため、本fixtureを使う既存テスト（[LocalAiPlanContextualizerTest]
+     * 等、モデル選択そのものはテスト対象外）がauto経路へ誤って迂回されないよう、既定で
+     * [fakeInstalledEntry]を明示選択しておく（[LocalAiGatewayTest]の同名ヘルパーと同じ対応）。
+     */
     fun preferences(aiEnabled: Boolean, prefsFileName: String): AiPreferences {
         val prefs = context().getSharedPreferences(prefsFileName, Context.MODE_PRIVATE)
         prefs.edit().clear().putBoolean(AiPreferencesImpl.KEY_AI_ENABLED, aiEnabled).commit()
-        return AiPreferencesImpl(prefs)
+        return AiPreferencesImpl(prefs).apply { selectedModelId = fakeInstalledEntry().id }
     }
 
     /**
@@ -188,12 +195,21 @@ internal object AiGatewayTestFixtures {
         var cancelledCount: Int = 0
             private set
 
+        /**
+         * Phase 8.5追加（計画書`docs/plans/phase8.5-adaptive-model-selection.md`§3設計5、
+         * ADR-0062、アーキテクトレビューPass 1 CRITICAL対応）。呼び出しごとに受け取った
+         * `modelPath`を記録する（T-P85-28/29が「解決済みモデルと実際に渡されるパスが一致するか」
+         * を検証するために使う、[recordedSamplingPolicies]と同型のパターン）。
+         */
+        val recordedModelPaths: MutableList<String> = mutableListOf()
+
         sealed interface Outcome {
             data class Respond(val rawJson: String) : Outcome
             data class ThrowError(val error: Throwable) : Outcome
         }
 
-        override suspend fun generatePlan(context: PlanningContext, samplingPolicy: SamplingPolicy): String {
+        override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String {
+            recordedModelPaths.add(modelPath)
             val outcome = outcomes.getOrElse(callCount) { outcomes.last() }
             callCount += 1
             if (delayMillisPerCall > 0) {

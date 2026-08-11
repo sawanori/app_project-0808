@@ -562,11 +562,18 @@ class LocalAiPlanContextualizerTest {
 
         assertTrue(result is ContextualizationResult.Applied)
         val stringType: KType = typeOf<String>()
-        val stringTypedFields = AiMetrics::class.memberProperties.filter { it.returnType == stringType }
+        // Phase 8.5（計画書docs/plans/phase8.5-adaptive-model-selection.md§3設計8、ADR-0062）:
+        // selectedModelIdはAiMetricsで唯一許可されたString型フィールド（開発者管理の固定カタログid
+        // でありPII・自由文ではない、AiMetricsTest.noFieldHasStringType_onlySelectedModelIdIsAllowed
+        // と同じ許可リストを踏襲）。
+        val allowedStringFields = setOf("selectedModelId")
+        val stringTypedFields = AiMetrics::class.memberProperties
+            .filter { it.returnType == stringType }
+            .map { it.name }
         assertTrue(
-            "AiMetricsにString型フィールドが存在します(自由文・PII混入のリスク、T-AIMET-1再利用): " +
-                stringTypedFields.map { it.name },
-            stringTypedFields.isEmpty()
+            "AiMetricsのString型フィールドは$allowedStringFields のみが許可されています" +
+                "(自由文・PII混入のリスク、T-AIMET-1再利用): $stringTypedFields",
+            stringTypedFields.toSet() == allowedStringFields
         )
     }
 

@@ -6,6 +6,7 @@ import com.actionstarter.ai.model.DeviceCapability
 import com.actionstarter.ai.model.DeviceCapabilityImpl
 import com.actionstarter.ai.model.ModelCatalogEntry
 import com.actionstarter.ai.model.ModelLicense
+import com.actionstarter.ai.model.ModelSelectorImpl
 import com.actionstarter.ai.model.ModelStorage
 import com.actionstarter.ai.model.ModelStorageImpl
 import com.actionstarter.ai.model.ModelVerificationResult
@@ -202,8 +203,17 @@ class LocalAiGatewayTest {
          */
         val recordedSamplingPolicies: MutableList<SamplingPolicy> = mutableListOf()
 
-        override suspend fun generatePlan(context: PlanningContext, samplingPolicy: SamplingPolicy): String {
+        /**
+         * Phase 8.5追加（計画書`docs/plans/phase8.5-adaptive-model-selection.md`§3設計5・
+         * §6 T-P85-28/29、ADR-0062、アーキテクトレビューPass 1 CRITICAL対応）。呼び出しごとに
+         * 受け取った`modelPath`を記録し、「解決済みモデルと実際にロードへ渡されるパスが一致するか」
+         * をテストから検証できるようにする（[recordedSamplingPolicies]と同型のパターン）。
+         */
+        val recordedModelPaths: MutableList<String> = mutableListOf()
+
+        override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String {
             recordedSamplingPolicies.add(samplingPolicy)
+            recordedModelPaths.add(modelPath)
             val outcome = outcomes.getOrElse(generatePlanCallCount) { outcomes.last() }
             generatePlanCallCount += 1
             if (delayMillisPerCall > 0) {
@@ -231,7 +241,7 @@ class LocalAiGatewayTest {
         var maxObservedConcurrency: Int = 0
             private set
 
-        override suspend fun generatePlan(context: PlanningContext, samplingPolicy: SamplingPolicy): String {
+        override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String {
             val current = activeCalls.incrementAndGet()
             maxObservedConcurrency = maxOf(maxObservedConcurrency, current)
             delay(delayMillis)
@@ -252,10 +262,22 @@ class LocalAiGatewayTest {
     private fun activityManager(): ActivityManager =
         context().getSystemService(ActivityManager::class.java)
 
+    /**
+     * **Phase 8.5での変更（ADR-0062、既存テストへの波及調査）**: `selectedModelId`の既定値が
+     * `AiPreferences.AUTO_SELECT_MODEL_ID`へ変わったため（[AiPreferences.
+     * DEFAULT_SELECTED_MODEL_ID]参照）、本ヘルパーが返す`preferences`をそのまま使う既存の
+     * 系統1〜7テスト（timeout/retry/OOM/SHA検証/並行性等、モデル選択そのものはテスト対象外）は
+     * 何もしなければauto経路（[ModelSelector]）へ誤って迂回され、`fakeInstalledEntry()`という
+     * 実カタログに存在しない汎用fixtureが「候補外」として扱われてしまう（本番コードのバグではなく、
+     * これらのテストが元々「明示選択」を暗黙の前提にしていたことによる契約変更の波及）。
+     * 既定で[fakeInstalledEntry]を明示選択しておくことで、既存テスト群の意図（明示選択された
+     * 任意の1モデルでのGateway機構検証）を変えずに済ませる。auto経路自体を検証する
+     * T-P85-10〜13・28はこの既定値を個別に`AiPreferences.AUTO_SELECT_MODEL_ID`へ上書きする。
+     */
     private fun preferences(aiEnabled: Boolean, prefsFileName: String): AiPreferences {
         val prefs = context().getSharedPreferences(prefsFileName, Context.MODE_PRIVATE)
         prefs.edit().clear().putBoolean(AiPreferencesImpl.KEY_AI_ENABLED, aiEnabled).commit()
-        return AiPreferencesImpl(prefs)
+        return AiPreferencesImpl(prefs).apply { selectedModelId = fakeInstalledEntry().id }
     }
 
     private fun deviceCapabilityWith(totalMemBytes: Long, availMemBytes: Long, vararg abis: String): DeviceCapability {
@@ -318,6 +340,62 @@ class LocalAiGatewayTest {
         }
         return storage
     }
+
+    /**
+     * Phase 8.5追加（計画書`docs/plans/phase8.5-adaptive-model-selection.md`§6
+     * T-P85-10〜15・28・29、ADR-0062）。[installedModelStorageWithEntry]の複数エントリ版。
+     * [entries]の並び順をそのまま`catalog`へ渡すため、実カタログ（`ModelCatalog.ALL`、
+     * Qwen3-0.6B先頭）と同じ順序で導入済み状態を表現する場合は呼び出し側で順序を揃えること
+     * （[autoTestCatalog]参照）。
+     */
+    private fun installedModelStorageWithEntries(
+        entries: List<ModelCatalogEntry>,
+        preferences: AiPreferences? = null
+    ): ModelStorage {
+        val storage = ModelStorageImpl(context(), catalog = entries, preferences = preferences)
+        entries.forEach { entry ->
+            storage.finalFile(entry).apply {
+                parentFile?.mkdirs()
+                writeBytes(FAKE_INSTALLED_MODEL_BYTES)
+            }
+        }
+        return storage
+    }
+
+    /**
+     * Phase 8.5追加（T-P85-10〜15・28・29用）。実カタログ`ModelCatalog.GEMMA_4_E2B_IT`と同じ
+     * `defaultProfilePeakRamBytes`（2GiB）を持つfixture（実モデルファイルは使わない）。
+     */
+    private fun fakeGemma4LikeEntry(): ModelCatalogEntry = fakeInstalledEntry().copy(
+        id = "test-gemma4-like",
+        displayName = "Test Gemma4-like Model",
+        peakRamBytes = 2L * GB,
+        defaultProfilePeakRamBytes = 2L * GB
+    )
+
+    /**
+     * Phase 8.5追加（T-P85-10〜15・28・29用）。実カタログ`ModelCatalog.QWEN3_0_6B_INT4_BLOCK32`と
+     * 同じ`defaultProfilePeakRamBytes`（1.25GiB）を持つfixture。
+     */
+    private fun fakeQwen06bLikeEntry(): ModelCatalogEntry = fakeInstalledEntry().copy(
+        id = "test-qwen06b-like",
+        displayName = "Test Qwen3-0.6B-like Model",
+        peakRamBytes = GB + GB / 4,
+        defaultProfilePeakRamBytes = GB + GB / 4
+    )
+
+    /** 実カタログ順（Qwen3-0.6B先頭）を模した2件のcatalog（T-P85-10〜15・28・29用）。 */
+    private fun autoTestCatalog(): List<ModelCatalogEntry> = listOf(fakeQwen06bLikeEntry(), fakeGemma4LikeEntry())
+
+    /**
+     * Phase 8.5 Step 4（Green）修正: `ModelSelectorImpl`へ渡す`candidates`は品質順
+     * （Gemma4-like > Qwen06b-like）でなければならない。[autoTestCatalog]（Qwen先頭）を
+     * そのまま流用していたためT-P85-10・28が「両方適合時はGemma4-likeを選ぶ」を検証できず
+     * 誤ってQwen06b-likeが選ばれていた（テスト実装のミス、本番`ModelSelectorImpl.select`は
+     * candidatesを渡された順に評価するのみで正しい）。`ModelStorageImpl`の`catalog`（実ファイル
+     * 解決順、[autoTestCatalog]のまま）とは別概念であることに注意。
+     */
+    private fun qualityOrderedCandidates(): List<ModelCatalogEntry> = listOf(fakeGemma4LikeEntry(), fakeQwen06bLikeEntry())
 
     private fun verifier(): ModelVerifier = ModelVerifierImpl()
 
@@ -917,6 +995,254 @@ class LocalAiGatewayTest {
                 "はずです(§8.6 #12、Gemini G1 CRITICAL #2)",
             1,
             countingVerifier.verifyCallCount
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // 系統8: Phase 8.5 auto選択の配線プラミング（計画書§6 T-P85-10〜15・28・29、ADR-0062、
+    // アーキテクトレビューPass 1 CRITICAL対応）。
+    // Step 3(Red)時点: checkInstalledModel()のauto分岐本体は未実装のまま（既存
+    // installedEntry()のcatalog順fallbackを素通りするだけ）。T-P85-10・28はこの理由でRedと
+    // なることを狙うが、T-P85-11〜13・29はcatalog順fallback（Qwen06b-like先頭）が偶然
+    // 期待値と一致しborn-greenになる可能性がある（実行結果をそのまま報告する）。T-P85-14・15は
+    // 明示選択経路が無変更なため確定でborn-green。
+    // ------------------------------------------------------------------
+
+    // T-P85-10: 正常 - auto・両方導入・availMem=3GiB(両方適合) → 品質最上位のGemma4-likeへ
+    // 進むべきだが、auto分岐が未実装のため実際にはcatalog順(Qwen06b-like)へ進む
+    @Test
+    fun tP85_10_auto_bothInstalledSufficientForBoth_selectsGemma4Like() = runTest {
+        val entries = autoTestCatalog()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP85_10")
+            .apply { selectedModelId = AiPreferences.AUTO_SELECT_MODEL_ID }
+        val storage = installedModelStorageWithEntries(entries, preferences)
+        val deviceCapability = supportedDeviceCapability(availMemBytes = 3L * GB)
+        val model = FakeLocalLanguageModel(listOf(PlanCallOutcome.Respond(validSingleStepResponse())))
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapability,
+            preferences = preferences,
+            modelSelector = ModelSelectorImpl(deviceCapability, storage, candidates = qualityOrderedCandidates())
+        )
+
+        gateway.generatePlan(planningContext())
+
+        assertEquals(
+            "autoは両方適合時に品質最上位のGemma4-likeを選ぶべきです(計画書§3決定表)",
+            storage.finalFile(fakeGemma4LikeEntry()).absolutePath,
+            model.recordedModelPaths.single()
+        )
+    }
+
+    // T-P85-11: 正常 - auto・両方導入・availMem=2.0GiB(Gemma4-like不適合/Qwen06b-like適合) →
+    // Qwen06b-likeへ進むべき
+    @Test
+    fun tP85_11_auto_bothInstalledOnlyQwenFits_selectsQwen06bLike() = runTest {
+        val entries = autoTestCatalog()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP85_11")
+            .apply { selectedModelId = AiPreferences.AUTO_SELECT_MODEL_ID }
+        val storage = installedModelStorageWithEntries(entries, preferences)
+        val deviceCapability = supportedDeviceCapability(availMemBytes = 2L * GB)
+        val model = FakeLocalLanguageModel(listOf(PlanCallOutcome.Respond(validSingleStepResponse())))
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapability,
+            preferences = preferences,
+            modelSelector = ModelSelectorImpl(deviceCapability, storage, candidates = qualityOrderedCandidates())
+        )
+
+        gateway.generatePlan(planningContext())
+
+        assertEquals(
+            storage.finalFile(fakeQwen06bLikeEntry()).absolutePath,
+            model.recordedModelPaths.single()
+        )
+    }
+
+    // T-P85-12: 異常 - auto・両方未導入 → Fallback(MODEL_NOT_INSTALLED)
+    @Test
+    fun tP85_12_auto_neitherInstalled_returnsFallbackModelNotInstalled() = runTest {
+        val entries = autoTestCatalog()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP85_12")
+            .apply { selectedModelId = AiPreferences.AUTO_SELECT_MODEL_ID }
+        val storage = ModelStorageImpl(context(), catalog = entries, preferences = preferences) // ファイル未配置=未導入
+        val deviceCapability = supportedDeviceCapability(availMemBytes = 3L * GB)
+        val model = FakeLocalLanguageModel(listOf(PlanCallOutcome.Respond(validSingleStepResponse())))
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapability,
+            preferences = preferences,
+            modelSelector = ModelSelectorImpl(deviceCapability, storage, candidates = qualityOrderedCandidates())
+        )
+
+        val result = gateway.generatePlan(planningContext())
+
+        assertTrue(result is AiResult.Fallback)
+        assertEquals(AiFallbackReason.MODEL_NOT_INSTALLED, (result as AiResult.Fallback).reason)
+        assertEquals(0, model.generatePlanCallCount)
+    }
+
+    // T-P85-13: 異常 - auto・両方導入だがavailMem=1.0GiB(いずれも不適合) →
+    // Fallback(OUT_OF_MEMORY_PREVENTED)
+    @Test
+    fun tP85_13_auto_bothInstalledInsufficientForBoth_returnsFallbackOutOfMemoryPrevented() = runTest {
+        val entries = autoTestCatalog()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP85_13")
+            .apply { selectedModelId = AiPreferences.AUTO_SELECT_MODEL_ID }
+        val storage = installedModelStorageWithEntries(entries, preferences)
+        val deviceCapability = supportedDeviceCapability(availMemBytes = 1L * GB)
+        val model = FakeLocalLanguageModel(listOf(PlanCallOutcome.Respond(validSingleStepResponse())))
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapability,
+            preferences = preferences,
+            modelSelector = ModelSelectorImpl(deviceCapability, storage, candidates = qualityOrderedCandidates())
+        )
+
+        val result = gateway.generatePlan(planningContext())
+
+        assertTrue(result is AiResult.Fallback)
+        assertEquals(AiFallbackReason.OUT_OF_MEMORY_PREVENTED, (result as AiResult.Fallback).reason)
+        assertEquals(0, model.generatePlanCallCount)
+    }
+
+    // T-P85-14: 正常・既存回帰の固定化 - 明示選択(Gemma4-like)・両方導入・availMem=2.0GiB
+    // (Gemma4-likeは不適合・Qwen06b-likeなら適合する状況) → Qwenへの無音差し替えは起きず
+    // Fallback(OUT_OF_MEMORY_PREVENTED)・fakeモデルは1回も呼ばれない
+    // （A54実測phase8-a54-ram-tier-fix.md§10.3のGreen回帰ロック）
+    @Test
+    fun tP85_14_explicitGemma4Like_insufficientForGemma4ButQwenWouldFit_noSilentSubstitution() = runTest {
+        val entries = autoTestCatalog()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP85_14")
+            .apply { selectedModelId = fakeGemma4LikeEntry().id }
+        val storage = installedModelStorageWithEntries(entries, preferences)
+        val model = FakeLocalLanguageModel(listOf(PlanCallOutcome.Respond(validSingleStepResponse())))
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(availMemBytes = 2L * GB),
+            preferences = preferences
+        )
+
+        val result = gateway.generatePlan(planningContext())
+
+        assertTrue(result is AiResult.Fallback)
+        assertEquals(AiFallbackReason.OUT_OF_MEMORY_PREVENTED, (result as AiResult.Fallback).reason)
+        assertEquals(
+            "明示選択したGemma4-likeが不適合でも、導入済みのQwen06b-likeへ無音で差し替えては" +
+                "いけません(F-A原則)",
+            0,
+            model.generatePlanCallCount
+        )
+    }
+
+    // T-P85-15: 正常 - 明示選択(Qwen06b-like)・両方導入・availMem=2.0GiB(Qwen06b-likeは適合) →
+    // ModelSelectorを経由せずQwen06b-likeへ進む
+    @Test
+    fun tP85_15_explicitQwen06bLike_installedAndSufficient_proceedsWithQwen06bLike() = runTest {
+        val entries = autoTestCatalog()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP85_15")
+            .apply { selectedModelId = fakeQwen06bLikeEntry().id }
+        val storage = installedModelStorageWithEntries(entries, preferences)
+        val model = FakeLocalLanguageModel(listOf(PlanCallOutcome.Respond(validSingleStepResponse())))
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(availMemBytes = 2L * GB),
+            preferences = preferences
+        )
+
+        gateway.generatePlan(planningContext())
+
+        assertEquals(
+            storage.finalFile(fakeQwen06bLikeEntry()).absolutePath,
+            model.recordedModelPaths.single()
+        )
+    }
+
+    // T-P85-28: 正常 - auto解決がQwen06b-likeのfinalFile → (availMemを回復させ再呼び出し) →
+    // Gemma4-likeのfinalFileへ切り替わるべき。auto分岐が未実装のためcatalog順fallbackのまま
+    // 変化しない
+    @Test
+    fun tP85_28_auto_modelPathSwitchesWhenAvailMemRecovers() = runTest {
+        val entries = autoTestCatalog()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP85_28")
+            .apply { selectedModelId = AiPreferences.AUTO_SELECT_MODEL_ID }
+        val storage = installedModelStorageWithEntries(entries, preferences)
+        val model = FakeLocalLanguageModel(
+            listOf(
+                PlanCallOutcome.Respond(validSingleStepResponse()),
+                PlanCallOutcome.Respond(validSingleStepResponse())
+            )
+        )
+        val deviceCapability = supportedDeviceCapability(availMemBytes = 2L * GB) // Qwen06b-likeのみ適合
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapability,
+            preferences = preferences,
+            modelSelector = ModelSelectorImpl(deviceCapability, storage, candidates = qualityOrderedCandidates())
+        )
+
+        gateway.generatePlan(planningContext())
+
+        // availMemを回復させる(同一ActivityManagerのshadowを再設定、両方適合する量へ)
+        val recoveredInfo = ActivityManager.MemoryInfo().apply {
+            totalMem = 8L * GB
+            availMem = 3L * GB
+            threshold = 0L
+            lowMemory = false
+        }
+        shadowOf(activityManager()).setMemoryInfo(recoveredInfo)
+
+        gateway.generatePlan(planningContext())
+
+        assertEquals(2, model.recordedModelPaths.size)
+        assertEquals(
+            "1回目(availMem=2GiB)はQwen06b-likeが選ばれるべきです",
+            storage.finalFile(fakeQwen06bLikeEntry()).absolutePath,
+            model.recordedModelPaths[0]
+        )
+        assertEquals(
+            "2回目(availMem回復後=3GiB)はGemma4-likeへ切り替わるべきです(auto選択の再評価)",
+            storage.finalFile(fakeGemma4LikeEntry()).absolutePath,
+            model.recordedModelPaths[1]
+        )
+    }
+
+    // T-P85-29: 回帰 - 明示選択(Gemma4-like)・導入済み・availMem十分 → model.generatePlanへ
+    // 渡るmodelPathがmodelStorage.finalFile(gemma4Entry).absolutePathと一致する
+    @Test
+    fun tP85_29_explicitSelection_modelPathMatchesResolvedEntry() = runTest {
+        val entries = autoTestCatalog()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP85_29")
+            .apply { selectedModelId = fakeGemma4LikeEntry().id }
+        val storage = installedModelStorageWithEntries(entries, preferences)
+        val model = FakeLocalLanguageModel(listOf(PlanCallOutcome.Respond(validSingleStepResponse())))
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(availMemBytes = 3L * GB),
+            preferences = preferences
+        )
+
+        gateway.generatePlan(planningContext())
+
+        assertEquals(
+            storage.finalFile(fakeGemma4LikeEntry()).absolutePath,
+            model.recordedModelPaths.single()
         )
     }
 }
