@@ -204,3 +204,64 @@ Galaxy A54 5G（表記6GB RAM）実機で設定画面のAI有効化ができな�
 ## §9. コミット粒度
 
 **1コミット**（Red→Green一体）: `DeviceCapabilityTest.kt`のテスト更新・新規ケース追加、`DeviceCapability.kt`の定数値変更＋KDoc是正、本計画書を同一コミットに含める。Red確認（テストのみ更新した状態で失敗実行）はコミット前のローカル検証手順とし、コミット自体は最終Green状態で1つ作成する。
+
+---
+
+## §10. A54実機受け入れ結果（2026-08-11実施・完了）
+
+**実施環境**: Galaxy A54 5G au版（SCG21）・Android 16・日常使用状態（他アプリ常駐あり、テスト専用端末ではない）。接続はWSL2環境のためワイヤレスデバッグ（`adb pair`／`adb connect`）を使用（usbipd-win未導入のためUSB直結不可という環境制約による）。証拠スクリーンショットは`docs/evidence/screenshots/phase8/a54-*.png`に格納。
+
+### 10.1 totalMem実測（§8手順2対応）
+
+`adb shell cat /proc/meminfo`実測: `MemTotal=5,556,216kB`＝**5.30GiB**（`dumpsys meminfo`の「Total RAM: 5,556,216K」と一致）。
+
+- 旧閾値6GiBのままなら5.30GiB<6GiBで段0（`TIER_0_UNSUPPORTED`）落ち＝**本バグの実機実証**。
+- 新閾値5GiBでは5.30GiB≥5GiBのため**TIER_1_STANDARD通過（余裕約306MiB）**。
+- ADR-0061で却下した5.5GiB案では5.30GiB<5.5GiBのため依然取りこぼす＝**却下判断の実測的裏付け**。
+- ADR-0061再検討トリガー「`totalMem`実測値5GiB未満」には非該当。
+
+### 10.2 設定画面・Gemma4ダウンロード（§8手順3・4対応）
+
+- 設定画面: 「メモリ不足（6GB以上）」の非対応文言が消滅し、AI有効化トグルが操作可能。スクショ`a54-settings-after-fix.png`。
+- Gemma4（既定モデル、2.59GB）をアプリ内ダウンロード導線から取得: 完走（実測約4分、Wi-Fi 14MB/s級）→SHA-256検証パス→「ダウンロード済み・検証済み」表示。実ファイルサイズ2,588,147,712B確認。スクショ`a54-model-installed.png`。
+
+### 10.3 重要発見: 日常使用A54ではGemma4既定モデルが恒常的にBasicへフォールバックする
+
+PlanReview画面初回表示はBasic文言のまま推論が発火しない。原因は`INSUFFICIENT_MEMORY`によるロード前availMem能動ガードの静的縮退（クラッシュなし、設計どおりの安全側動作）。
+
+実測根拠:
+- ガード要求量 ＝ `ModelCatalog.GEMMA_4_E2B_IT.defaultProfilePeakRamBytes`（2GiB）＋`MEMORY_SAFETY_MARGIN_BYTES`（512MB、ADR-0057）＝**2.5GiB**
+- 実機availMem実測: 通常時2.01GiB／`kill-all`後2.31GiB／`force-stop`後2.29GiB／再起動後も2.23〜2.28GiBで頭打ち＝**いずれも2.5GiB未満**
+
+**結論**: 日常使用状態（他アプリ常駐あり）の表記6GB機では、Gemma4既定モデルは実質常時Basicへ縮退する。これはPhase 9最優先課題（10.8参照）の実測根拠である。
+
+### 10.4 Qwen 0.6BでのAI文言実機描画実証
+
+Gemma4がガードで発火しないため、実機でのAI描画パイプライン自体の実証には別モデルへの切替が必要だった。**本切替は本番UIでは不可能な操作**である（`SettingsViewModel.kt` L56が`selectedModel`を`ModelCatalog.GEMMA_4_E2B_IT`に固定しており、モデル選択UI自体がS-6裁定によりスコープ外——既存のP7-C6申し送り事項がここで実際に表面化した）。そのため**テスト目的の手動操作**として`adb shell run-as`で`ai_preferences.xml`を直接編集し`selectedModelId=qwen3-0.6b-int4-block32`へ切替、モデル本体は開発機`build/models/`の検証済み同一SHAファイル（`e3e290...776cf`、344,437,808B）を`adb push`で端末へ設置した。
+
+結果:
+- PlanReview画面: 16:35ステップの文言が「出かける準備をする」（Basic）→「歯科検診を受ける場所を確認する」（AI差替）へ変化。タップから描画まで約30〜40秒（初回エンジンロード込み、CPU使用率93%実測）。
+- Execution画面: 同じAI文言がカレントステップとして表示。
+- 時刻・順序・構造は不変（§13不変条件の成立を実機で確認）。
+
+スクショ: `a54-qwen-plan-t8.png`（Basic段階）→`a54-qwen-check2.png`（AI差替後）→`a54-execution-ai.png`／`a54-execution-ai-step2.png`（実行画面）。
+
+### 10.5 PSS実測
+
+推論後`TOTAL PSS`＝1,027,562kB≈1.00GiB（Qwen 0.6B）。カタログの`defaultProfilePeakRamBytes`（1.25GiB）の範囲内。
+
+### 10.6 既知残存事項の再確認
+
+実行画面にexact alarm許可バナーが表示される（第1弾残存事項⑤。本修正とは無関係の既知の未対応事項）。
+
+### 10.7 受け入れ判定
+
+**§8の目的（閾値是正の実機検証）は合格**。AI文言の実機描画は、既定のGemma4では10.3の理由により確認できず、Qwen 0.6Bへの手動切替により実証した（配線・§13不変条件そのものは実機で実証済み。Gemma4での確認は10.8のモデル自動選択対応後に持ち越し）。
+
+**受け入れ試験終了時点で端末に残した状態**（次回操作者向け申し送り）: `selectedModelId=qwen3-0.6b-int4-block32`のまま／AI有効化ON／モデルファイル2つ（Gemma4・Qwen 0.6B）が端末内に残存／テスト用に操作した予定「歯科検診」17:00がユーザーの実カレンダーに残存。
+
+### 10.8 Phase 9への申し送り
+
+1. **空きRAM（availMem）ベースのモデル自動選択を最優先実装**する（Gemma4⇄Qwen 0.6Bなど）。10.3の実測（日常使用6GB機のavailMem 2.0〜2.3GiB＜Gemma4ガード要求2.5GiB）が根拠。
+2. **`SettingsViewModel`の`selectedModel`Gemma4固定を解消**する（P7-C6申し送り事項の本実装。10.4で手動`run-as`編集を要した直接原因）。
+3. Qwen 0.6Bの品質はGemma4より下限（P7-C8既知）だが、A54実機で文脈化そのものは機能することを確認した（「歯科検診を受ける場所を確認する」）。
