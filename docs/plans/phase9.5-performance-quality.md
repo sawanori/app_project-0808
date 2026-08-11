@@ -3,7 +3,8 @@
 > 対象仕様: §73「Phase 9・Local AI Recovery」の性能・品質フォローアップ、§57「性能指標」、§11.1〜§11.3実機実測系。直接の起点はPhase 9計画書§4.6「Phase 9.5候補（実機計測ループ要）」と、同計画書Step 4（コミット3 Green）報告が持ち越したリファクタ候補
 > 前提基盤: Phase 9（Local AI Recovery完了・A54実機受け入れ合格、ADR-0063）・Phase 8.5（`ModelSelector`自動選択・ADR-0062）・Phase 7（LiteRT-LM基盤・P7-C0/C5/C8実機実測、`LiteRtLmProbeTest`／`ModelComparisonProbeTest`のprobe規約確立）
 > 種別: 計測駆動フェーズ（コミット0・M実施済み。F-4/F-5はコード変更を伴う優先繰り上げ機能）
-> 承認状態: **敵対的レビュー反映済み（§13）。以下、完了項目は要約のみ（詳細はコミットログ・各節参照）**:
+> 承認状態: **Phase 9.5 完了（2026-08-12）**。以下、全マイルストーンの最終結果一覧（要約のみ、詳細はコミットログ・各節参照）:
+> - **C0**（androidTestコンパイル復旧、コミット1e85479）——ADR-0062追随漏れ（`ModelComparisonProbeTest`等2ファイルの機械的修正）を本フェーズ着手前に解消。
 > - **M**（ベースライン計測、コミット9606135）・**F-4/F-5**（Recovery pairing交差一致緩和・warmゲート2層修正、288e9b9）・**F-5b**（既定値配線ギャップ修正、2acd2f2）・**A/B（F-4/F-5/F-5b）**（Recovery完全蘇生3/3確認、08de59a）は完了・コミット済み。
 > - **F-1／F-1b／F-1c**（few-shotカテゴリ条件選択、Plan限定）は実装→A/B実測2回（`TITLE_COPY`→`MIN_QUALITY`）→撤退基準発動→**不採用・ロールバック確定**（09f4d99→12a14d6→608a478）。`EventCategoryClassifier`等はドーマント基盤（Phase 12実験材料）として残置。詳細は§14「A/B再実測（F-1）」「A/B判定（F-1b）」、結論は§3.2「F-1c」参照。
 > - **F-2（Engineウォームアップ）はStep 3（Red）・Step 4（Green）とも実装済み・コミット済み（3dcb207）**——`LocalAiGateway.warmUp()`（aiEnabled→Tier→ABI→`resolveInstalledEntry`→強化availMemガード→`inferenceMutex.tryLock()`によるin-flightスキップ→`(model as? EngineWarmable)?.warmUpEngine`、例外は`warmUpEngine`呼び出しのみ捕捉しno-op化）・新設任意interface`EngineWarmable`を`LiteRtLmLocalLanguageModel`が実装（`obtainEngine`へ委譲）・`EventSelectionViewModel.init`から`warmUpAiIfPossible()`を1回実配線・`AppContainer`配線（実装時に`LinkageError`回帰〔ナビゲーションフロー起点での`localAiGateway`未捕捉伝播、13件失敗〕を発見し`eventSelectionLocalAiGateway`ガードで解消、§3.3参照）。T-P95-50〜57は全件Green。
@@ -11,9 +12,9 @@
 > - **F-3（Recovery用maxNumTokensプロファイル縮小）は結論確定・クローズ・コミット済み（b956fdd）**——Step 3（Red）でアーキテクチャ論点（`LiteRtLmLocalLanguageModel`のEngineは1個・`maxNumTokens`は`generatePlan`／`generateRecovery`共有）を発見し、**F-3裁定（2026-08-12）: 本番配線は不成立として縮退（descope）**——Plan/Recoveryの大きい方を採用=無益、プロファイル不一致リロード=Recovery（時間クリティカル）に1.4秒ロードを差し込む最悪UXのいずれも不採用。計測を1回も実施せず構造分析だけで結論に到達した（§14「F-3裁定」参照）。`RecoveryPromptBuilder.estimateMaxNumTokens`はGreen実装済み（T-P95-58〜62、preface文字数からの直接算出方式・下限上限は`PlanPromptBuilder`と共有）だが「Recoveryトークン予算分析を記録するドーマント設計文書」として`generateRecovery`へは配線しない（`EventCategoryClassifier`と同方針、KDocに裁定を明記）。`LiteRtLmLocalLanguageModel`側の宣言のみスタブは将来性なしのため削除。**実装時の追加発見**: 当初のT-P95-59（「同一shotCount・maxOutputTokenでRecovery≤Plan」）はDEFAULT_SHOT_COUNT=2で実測すると成立しない（Recovery=1664>Plan=1280）ことが判明——原因はPlan版の「baseline-delta方式」が1206文字までのpreface内容を実質無料で1024トークン枠に含める一方、Recovery版の「直接算出方式」は同じ無料枠の恩恵を受けないという計算モデルの違いであり、Recoveryの実内容が大きいことを意味しない。system instructionのみ（shotCount=0）で比較する形にテストのスコープを訂正した（詳細は`RecoveryPromptBuilderTest.kt`のT-P95-59コメント参照）。
 > - **PR-1（GPUバックエンド可否プローブ）は事前API調査・プローブ作成・実機検証とも完了——結論: GPU=NO_GO確定**（プローブ作成コミット25f069e）——litertlm-android 0.15.0のAAR実体を`javap -p`で調査しGPU API自体は公開されている（存在確認=GO、詳細は§3.5参照）ことを確認したうえで作成した`GpuBackendProbeTest`をA54実機で実行した結果、GPU側はEngine初期化（`modelLoadMs=6286`）までは成功したが初回推論`sendMessage`で`LiteRtLmJniException: Can not find OpenCL library on this device`により失敗（CPU側はTTFT約2.67秒・約9.71tok/sで完走）。A54はOpenCLライブラリをアプリへ公開しておらずLiteRT-LMのGPUバックエンドは実行不能——**GPU=NO_GO確定**（§14「PR-1実機検証結果」参照）。
 > - **PR-2（マスク模範例・カテゴリ条件付きecho検出）は縮退（descope）を裁定——プローブ未実施**（2026-08-12）——根拠: ①本フェーズ全計測でecho発生0件（既存L2防御R1aで実害なし）②L1-bはF-1と同型の品質劣化リスクを便益不明のまま負う③R1bが依存するカテゴリ条件付けはF-1でA/B実測2回により陰性・ロールバック確定済み。Phase 12（品質定量化環境整備後）での再評価へ申し送る（§3.6・§14「PR-2裁定」参照）。
-> 全757件Green（skip1）・lint error0（:app:testDebugUnitTest tests=757/skipped=1/failures=0/errors=0・JUnit XML集計で確認済み）。**PR-1/PR-2の実機結果記録は未コミット、報告・検収待ち（このあとRF-1・ADR-0064が続く）**
-
-続けてF-2（Engineウォームアップ、§3.3）のStep 3（Red）を実施——`LocalAiGateway.warmUp()`宣言（本体`TODO()`）・新設任意interface`EngineWarmable`（`BenchmarkMetricsSource`／`EngineLoadStateSource`と同型）を`LiteRtLmLocalLanguageModel`が実装（本体`TODO()`）・`EventSelectionViewModel`へ`localAiGateway`引数と`warmUpAiIfPossible()`フックを宣言（**Step 4まで`init`から呼ばない**——`warmUp()`が`TODO()`のため、呼ぶと本ViewModelを構築する既存テストが軒並み`NotImplementedError`で壊れるため意図的に未配線）・T-P95-50〜57（当初案T-P95-11〜17はF-1/F-1bが1〜12を消費したため衝突、実装時に50〜57へ採番し直し、§7に改訂記録済み）。全8件`NotImplementedError`でRed（`warmUp()`のTODO由来、EventCategoryClassifier.classifyと同型のscaffold）。全ファイルは**未コミット**の変更（:app:testDebugUnitTest tests=751/skipped=1/failures=8/errors=0〔F-2新規8件のみRed、既存743件は無傷〕・:app:lintDebug error=0/warning=23、JUnit XML集計で確認済み）。**Greenには未着手、報告・検収待ち**
+> - **RF-1（`LiteRtLmLocalLanguageModel`重複統合）は実装・実機受け入れとも完了（コミット0f423f4）**——`generatePlan`／`generateRecovery`の共通シーケンスを`runInference`へ、`buildConversationConfig`系を`toConversationConfig`／`toMessages`へ、`buildDataMessage`系を`withConcisenessConstraintIfNeeded`へ集約する「挙動同値の機械的統合」に限定した（JVM検証不能ファイルのため、変更前後のメソッド構造対応表をコミット報告に記録）。実機受け入れ（A54、`build/agent-logs/phase9.5-rf1-acceptance-logcat.log`）で**Plan 3/3・Recovery 3/3 全Success・Fallback 0**（plan wall 12.8〜14.3秒・recovery wall 9.8〜12.2秒、全試行`schemaValid=true`・`sanityPassed=true`・`retried=false`）を確認し、リファクタ版アダプタの実機無傷を確定した（§14「RF-1実機受け入れ結果」参照）。
+> - **ADR-0064**（`DECISIONS.md`）——本フェーズ全7決定（F-4交差一致緩和／F-5二層修正+F-5b／F-1不採用ロールバック／F-2ウォームアップ+F-2bヘッドルーム再調整／F-3構造縮退／PR-1 GPU NO_GO確定／PR-2縮退）を正式起票済み（コミット084aebc）。
+> 全757件Green（skip1）・lint error0（:app:testDebugUnitTest tests=757/skipped=1/failures=0/errors=0・JUnit XML集計で確認済み）・実機受け入れ（RF-1）Plan/Recovery計6/6 Success。**計測駆動フェーズ完了。**
 
 ---
 
@@ -489,5 +490,22 @@ L1-b（few-shotのuserTurnを`[EVENT_TITLE]`等へマスクする設計）・R1b
 3. **R1bがF-1のカテゴリ条件付けに依存する**: R1bの「カテゴリ一致判定」はF-1が確立するはずだったカテゴリ推定基盤の応用だが、F-1自体がA/B実測2回で陰性・ロールバック確定済み（§3.2「F-1c」）——依存するレバー自体が計測駆動フェーズで否定されている。
 
 **結論**: PR-2プローブは実施せず、Phase 12（品質定量化環境の整備後）での再評価へ申し送る。§3.6「本フェーズの成果物はプローブ結果と採否提案」は不成立となり、§12確認事項3「L1-b／R1bの採否基準（エコー率がベースライン比50%以下、かつ目視品質劣化なしの場合に採用を提案）」は**判断対象（プローブ結果）自体が存在しないため縮退により消滅**する。
+
+### RF-1実機受け入れ結果（コミット0f423f4の実機無傷確認、2026-08-12実施）
+
+オーケストレーターがRF-1（`LiteRtLmLocalLanguageModel`重複統合リファクタ）後のA54実機でPlan/Recovery生成を計6試行実行し、`build/agent-logs/phase9.5-rf1-acceptance-logcat.log`へ記録した（既存`PerformanceBaselineProbeTest`のPlan/Recovery各3試行構成を、リファクタ版アダプタに対する回帰確認として流用）。
+
+**結果**: **Plan 3/3・Recovery 3/3の計6/6が全てSuccess、Fallbackは0件**。全試行で`schemaValid=true`・`sanityPassed=true`・`retried=false`（Primary単独で完結、pairing・content sanityとも通過）・`selectedModelId=qwen3-0.6b-int4-block32`。
+
+| domain | trial | 種別 | wallMs | modelLoadMs | firstTokenMs | tokensPerSecond |
+|---|---|---|---|---|---|---|
+| plan | 0 | cold | 14332 | 1076 | 2672 | 10.06 |
+| plan | 1 | warm | 12844 | 0 | 2205 | 9.15 |
+| plan | 2 | warm | 12778 | 0 | 2352 | 9.69 |
+| recovery | 0 | cold | 12159 | 1116 | 2505 | 9.59 |
+| recovery | 1 | warm | 9793 | 0 | 2206 | 10.72 |
+| recovery | 2 | warm | 9882 | 0 | 2230 | 10.68 |
+
+plan wall 12,778〜14,332ms（約12.8〜14.3秒）・recovery wall 9,793〜12,159ms（約9.8〜12.2秒）——いずれもM（§14冒頭「Plan」「Recovery」節）・F-4/F-5/F-5b後A/B（§14「A/B再実測（F-4/F-5/F-5b後）」）の実測レンジと整合する範囲であり、RF-1のメソッド抽出（`runInference`／`toConversationConfig`／`toMessages`／`withConcisenessConstraintIfNeeded`への機械的統合）が推論結果・性能特性のいずれにも回帰を持ち込んでいないことを実機で確認した。JVMで検証できない同ファイルの変更（コミット0f423f4のメソッド構造対応表参照）は、本実機受け入れをもって最終確認が完了する。
 
 ---
