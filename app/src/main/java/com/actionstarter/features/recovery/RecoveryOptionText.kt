@@ -50,13 +50,26 @@ fun resolveRecoveryOptionTitle(semanticAction: String): String = when (semanticA
  * （`resolveRecoveryOptionExplanation(option.semanticAction, option.estimatedArrival)`）と
  * `RecoveryOptionDisplayTest`（T-RECUI-2）の既存呼び出しの両方に影響を与えずに将来この方針を
  * 再検討できるようにするため。
+ *
+ * **[aiExplanation]追加（Phase 9計画書`docs/plans/phase9-recovery-ai.md`§3.5、コミット3実装済み・
+ * Green）**: [aiExplanation]が非null・非空なら静的`stringResource`解決をスキップしそのまま返す
+ * （`title`側の[resolveRecoveryOptionTitle]は変更しない——AIは`explanation`のみを差し替える、
+ * §13/§15）。既定`null`のため既存呼び出し元（`RecoveryOptionDisplayTest`のT-RECUI-2等、2引数の
+ * まま）は無変更のまま成立する（T-P9-33、`isNullOrEmpty()`判定により空文字も静的解決へ
+ * フォールバックする）。`RecoveryScreen`側は`option.explanation.ifEmpty { null }`を渡す
+ * （`BasicRecoveryEngine`が常に空文字で生成する既定挙動（ADR-0033）と、AI差し替え後の非空
+ * explanationの両方を単一の分岐で扱うための変換、`RecoveryScreen.kt`参照）。
  */
 @Composable
-fun resolveRecoveryOptionExplanation(semanticAction: String, eta: Instant?): String = when (semanticAction) {
-    "keep_all_steps" -> stringResource(R.string.recovery_option_explanation_keep_all_steps)
-    "skip_optional_steps" -> stringResource(R.string.recovery_option_explanation_skip_optional_steps)
-    "skip_optional_and_important_steps" ->
-        stringResource(R.string.recovery_option_explanation_skip_optional_and_important_steps)
-    "change_transport_mode" -> stringResource(R.string.recovery_option_explanation_change_transport_mode)
-    else -> stringResource(R.string.step_title_fallback)
+fun resolveRecoveryOptionExplanation(semanticAction: String, eta: Instant?, aiExplanation: String? = null): String {
+    if (!aiExplanation.isNullOrEmpty()) return aiExplanation
+
+    return when (semanticAction) {
+        "keep_all_steps" -> stringResource(R.string.recovery_option_explanation_keep_all_steps)
+        "skip_optional_steps" -> stringResource(R.string.recovery_option_explanation_skip_optional_steps)
+        "skip_optional_and_important_steps" ->
+            stringResource(R.string.recovery_option_explanation_skip_optional_and_important_steps)
+        "change_transport_mode" -> stringResource(R.string.recovery_option_explanation_change_transport_mode)
+        else -> stringResource(R.string.step_title_fallback)
+    }
 }

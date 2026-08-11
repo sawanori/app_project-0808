@@ -12,6 +12,7 @@ import com.actionstarter.ai.AiPreferences
 import com.actionstarter.ai.AiPreferencesImpl
 import com.actionstarter.ai.LocalAiGateway
 import com.actionstarter.ai.LocalAiPlanContextualizer
+import com.actionstarter.ai.LocalAiRecoveryContextualizer
 import com.actionstarter.ai.adapter.LiteRtLmLocalLanguageModel
 import com.actionstarter.ai.model.DeviceCapability
 import com.actionstarter.ai.model.DeviceCapabilityImpl
@@ -389,6 +390,28 @@ class AppContainer(
     }
 
     /**
+     * Phase 9実配線（計画書`docs/plans/phase9-recovery-ai.md`§3.1・§11コミット3、ADR-0063想定、
+     * Green実装済み）。[localAiPlanContextualizer]と同型の構成（同一の[localAiGateway]単一
+     * インスタンスを再利用・同じ[LinkageError]防御・`by lazy`によるR-7「起動を重くしない」）。
+     * [createViewModelFactory]の`RecoveryViewModel`初期化子へ注入する（T-P9-36/37）。
+     *
+     * **[LinkageError]防御は[localAiPlanContextualizer]と同じ理由**: [localAiGateway]の構築
+     * （[LiteRtLmLocalLanguageModel]のインスタンス化）はJDK 21未満の実行環境で
+     * `ExceptionInInitializerError`→`NoClassDefFoundError`（いずれも[LinkageError]の
+     * サブクラス）に失敗しうる（[localAiPlanContextualizer]のKDoc「[LinkageError]防御」参照）。
+     * [localAiGateway]自体が`by lazy`のため、本プロパティと[localAiPlanContextualizer]の
+     * どちらが先にアクセスされても[localAiGateway]の構築は一度だけ行われ、結果はプロセス内で
+     * 共有される。
+     */
+    val localAiRecoveryContextualizer: LocalAiRecoveryContextualizer? by lazy {
+        try {
+            LocalAiRecoveryContextualizer(localAiGateway)
+        } catch (e: LinkageError) {
+            null
+        }
+    }
+
+    /**
      * `ActionStarterNavHost`（統合サイクル・integration owner所有）から呼び出される単一
      * `ViewModelProvider.Factory`。[sharedPlanViewModel]はactivity-scopedの共有ViewModel
      * （計画書§10.1）であり、[PlanReviewViewModel]／[RecoveryViewModel]／[ExecutionViewModel]が
@@ -449,13 +472,17 @@ class AppContainer(
                 // 実引数で渡す（P6-C1 scaffold既定値のUnavailableLocationService／
                 // Clock.systemUTC()から実装へ差替え）。notificationServiceは
                 // useThisPlan→通知再スケジュール結線（Fable 5裁定・P5-C6申し送り③への回答）に
-                // 用いる。
+                // 用いる。Phase 9実配線（計画書§3.1・§11コミット3、Green実装済み）:
+                // aiRecoveryContextualizerはlocalAiPlanContextualizerと同型のパターンで注入する
+                // （T-P9-36/37。localAiRecoveryContextualizerはLinkageError発生時null、
+                // localAiRecoveryContextualizerのKDoc参照）。
                 RecoveryViewModel(
                     recoveryEngine = recoveryEngine,
                     sharedPlanViewModel = sharedPlanViewModel,
                     locationService = locationService,
                     clock = Clock.systemUTC(),
-                    notificationService = notificationService
+                    notificationService = notificationService,
+                    aiRecoveryContextualizer = localAiRecoveryContextualizer
                 )
             }
             initializer {

@@ -17,11 +17,13 @@ import com.actionstarter.features.recovery.RecoveryScreen
 import com.actionstarter.features.recovery.RecoveryUiState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import java.io.File
 import java.time.Duration
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -232,5 +234,81 @@ class RecoveryScreenTest {
         assertEquals(true, jaTitle.isNotBlank())
 
         composeTestRule.onNodeWithText(jaTitle).assertIsDisplayed()
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 9（計画書`docs/plans/phase9-recovery-ai.md`§3.5、コミット3、ADR-0063想定）:
+    // AI差し替えexplanationの表示・minLines=2レイアウト安定swap（Gemini G1対応・敵対レビューA-4）。
+    // ------------------------------------------------------------------
+
+    // T-P9-34: 正常 - option.explanationが非空（AI差し替え済みを模す）のとき、RecoveryScreenは
+    // 静的stringResourceではなくそのexplanation文字列をそのまま表示する。
+    // resolveRecoveryOptionExplanation本体がStep 3（Red）時点ではaiExplanationを無視するため、
+    // 静的文言（"Change transport mode"相当）が表示され続け、AI文言が見つからずRedになるのが正しい。
+    @Test
+    fun tP9_34_optionExplanationNonEmpty_displaysAiTextInsteadOfStaticResource() {
+        val aiExplanationText = "AIがこの案について生成した独自の説明文"
+        val option = RecoveryOption(
+            id = UUID.randomUUID(),
+            semanticAction = "change_transport_mode",
+            title = "",
+            explanation = aiExplanationText,
+            estimatedArrival = fixedNow.plus(58, ChronoUnit.MINUTES),
+            skippedStepIds = emptyList()
+        )
+
+        composeTestRule.setContent {
+            RecoveryScreen(
+                uiState = RecoveryUiState(options = listOf(option), selectedOptionId = null),
+                onNavigateToExecution = {}
+            )
+        }
+
+        composeTestRule.onNodeWithText(aiExplanationText).assertIsDisplayed()
+    }
+
+    // T-P9-35: 正常・構造ガード - RecoveryScreen.ktのexplanation用TextコンポーザブルがminLines=2を
+    // 指定している（Gemini G1対応「Basic静的文言→AI生成文言の差し替え時にタップターゲット位置が
+    // ガタつかない」レイアウト安定swap、敵対レビューA-4）。ソーステキスト走査による構造確認
+    // （RecoveryLlmIsolationTest・AppContainerTestのresolveMockPackageDirと同型の規約）。
+    // ピクセル単位の高さ比較は実機/Robolectricのフォントメトリクス依存で脆くなるため採用せず、
+    // §10実機受け入れ手順6（目視確認）を最終検証手段として位置づける（本テストは回帰ロックに徹する）。
+    @Test
+    fun tP9_35_recoveryScreenSource_explanationTextSpecifiesMinLinesTwo() {
+        val recoveryScreenFile = resolveRecoveryScreenKtFile()
+        val text = recoveryScreenFile.readText()
+
+        assertTrue(
+            "RecoveryScreen.ktのソースに'minLines = 2'が見つかりません(T-P9-35、A-4レイアウト安定" +
+                "swap): ${recoveryScreenFile.absolutePath}",
+            text.contains("minLines = 2")
+        )
+    }
+
+    /**
+     * `RecoveryScreen.kt`（`features/recovery/`配下）を解決する。
+     * [com.actionstarter.recovery.RecoveryLlmIsolationTest.resolveRecoveryPackageDir]と同じ
+     * 多段fallback方式。
+     */
+    private fun resolveRecoveryScreenKtFile(): File {
+        val relative = "src/main/java/com/actionstarter/features/recovery/RecoveryScreen.kt"
+
+        val direct = File(relative)
+        if (direct.isFile) return direct
+
+        val fromRepoRoot = File("app", relative)
+        if (fromRepoRoot.isFile) return fromRepoRoot
+
+        var dir: File? = File(System.getProperty("user.dir") ?: ".").absoluteFile
+        while (dir != null) {
+            val candidate = File(dir, "app/$relative")
+            if (candidate.isFile) return candidate
+            dir = dir.parentFile
+        }
+
+        error(
+            "RecoveryScreen.ktが見つかりません。相対パス '$relative' を作業ディレクトリ " +
+                "'${System.getProperty("user.dir")}' およびその祖先から探索しましたが解決できませんでした。"
+        )
     }
 }

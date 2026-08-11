@@ -145,7 +145,15 @@ fun RecoveryScreen(
                 uiState.options.forEach { option ->
                     val isSelected = option.id == selectedId
                     val resolvedTitle = resolveRecoveryOptionTitle(option.semanticAction)
-                    val resolvedExplanation = resolveRecoveryOptionExplanation(option.semanticAction, option.estimatedArrival)
+                    // Phase 9計画書§3.5（コミット3、Green実装済み）: option.explanationが非空なら
+                    // AI差し替え文言とみなしresolveRecoveryOptionExplanationへ渡す。ifEmpty{null}は
+                    // BasicRecoveryEngineが常に空文字で生成する既定挙動（ADR-0033）と、AI差し替え後の
+                    // 非空explanationの両方を単一の分岐で扱うための変換。
+                    val resolvedExplanation = resolveRecoveryOptionExplanation(
+                        option.semanticAction,
+                        option.estimatedArrival,
+                        option.explanation.ifEmpty { null }
+                    )
                     val eta = option.estimatedArrival
                     // T-RECUI-8/T-P11A-8: estimatedArrival == nullの候補はETA情報を一切
                     // 組み立てない（表示・contentDescription双方で偽情報を出さない）。
@@ -203,9 +211,15 @@ fun RecoveryScreen(
                                 text = resolvedTitle,
                                 style = MaterialTheme.typography.titleMedium
                             )
+                            // Phase 9計画書§3.5（コミット3、Gemini G1対応・敵対レビューA-4、
+                            // Green実装済み・T-P9-35）: minLines=2で2行分の高さを予約する。
+                            // Basic静的文言→AI生成文言への差し替え（resolvedExplanationの内容が
+                            // 差し替わるタイミング）で行高が変化し、title・ラジオ選択・ETA表示等の
+                            // 周辺タップターゲットの位置がガタつくことを防ぐ（レイアウト安定swap）。
                             Text(
                                 text = resolvedExplanation,
-                                style = MaterialTheme.typography.bodyMedium
+                                style = MaterialTheme.typography.bodyMedium,
+                                minLines = 2
                             )
                             if (eta != null && formattedEta != null) {
                                 Text(

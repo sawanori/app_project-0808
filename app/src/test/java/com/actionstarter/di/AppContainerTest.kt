@@ -3,6 +3,7 @@ package com.actionstarter.di
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.actionstarter.ai.LocalAiGateway
+import com.actionstarter.ai.LocalAiRecoveryContextualizer
 import com.actionstarter.planning.BasicPlanningEngine
 import com.actionstarter.recovery.BasicRecoveryEngine
 import com.actionstarter.services.calendar.CalendarService
@@ -201,6 +202,77 @@ class AppContainerTest {
             "AppContainer生成直後の時点でlocalAiGatewayは未初期化であるべきです" +
                 "（by lazy、R-7「起動を重くしない」、T-P7DI-2）",
             lazyDelegate.isInitialized()
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 9（計画書`docs/plans/phase9-recovery-ai.md`§3.1・§11コミット3、ADR-0063想定）:
+    // localAiRecoveryContextualizerのAppContainer配線。
+    // ------------------------------------------------------------------
+
+    // T-P9-36: 正常・構造ガード - AppContainer.localAiRecoveryContextualizerが`by lazy`プロパティ
+    // として存在し、構築時点では未初期化である（T-P7DI-2のlocalAiGateway版と同型のR-7検証）。
+    // Step 3（Red）時点ではAppContainer.ktへ本プロパティをまだ追加していないため、
+    // `getDeclaredField`が`NoSuchFieldException`を送出しRedになるのが正しい
+    // （プロパティの不在そのものがRedシグナル、TODO()スタブを要しない設計）。
+    @Test
+    fun tP9_36_localAiRecoveryContextualizer_isNotInitializedAtConstructionTime() {
+        val container = AppContainer(ApplicationProvider.getApplicationContext())
+
+        val delegateField = AppContainer::class.java.getDeclaredField("localAiRecoveryContextualizer\$delegate")
+        delegateField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val lazyDelegate = delegateField.get(container) as Lazy<LocalAiRecoveryContextualizer?>
+
+        assertFalse(
+            "AppContainer生成直後の時点でlocalAiRecoveryContextualizerは未初期化であるべきです" +
+                "（by lazy、R-7「起動を重くしない」、localAiGatewayのT-P7DI-2と同型、T-P9-36）",
+            lazyDelegate.isInitialized()
+        )
+    }
+
+    // T-P9-37: 正常・構造ガード - AppContainer.createViewModelFactoryのRecoveryViewModel初期化子が
+    // aiRecoveryContextualizer=localAiRecoveryContextualizerを配線している（PlanReviewViewModelの
+    // aiPlanContextualizer=localAiPlanContextualizerと同型）。ソーステキスト走査による構造確認
+    // （RecoveryLlmIsolationTest・T-P9-35と同型の規約——localAiPlanContextualizer自体にも
+    // 専用のランタイム検証テストが存在しない既存の踏襲であり、配線の存在確認はこの粒度で足りる）。
+    // Step 3（Red）時点ではAppContainer.kt側の配線行をまだ追加していないため文字列が見つからず
+    // Redになるのが正しい。
+    @Test
+    fun tP9_37_createViewModelFactorySource_recoveryViewModelInitializer_wiresLocalAiRecoveryContextualizer() {
+        val appContainerFile = resolveAppContainerKtFile()
+        val text = appContainerFile.readText()
+
+        assertTrue(
+            "AppContainer.ktのRecoveryViewModel初期化子に" +
+                "'aiRecoveryContextualizer = localAiRecoveryContextualizer'が見つかりません" +
+                "(T-P9-37、AppContainer配線): ${appContainerFile.absolutePath}",
+            text.contains("aiRecoveryContextualizer = localAiRecoveryContextualizer")
+        )
+    }
+
+    /**
+     * `AppContainer.kt`自体を解決する（[resolveMockPackageDir]と同じ多段fallback方式）。
+     */
+    private fun resolveAppContainerKtFile(): File {
+        val relative = "src/main/java/com/actionstarter/di/AppContainer.kt"
+
+        val direct = File(relative)
+        if (direct.isFile) return direct
+
+        val fromRepoRoot = File("app", relative)
+        if (fromRepoRoot.isFile) return fromRepoRoot
+
+        var dir: File? = File(System.getProperty("user.dir") ?: ".").absoluteFile
+        while (dir != null) {
+            val candidate = File(dir, "app/$relative")
+            if (candidate.isFile) return candidate
+            dir = dir.parentFile
+        }
+
+        error(
+            "AppContainer.ktが見つかりません。相対パス '$relative' を作業ディレクトリ " +
+                "'${System.getProperty("user.dir")}' およびその祖先から探索しましたが解決できませんでした。"
         )
     }
 

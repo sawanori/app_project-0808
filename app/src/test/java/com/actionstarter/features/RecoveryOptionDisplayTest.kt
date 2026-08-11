@@ -250,4 +250,56 @@ class RecoveryOptionDisplayTest {
         composeTestRule.onNodeWithTag("recovery_option_eta_${optionWithEta.id}", useUnmergedTree = true).assertIsDisplayed()
         composeTestRule.onNodeWithTag("recovery_option_eta_${optionWithoutEta.id}", useUnmergedTree = true).assertDoesNotExist()
     }
+
+    // ------------------------------------------------------------------
+    // Phase 9（計画書`docs/plans/phase9-recovery-ai.md`§3.5、コミット3、ADR-0063想定）:
+    // resolveRecoveryOptionExplanationのaiExplanation引数。
+    // ------------------------------------------------------------------
+
+    // T-P9-32: 正常 - aiExplanation(非null・非空)を渡すとそのまま返し、静的stringResource解決を
+    // スキップする。resolveRecoveryOptionExplanationの本体はStep 3（Red）時点でまだaiExplanationを
+    // 無視するため、期待値（aiExplanationそのもの）と実際の戻り値（静的解決結果）が不一致となり
+    // AssertionErrorでRedになるのが正しい（RecoveryOptionText.ktのKDoc参照）。
+    @Test
+    fun tP9_32_aiExplanationNonEmpty_isReturnedDirectlyWithoutStaticResolution() {
+        val aiText = "AIが生成した差し替え説明文"
+        var resolved = ""
+        composeTestRule.setContent {
+            resolved = resolveRecoveryOptionExplanation(
+                "keep_all_steps",
+                fixedNow.plus(30, ChronoUnit.MINUTES),
+                aiExplanation = aiText
+            )
+        }
+
+        assertTrue(
+            "aiExplanationが非null・非空のときはそのまま返すべきです(T-P9-32): resolved=$resolved",
+            resolved == aiText
+        )
+    }
+
+    // T-P9-33: 正常・回帰（[born-green]） - aiExplanationがnull／空文字のときは既存の静的
+    // stringResource解決へフォールバックする（2引数版の既存呼び出しと同一結果になることの確認）。
+    @Test
+    fun tP9_33_aiExplanationNullOrEmpty_fallsBackToStaticResolution() {
+        var withoutAiExplanation = ""
+        var withNullAiExplanation = ""
+        var withEmptyAiExplanation = ""
+        composeTestRule.setContent {
+            withoutAiExplanation = resolveRecoveryOptionExplanation("keep_all_steps", fixedNow.plus(30, ChronoUnit.MINUTES))
+            withNullAiExplanation =
+                resolveRecoveryOptionExplanation("keep_all_steps", fixedNow.plus(30, ChronoUnit.MINUTES), aiExplanation = null)
+            withEmptyAiExplanation =
+                resolveRecoveryOptionExplanation("keep_all_steps", fixedNow.plus(30, ChronoUnit.MINUTES), aiExplanation = "")
+        }
+
+        assertTrue(
+            "aiExplanation=nullは2引数版と同一の静的解決結果になるべきです(T-P9-33)",
+            withNullAiExplanation == withoutAiExplanation
+        )
+        assertTrue(
+            "aiExplanation=\"\"(空文字)も静的解決結果へフォールバックするべきです(T-P9-33)",
+            withEmptyAiExplanation == withoutAiExplanation
+        )
+    }
 }

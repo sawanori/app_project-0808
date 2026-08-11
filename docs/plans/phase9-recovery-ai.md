@@ -3,7 +3,7 @@
 > 対象仕様: §73「Phase 9・Local AI Recovery」・§32「Recovery Option」・§33「Recoveryの優先原則」・§34「ユーザー最終決定」・§15「LLMに禁止すること」・§19「AI OFF時でも動作すること」・§20「Structured Output」・§21「AI Promptの言語非依存化」・§61「MVPに入れない機能」・§88「Developer UX Principle」
 > 前提基盤: Phase 6（`BasicRecoveryEngine`・`RecoveryOption`/`RecoveryContext`/`RecoveryPlan`・S-2/U-3「delay message」除外）・Phase 7（`LocalLanguageModel.generateRecovery`契約scaffold・`AIRecoveryResponse`型・§18申し送り5）・Phase 8（`LocalAiPlanContextualizer`overlay方式・B1裁定）・Phase 8.5（`ModelSelector`自動選択・ADR-0062 modelPath配線是正・§12 Qwenエコー実例）
 > 種別: 新機能（起案のみ・コード変更禁止）
-> 承認状態: **コミット1 Green検収合格・コミット済み（`dca7150`）。コミット2（L2/L3/L5品質防御ハーネス）Step 4（Green）完了・検収待ち（:app:testDebugUnitTest tests=713/skipped=1/failures=0/errors=0〔JUnit XML集計で照合〕・:app:lintDebug error=0/warning=23〔--rerun-tasksで再確認・コミット1から不変〕。ContentSanityChecker.checkFewShotEcho/checkRecoveryを実装しR1a/R2をPlan/Recovery両経路へ統合、Gateway検証パイプライン（runValidationPipeline／runRecoveryValidationPipeline）へL2を配線しL5実測値（sanityRejectCount/lastSanityRejectReason/Fallback.metrics）を接続。Plan経路への波及で3件のfixtureを最小更新（理由つき、後述）。invokeModel/invokeRecoveryModelの重複はinvokeModelCall共有ヘルパーへ統合するリファクタを実施し再度Green確認済み。まだコミットしていない**
+> 承認状態: **コミット1 Green検収合格・コミット済み（`dca7150`）。コミット2（L2/L3/L5品質防御ハーネス）Green検収合格・コミット済み（`81eec58`）。コミット3（UI配線: RecoveryOptionText/RecoveryScreen/AppContainer）Green完了・検収待ち（:app:testDebugUnitTest tests=719/skipped=1/failures=0/errors=0〔JUnit XML集計で照合、既存713件無傷〕・:app:lintDebug error=0/warning=23〔--rerun-tasksで再確認・コミット2から不変〕。resolveRecoveryOptionExplanationにaiExplanation非null・非空優先分岐を実装、RecoveryScreenのexplanation Textへminlines=2（レイアウト安定swap・A-4）、AppContainerへlocalAiRecoveryContextualizer（localAiPlanContextualizerと同型のLinkageError防御）をby lazy新設しRecoveryViewModel初期化子へ配線。C1/C2から持ち越しのRefactor候補（LiteRtLmLocalLanguageModelのbuildConversationConfig/buildRecoveryConversationConfig等の重複）は評価のうえ本ターンでは非実施と判断（理由は完了報告参照）。まだコミットしていない（コミット3メッセージは検収時に受領予定）**
 
 ---
 
@@ -277,7 +277,7 @@ enum class SanityRejectReason { FEW_SHOT_ECHO, MIN_QUALITY, TITLE_COPY, FABRICAT
 
 | ID | 内容 |
 |---|---|
-| T-P9-29 | `:app:testDebugUnitTest`既存全件Green維持。`:app:lintDebug` error 0維持。**ベースライン記録（Step 3実測、2026-08-11）**: Phase 9着手時点（Phase 8.5コミット2 `2fcb8ae`時点）はtests=681/skipped=1/failures=0/errors=0。Step 3（Red、コミット1スコープ）完了時点はtests=701/skipped=1/failures=18/errors=0（新規20件のうちRed18件・born-green2件、既存681件は無傷）、`lintDebug` error=0・warning=23（既存分と同数、新規発生なし） |
+| T-P9-29 | `:app:testDebugUnitTest`既存全件Green維持。`:app:lintDebug` error 0維持。**ベースライン記録（Step 3実測、2026-08-11）**: Phase 9着手時点（Phase 8.5コミット2 `2fcb8ae`時点）はtests=681/skipped=1/failures=0/errors=0。コミット1 Step 3（Red）完了時点はtests=701/skipped=1/failures=18/errors=0。コミット1 Green（`dca7150`）後・コミット2 Step 3（Red）完了時点はtests=713/skipped=1/failures=11/errors=0。コミット2 Green（`81eec58`）後・**コミット3 Step 3（Red、UI配線スコープ）完了時点はtests=719/skipped=1/failures=5/errors=0**（新規6件のうちRed5件・born-green1件〔T-P9-33〕、既存713件は無傷、JUnit XML集計で照合）、`lintDebug` error=0・warning=23（既存分と同数、新規発生なし） |
 | T-P9-30 | T-BRE-32（recovery/がai/を参照しない構造ガード）が新設ファイル追加後も引き続きGreen（recovery/自体は無変更のため自動的にborn-green） |
 
 ### stale-write防御（オーケストレーター指摘A9、`RecoveryViewModelTest`拡張）
@@ -287,6 +287,17 @@ enum class SanityRejectReason { FEW_SHOT_ECHO, MIN_QUALITY, TITLE_COPY, FABRICAT
 | ID | 分類 | 内容 | 種別 |
 |---|---|---|---|
 | T-P9-31 | エッジ・ゲート | `refresh()`を2回呼び出し（fake `recoveryEngine`が呼び出しごとに異なる`RecoveryPlan`を返す）、1回目の`refresh()`が起動したAI応答（fake `aiRecoveryContextualizer`を遅延応答させる）が2回目の`refresh()`完了**後**に到着しても、2回目のbaseへ古いexplanationが適用されない（世代トークン不一致により無視される）ことを検証する | [Red] |
+
+### UI配線（コミット3、`RecoveryOptionDisplayTest`／`RecoveryScreenTest`／`AppContainerTest`拡張）
+
+| ID | 分類 | 内容 | 種別 |
+|---|---|---|---|
+| T-P9-32 | 正常 | `resolveRecoveryOptionExplanation`に`aiExplanation`（非null・非空）を渡すとそのまま返し、静的`stringResource`解決をスキップする | [Red] |
+| T-P9-33 | 正常・回帰 | `aiExplanation`がnull／空文字のときは2引数版と同一の静的`stringResource`解決結果へフォールバックする | [born-green] |
+| T-P9-34 | 正常 | `option.explanation`が非空（AI差し替え済みを模す）のとき、`RecoveryScreen`は静的`stringResource`ではなくその文字列をそのまま表示する | [Red] |
+| T-P9-35 | 正常・構造ガード | `RecoveryScreen.kt`のexplanation用`Text`コンポーザブルが`minLines = 2`を指定している（ソーステキスト走査、Gemini G1対応・敵対レビューA-4。ピクセル単位の高さ比較はフォントメトリクス依存で脆いため不採用とし、§10実機受け入れ手順6の目視確認を最終検証手段とする設計判断） | [Red] |
+| T-P9-36 | 正常・構造ガード | `AppContainer.localAiRecoveryContextualizer`が`by lazy`プロパティとして存在し、構築時点では未初期化である（`localAiGateway`のT-P7DI-2と同型） | [Red] |
+| T-P9-37 | 正常・構造ガード | `AppContainer.createViewModelFactory`の`RecoveryViewModel`初期化子が`aiRecoveryContextualizer = localAiRecoveryContextualizer`を配線している（ソーステキスト走査。`localAiPlanContextualizer`自体にも専用のランタイム検証テストが存在しない既存の踏襲） | [Red] |
 
 ---
 
