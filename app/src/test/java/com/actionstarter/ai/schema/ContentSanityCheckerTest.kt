@@ -2,9 +2,12 @@ package com.actionstarter.ai.schema
 
 import com.actionstarter.ai.AIPlanResponse
 import com.actionstarter.ai.AIPlanStepResponse
+import com.actionstarter.ai.AIRecoveryOptionResponse
+import com.actionstarter.ai.AIRecoveryResponse
 import com.actionstarter.domain.model.ExecutionEvent
 import com.actionstarter.domain.model.PersonalExecutionProfile
 import com.actionstarter.domain.model.PlanningContext
+import com.actionstarter.domain.model.RecoveryContext
 import com.actionstarter.domain.valueobject.CalendarSource
 import com.actionstarter.domain.valueobject.Coordinate
 import com.actionstarter.domain.valueobject.TransportMode
@@ -75,6 +78,34 @@ class ContentSanityCheckerTest {
     ): AIPlanResponse = AIPlanResponse(
         eventType = eventType,
         steps = listOf(AIPlanStepResponse(actionType = actionType, displayText = displayText))
+    )
+
+    // ------------------------------------------------------------------
+    // Phase 9（計画書§4.2、コミット2）フィクスチャヘルパー
+    // ------------------------------------------------------------------
+
+    private fun recoveryContext(title: String): RecoveryContext = RecoveryContext(
+        currentTime = Instant.parse("2026-08-10T09:15:00Z"),
+        currentLocation = null,
+        event = sampleEvent(title = title),
+        unfinishedSteps = emptyList(),
+        latestTravelEstimate = Duration.ofMinutes(20),
+        plannedDepartureTime = Instant.parse("2026-08-10T09:00:00Z")
+    )
+
+    private fun singleOptionRecoveryResponse(semanticAction: String = "keep_all_steps", explanation: String): AIRecoveryResponse =
+        AIRecoveryResponse(options = listOf(AIRecoveryOptionResponse(semanticAction = semanticAction, explanation = explanation)))
+
+    /**
+     * `PlanPromptBuilder`／`RecoveryPromptBuilder`の実在するja模範例タイトル（計画書§4.2 R1a
+     * 検出対象）。実装時点ではbuilder側の`internal`アクセサ経由での取得を想定するが（[Recovery
+     * PromptBuilder.fewShotEventTitles]は実装済み、`PlanPromptBuilder`側は未実装——計画書§6
+     * への申し送り）、本テストは値そのものを既知の定数として直接使う（checkFewShotEchoの
+     * シグネチャは`Set<String>`を受け取るだけであり、供給元の実装詳細に依存しない）。
+     */
+    private val knownJapaneseFewShotTitles = setOf(
+        "結婚式", "歯科検診", "出張", "打ち合わせ", // PlanPromptBuilder.JAPANESE_FEW_SHOT_SEEDS
+        "美容院の予約", "取引先との商談" // RecoveryPromptBuilder.JAPANESE_FEW_SHOT_SEEDS
     )
 
     // ------------------------------------------------------------------
@@ -252,9 +283,15 @@ class ContentSanityCheckerTest {
 
     // QH-15b: エッジ - title(6文字未満)とdisplay_textが完全一致してもコピー検査自体が
     // 免除され合格する（(a)の免除は占有率判定より先に適用されることの回帰ロック）
+    //
+    // **fixture更新（Phase 9コミット2、Plan経路へのR2(c)適用に伴う波及）**: 従来のtitle="テニス"
+    // （動詞を含まない裸の名詞）はR1a/R2(b)コピー検査の対象外であっても、独立したR2(c)（動詞相当
+    // 表現の存在確認）には抵触しInvalidとなるため、本テストが検証したい「titleコピー検査自体の
+    // 免除ロジック」とは無関係な理由でRedへ回帰していた。6文字未満・完全一致という検証対象の
+    // 条件を保ったまま、動詞を含む同等の短い文言（"確認する"）へ最小更新した。
     @Test
     fun qh15b_titleLengthUnderSix_exactMatchIsStillExemptAndValid() {
-        val title = "テニス" // 3文字
+        val title = "確認する" // 4文字
         val response = singleStepResponse(displayText = title)
         val context = planningContext(title = title)
 
@@ -366,6 +403,120 @@ class ContentSanityCheckerTest {
 
         assertEquals(
             "品質ハーネス§3のSemantic Contextualization模範例は全検査を通過し合格するべきです: $result",
+            ContentSanityResult.Valid,
+            result
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 9（計画書`docs/plans/phase9-recovery-ai.md`§4.2、コミット2、ADR-0063想定）:
+    // checkRecovery — R1a（few-shot模範例タイトルecho検出）・R2（最小品質ヒューリスティック）。
+    // checkRecovery本体が`TODO()`のため、全件`NotImplementedError`によりRedになるのが正しい。
+    // ------------------------------------------------------------------
+
+    // T-P9-12: 異常・実例接地 - explanationが"歯科検診"（PlanPromptBuilderの実在few-shotタイトルと
+    // 完全一致）→R1aでInvalid（Phase 8.5§12.5実例をそのままテストデータに使用）
+    @Test
+    fun tP9_12_explanationEchoesDentalCheckupFewShotTitle_isInvalid() {
+        val response = singleOptionRecoveryResponse(explanation = "歯科検診")
+        val context = recoveryContext(title = "映画館")
+
+        val result = ContentSanityChecker().checkRecovery(response, context, knownJapaneseFewShotTitles)
+
+        assertTrue(
+            "few-shot模範例タイトル'歯科検診'と完全一致するexplanationはR1aでInvalidになるべきです" +
+                "(T-P9-12、Phase 8.5§12.5実例): $result",
+            result is ContentSanityResult.Invalid
+        )
+    }
+
+    // T-P9-13: 異常・実例接地（差し替え） - explanationが"出張"（3番目の模範例タイトルが裸で出る）
+    // →R1aでInvalid（両レビュー指摘反映、旧T-P9-13のmodelSteps display_text一致ケースはR1b＝
+    // Phase 9.5送りのため本フェーズの対象外）
+    @Test
+    fun tP9_13_explanationEchoesBusinessTripFewShotTitle_isInvalid() {
+        val response = singleOptionRecoveryResponse(explanation = "出張")
+        val context = recoveryContext(title = "友人とのランチ")
+
+        val result = ContentSanityChecker().checkRecovery(response, context, knownJapaneseFewShotTitles)
+
+        assertTrue(
+            "few-shot模範例タイトル'出張'と完全一致するexplanationはR1aでInvalidになるべきです(T-P9-13): $result",
+            result is ContentSanityResult.Invalid
+        )
+    }
+
+    // T-P9-14: 正常 - 本物の歯科検診の予定に対しexplanationが"保険証を確認する"→R1a・R2いずれにも
+    // かからず合格する（両レビューが指摘した誤爆シナリオが、R1a限定化とR2(c)緩和の両方によって
+    // 解消されていることの回帰確認）
+    @Test
+    fun tP9_14_genuineDentalCheckupEvent_insuranceCardExplanation_isValid() {
+        val response = singleOptionRecoveryResponse(explanation = "保険証を確認する")
+        val context = recoveryContext(title = "歯科検診")
+
+        val result = ContentSanityChecker().checkRecovery(response, context, knownJapaneseFewShotTitles)
+
+        assertEquals(
+            "本物の歯科検診の予定に対する正当な言い換えは合格するべきです(T-P9-14): $result",
+            ContentSanityResult.Valid,
+            result
+        )
+    }
+
+    // T-P9-15: 異常 - explanationが5文字以下→R2(a)でInvalid
+    @Test
+    fun tP9_15_explanationBelowMinimumLength_isInvalid() {
+        val response = singleOptionRecoveryResponse(explanation = "了解")
+        val context = recoveryContext(title = "映画館")
+
+        val result = ContentSanityChecker().checkRecovery(response, context, knownJapaneseFewShotTitles)
+
+        assertTrue(
+            "5文字以下のexplanationはR2(a)最小長でInvalidになるべきです(T-P9-15): $result",
+            result is ContentSanityResult.Invalid
+        )
+    }
+
+    // T-P9-16: 異常 - explanationがイベントタイトルの完全一致（既存isTitleCopyの適用確認）→R2(b)で
+    // Invalid
+    @Test
+    fun tP9_16_explanationIsVerbatimEventTitleCopy_isInvalid() {
+        val response = singleOptionRecoveryResponse(explanation = "取引先との商談")
+        val context = recoveryContext(title = "取引先との商談")
+
+        val result = ContentSanityChecker().checkRecovery(response, context, knownJapaneseFewShotTitles)
+
+        assertTrue(
+            "イベントタイトルの逐語コピーはR2(b)でInvalidになるべきです(T-P9-16): $result",
+            result is ContentSanityResult.Invalid
+        )
+    }
+
+    // T-P9-17: 異常 - explanationに動詞相当の語尾/先頭語を一切含まない（例:「歯科検診について」）
+    // →R2(c)でInvalid
+    @Test
+    fun tP9_17_explanationHasNoVerbLikeExpression_isInvalid() {
+        val response = singleOptionRecoveryResponse(explanation = "映画館についての一般的な情報")
+        val context = recoveryContext(title = "映画館")
+
+        val result = ContentSanityChecker().checkRecovery(response, context, knownJapaneseFewShotTitles)
+
+        assertTrue(
+            "動詞相当の語尾/先頭語を含まないexplanationはR2(c)でInvalidになるべきです(T-P9-17): $result",
+            result is ContentSanityResult.Invalid
+        )
+    }
+
+    // T-P9-18: 正常 - 動詞相当を含む自然な文言（例:「保険証を確認する」）→R1a〜R2すべて通過
+    @Test
+    fun tP9_18_explanationWithVerbLikeExpression_allChecksPass_isValid() {
+        val response = singleOptionRecoveryResponse(explanation = "そのまま準備を続けて出発しましょう")
+        val context = recoveryContext(title = "映画館")
+
+        val result = ContentSanityChecker().checkRecovery(response, context, knownJapaneseFewShotTitles)
+
+        assertEquals(
+            "動詞相当を含む自然な文言は全検査を通過し合格するべきです(T-P9-18): $result",
             ContentSanityResult.Valid,
             result
         )

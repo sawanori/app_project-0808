@@ -3,7 +3,7 @@
 > 対象仕様: §73「Phase 9・Local AI Recovery」・§32「Recovery Option」・§33「Recoveryの優先原則」・§34「ユーザー最終決定」・§15「LLMに禁止すること」・§19「AI OFF時でも動作すること」・§20「Structured Output」・§21「AI Promptの言語非依存化」・§61「MVPに入れない機能」・§88「Developer UX Principle」
 > 前提基盤: Phase 6（`BasicRecoveryEngine`・`RecoveryOption`/`RecoveryContext`/`RecoveryPlan`・S-2/U-3「delay message」除外）・Phase 7（`LocalLanguageModel.generateRecovery`契約scaffold・`AIRecoveryResponse`型・§18申し送り5）・Phase 8（`LocalAiPlanContextualizer`overlay方式・B1裁定）・Phase 8.5（`ModelSelector`自動選択・ADR-0062 modelPath配線是正・§12 Qwenエコー実例）
 > 種別: 新機能（起案のみ・コード変更禁止）
-> 承認状態: **敵対的レビュー2系統（オーケストレーター＋Gemini 3.5-flash）反映済み・ユーザー承認済み（実装開始指示2026-08-11）・コミット1 Green完了・検収待ち（:app:testDebugUnitTest tests=701/skipped=1/failures=0/errors=0・:app:lintDebug error=0/warning=23）**
+> 承認状態: **コミット1 Green検収合格・コミット済み（`dca7150`）。コミット2（L2/L3/L5品質防御ハーネス）Step 4（Green）完了・検収待ち（:app:testDebugUnitTest tests=713/skipped=1/failures=0/errors=0〔JUnit XML集計で照合〕・:app:lintDebug error=0/warning=23〔--rerun-tasksで再確認・コミット1から不変〕。ContentSanityChecker.checkFewShotEcho/checkRecoveryを実装しR1a/R2をPlan/Recovery両経路へ統合、Gateway検証パイプライン（runValidationPipeline／runRecoveryValidationPipeline）へL2を配線しL5実測値（sanityRejectCount/lastSanityRejectReason/Fallback.metrics）を接続。Plan経路への波及で3件のfixtureを最小更新（理由つき、後述）。invokeModel/invokeRecoveryModelの重複はinvokeModelCall共有ヘルパーへ統合するリファクタを実施し再度Green確認済み。まだコミットしていない**
 
 ---
 

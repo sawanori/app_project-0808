@@ -484,6 +484,13 @@ class PlanReviewViewModelTest {
 
     // T-P8-19: stale（推論中に別イベント選択）— 旧イベント宛てAI応答（またはその可能性）が
     // 新イベントのuiStateへ混入せず、最終状態は新イベント自身のAI結果のみを反映する。
+    //
+    // **fixture更新（Phase 9コミット2、Plan経路へのR2(c)適用に伴う波及）**: 従来のマーカー文字列
+    // "旧予定の文言"/"新予定の文言"（動詞を含まない名詞句）はR2(c)（動詞相当表現の存在確認）に
+    // 抵触しContentSanityResult.Invalidとなり、本テストが検証したいstale-write防御（generation
+    // 比較）とは無関係な理由でRetry〜Fallbackへ回帰していた。"旧/新"で区別可能という元のマーカー
+    // としての設計意図を保ったまま、動詞を含む同等の自然な文言（"〜の資料を準備する"）へ最小
+    // 更新した。
     @Test
     fun tP8_19_staleAiResponseAfterEventSwitch_finalUiStateReflectsOnlyNewEvent() = runTest(testDispatcher) {
         val event1 = sampleEvent(startDate = Instant.parse("2026-08-10T10:00:00Z"), locationName = null)
@@ -491,10 +498,10 @@ class PlanReviewViewModelTest {
         val model = AiGatewayTestFixtures.FakeLocalLanguageModel(
             listOf(
                 AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(
-                    AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "旧予定の文言")
+                    AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "旧予定の資料を準備する")
                 ),
                 AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(
-                    AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "新予定の文言")
+                    AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "新予定の資料を準備する")
                 )
             ),
             delayMillisPerCall = 10_000L
@@ -522,7 +529,7 @@ class PlanReviewViewModelTest {
         assertEquals(AiContextualizationState.Applied, finalState.aiState)
         assertEquals(
             "旧イベント(event1)宛てのAI文言が新イベントのplanへ混入してはいけません(T-P8-19)",
-            "新予定の文言",
+            "新予定の資料を準備する",
             finalState.plan?.steps?.single { it.type == ExecutionStepType.PREPARATION }?.title
         )
     }

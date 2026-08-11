@@ -524,12 +524,18 @@ class LocalAiPlanContextualizerTest {
     }
 
     // T-P8-20: PII非送信 — contextualize 1回をStrictMode.detectNetwork().penaltyDeath()下で通過（§10 L2相当）
+    //
+    // **fixture更新（Phase 9コミット2、Plan経路へのR2(c)適用に伴う波及）**: 従来の"保険証"（3文字の
+    // 裸名詞）はR2(c)（動詞相当表現の存在確認）に抵触しContentSanityResult.Invalidとなるため、
+    // 本テストが検証したいStrictMode/Applied到達とは無関係な理由でRedへ回帰していた。T-P8-1が
+    // 同一シナリオで既に使っている"保険証を持って行く"（動詞を含む正当な模範文言）へ最小更新した
+    // （本テストの検証対象＝StrictMode network penaltyDeath回避は無変更）。
     @Test
     fun tP8_20_contextualizeUnderStrictModeNetworkPenaltyDeath_completesWithoutNetworkAccess() = runTest {
         val event = sampleEvent()
         val base = canonicalFourStepPlan(event)
         val model = AiGatewayTestFixtures.FakeLocalLanguageModel(
-            listOf(AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "保険証")))
+            listOf(AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "保険証を持って行く")))
         )
         val gateway = AiGatewayTestFixtures.readyGateway(model, prefsFileName = "p8_20")
         val contextualizer = LocalAiPlanContextualizer(gateway)
@@ -548,12 +554,14 @@ class LocalAiPlanContextualizerTest {
     }
 
     // T-P8-21: メトリクス非PII — AiMetrics/ログにイベントtitle/場所/座標が現れない（T-AIMET-1再利用＋overlay経路確認）
+    //
+    // **fixture更新（Phase 9コミット2、T-P8-20と同じ理由）**: "保険証"→"保険証を持って行く"。
     @Test
     fun tP8_21_metricsFromOverlayPath_haveNoStringTypedFieldsAndCannotCarryEventPii() = runTest {
         val event = sampleEvent(title = "Alice's Confidential Meeting")
         val base = canonicalFourStepPlan(event)
         val model = AiGatewayTestFixtures.FakeLocalLanguageModel(
-            listOf(AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "保険証")))
+            listOf(AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(AiGatewayTestFixtures.singleStepPlanJson("prepare_items", "保険証を持って行く")))
         )
         val gateway = AiGatewayTestFixtures.readyGateway(model, prefsFileName = "p8_21")
         val contextualizer = LocalAiPlanContextualizer(gateway)

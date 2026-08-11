@@ -1405,4 +1405,165 @@ class LocalAiGatewayTest {
             requiresEngineReload(loadedModelPath = planPath, requestedModelPath = "/data/models/gemma-4-e2b-it.litertlm")
         )
     }
+
+    // ------------------------------------------------------------------
+    // Phase 9（計画書§4.2〜4.5、コミット2、ADR-0063想定）: L2/L3/L5のGateway統合レベル確認
+    // （T-P9-19〜23）。**L2（ContentSanityChecker.checkRecovery）はコミット2 Redの本コミット時点
+    // ではGatewayパイプラインへまだ配線されていない**（コミット1完了時点で701件Greenだった
+    // パイプラインを壊さないため）。したがって以下は`NotImplementedError`ではなく**振る舞いの
+    // 期待値との不一致（assertion failure）によるRed**が正しい——Primaryの"歯科検診"エコー応答が
+    // 現状は内容検査なしにそのまま受理されてしまう、というL2未配線の実態を可視化する。
+    // ------------------------------------------------------------------
+
+    private fun dentalCheckupEchoRecoveryJson(): String = JSONObject().put(
+        "options",
+        JSONArray().put(JSONObject().put("semantic_action", "keep_all_steps").put("explanation", "歯科検診"))
+    ).toString()
+
+    private fun cleanRecoveryJson(): String = JSONObject().put(
+        "options",
+        JSONArray().put(
+            JSONObject().put("semantic_action", "keep_all_steps").put("explanation", "そのまま準備を続けて出発しましょう")
+        )
+    ).toString()
+
+    // T-P9-19: 正常・実例接地 - Primary出力が"歯科検診"エコー→L2 reject→Retry(topK5/temp0.15)
+    // 呼び出し→Retry出力が正常→Success
+    @Test
+    fun tP9_19_primaryEchoesFewShotTitle_l2RejectsAndRetrySucceeds() = runTest {
+        val model = FakeLocalLanguageModel(
+            outcomes = emptyList(),
+            recoveryOutcomes = listOf(
+                RecoveryCallOutcome.Respond(dentalCheckupEchoRecoveryJson()),
+                RecoveryCallOutcome.Respond(cleanRecoveryJson())
+            )
+        )
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP9_19")
+        )
+
+        val result = gateway.generateRecovery(recoveryContext(), sampleRecoveryOptions())
+
+        assertEquals(
+            "L2がPrimaryの'歯科検診'エコーをrejectしRetryへ昇格するべきです(T-P9-19、コミット2 GreenでL2配線済み)",
+            2,
+            model.generateRecoveryCallCount
+        )
+        assertTrue(
+            "Retryが正常な文言を返せばSuccessになるべきです(T-P9-19)",
+            result is AiResult.Success
+        )
+    }
+
+    // T-P9-20: 異常・実例接地 - Primary/Retryとも"歯科検診"エコーを再現（決定的サンプリングの
+    // 再現性、§12.5「2回目生成でも同一出力」を模した二重fakeを使用）→Fallback(SCHEMA_INVALID)、
+    // 無加工Basicへ縮退
+    @Test
+    fun tP9_20_bothAttemptsEchoFewShotTitle_fallsBackWithSchemaInvalid() = runTest {
+        val model = FakeLocalLanguageModel(
+            outcomes = emptyList(),
+            recoveryOutcomes = listOf(
+                RecoveryCallOutcome.Respond(dentalCheckupEchoRecoveryJson()),
+                RecoveryCallOutcome.Respond(dentalCheckupEchoRecoveryJson())
+            )
+        )
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP9_20")
+        )
+
+        val result = gateway.generateRecovery(recoveryContext(), sampleRecoveryOptions())
+
+        assertTrue(
+            "Primary/Retryとも内容不良ならFallback(SCHEMA_INVALID)になるべきです" +
+                "(T-P9-20、コミット2 GreenでL2配線済み): $result",
+            result is AiResult.Fallback && result.reason == AiFallbackReason.SCHEMA_INVALID
+        )
+    }
+
+    // T-P9-21: 正常 - Primary成功（reject無し）→sanityRejectCount=0・lastSanityRejectReason=null
+    @Test
+    fun tP9_21_primarySucceedsWithoutReject_metricsShowZeroRejects() = runTest {
+        val model = FakeLocalLanguageModel(
+            outcomes = emptyList(),
+            recoveryOutcomes = listOf(RecoveryCallOutcome.Respond(cleanRecoveryJson()))
+        )
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP9_21")
+        )
+
+        val result = gateway.generateRecovery(recoveryContext(), sampleRecoveryOptions())
+
+        assertTrue(result is AiResult.Success)
+        val metrics = (result as AiResult.Success).metrics
+        assertEquals(0, metrics.sanityRejectCount)
+        assertEquals(null, metrics.lastSanityRejectReason)
+    }
+
+    // T-P9-22: 正常 - PrimaryがR1でreject後Retry成功→sanityRejectCount=1・
+    // lastSanityRejectReason=FEW_SHOT_ECHO
+    @Test
+    fun tP9_22_primaryRejectedByR1_retrySucceeds_metricsRecordOneReject() = runTest {
+        val model = FakeLocalLanguageModel(
+            outcomes = emptyList(),
+            recoveryOutcomes = listOf(
+                RecoveryCallOutcome.Respond(dentalCheckupEchoRecoveryJson()),
+                RecoveryCallOutcome.Respond(cleanRecoveryJson())
+            )
+        )
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP9_22")
+        )
+
+        val result = gateway.generateRecovery(recoveryContext(), sampleRecoveryOptions())
+
+        assertTrue(
+            "PrimaryがR1a(FEW_SHOT_ECHO)でrejectされRetry成功後のmetricsに反映されるべきです(T-P9-22): $result",
+            result is AiResult.Success &&
+                (result as AiResult.Success).metrics.sanityRejectCount == 1 &&
+                result.metrics.lastSanityRejectReason == SanityRejectReason.FEW_SHOT_ECHO
+        )
+    }
+
+    // T-P9-23: 異常 - 両attemptともreject→Fallback.metricsにsanityRejectCount=2が記録される
+    // （AiResult.Fallback.metrics新設フィールドの検証）
+    @Test
+    fun tP9_23_bothAttemptsRejected_fallbackMetricsRecordTwoRejects() = runTest {
+        val model = FakeLocalLanguageModel(
+            outcomes = emptyList(),
+            recoveryOutcomes = listOf(
+                RecoveryCallOutcome.Respond(dentalCheckupEchoRecoveryJson()),
+                RecoveryCallOutcome.Respond(dentalCheckupEchoRecoveryJson())
+            )
+        )
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = installedModelStorage(),
+            modelVerifier = verifier(),
+            deviceCapability = supportedDeviceCapability(),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP9_23")
+        )
+
+        val result = gateway.generateRecovery(recoveryContext(), sampleRecoveryOptions())
+
+        assertTrue(
+            "両attemptがrejectされたFallback.metricsにsanityRejectCount=2が記録されるべきです(T-P9-23): $result",
+            result is AiResult.Fallback && (result as AiResult.Fallback).metrics?.sanityRejectCount == 2
+        )
+    }
 }

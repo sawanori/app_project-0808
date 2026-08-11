@@ -226,11 +226,14 @@ class PlanPromptBuilder {
     /**
      * few-shot 1件分の元データ（user/modelターン）。[modelSteps]は
      * `action_type`（[com.actionstarter.ai.schema.PlanActionType]の確定7値）と
-     * `display_text`（数値ゼロ・単一言語）のペア。
+     * `display_text`（数値ゼロ・単一言語）のペア。[eventTitle]は計画書§4.2 L2 R1a（few-shot
+     * エコー検出）が参照するイベントタイトル（[RecoveryPromptBuilder.FewShotSeed.eventTitle]と
+     * 同型、Phase 9コミット2で追加）。
      */
     private data class FewShotSeed(
         val userTurn: String,
         val eventType: String,
+        val eventTitle: String,
         val modelSteps: List<Pair<String, String>>
     ) {
         /** [modelSteps]をFable 5裁定1・2確定の縮小スキーマ（event_type + steps[action_type,
@@ -247,6 +250,18 @@ class PlanPromptBuilder {
     companion object {
         /** 品質ハーネスUQ-4「2例固定」を出発点とした暫定既定値（P7-C8実測後に再確定）。 */
         const val DEFAULT_SHOT_COUNT: Int = 2
+
+        /**
+         * Phase 9新設（計画書§4.2 L2 R1aが参照する模範例集合、コミット2で実装、
+         * [RecoveryPromptBuilder.fewShotEventTitles]と同型）。[locale]の模範例が持つイベント
+         * タイトル集合を公開する。`ContentSanityChecker`は本パッケージ（`ai/prompt/`）を
+         * 一切importしないため、Gateway層がこのアクセサ経由で取得した`Set<String>`を引数として
+         * 渡す設計とする（計画書§4.2「checker疎結合の明確化」）。
+         */
+        internal fun fewShotEventTitles(locale: Locale): Set<String> {
+            val seeds = if (locale.language == Locale.JAPANESE.language) JAPANESE_FEW_SHOT_SEEDS else ENGLISH_FEW_SHOT_SEEDS
+            return seeds.map { it.eventTitle }.toSet()
+        }
 
         private const val MIN_SHOT_COUNT: Int = 0
         private const val MAX_EMBEDDED_FIELD_LENGTH: Int = 200
@@ -328,6 +343,7 @@ class PlanPromptBuilder {
             FewShotSeed(
                 userTurn = "[EVENT] title=\"結婚式\" category=social locale=ja → produce steps",
                 eventType = "social",
+                eventTitle = "結婚式",
                 modelSteps = listOf(
                     "finish_current_task" to "今の作業を切り上げる",
                     "prepare_items" to "ご祝儀を用意する",
@@ -337,6 +353,7 @@ class PlanPromptBuilder {
             FewShotSeed(
                 userTurn = "[EVENT] title=\"歯科検診\" category=medical locale=ja → produce steps",
                 eventType = "medical",
+                eventTitle = "歯科検診",
                 modelSteps = listOf(
                     "finish_current_task" to "今の作業を切り上げる",
                     "prepare_items" to "保険証を持って出る",
@@ -346,6 +363,7 @@ class PlanPromptBuilder {
             FewShotSeed(
                 userTurn = "[EVENT] title=\"出張\" category=travel locale=ja → produce steps",
                 eventType = "travel",
+                eventTitle = "出張",
                 modelSteps = listOf(
                     "finish_current_task" to "今の作業を切り上げる",
                     "gather_belongings" to "切符と充電器を確認する",
@@ -355,6 +373,7 @@ class PlanPromptBuilder {
             FewShotSeed(
                 userTurn = "[EVENT] title=\"打ち合わせ\" category=business_meeting locale=ja → produce steps",
                 eventType = "business_meeting",
+                eventTitle = "打ち合わせ",
                 modelSteps = listOf(
                     "finish_current_task" to "今の作業を切り上げる",
                     "prepare_items" to "資料を準備する",
@@ -372,6 +391,7 @@ class PlanPromptBuilder {
             FewShotSeed(
                 userTurn = "[EVENT] title=\"Wedding\" category=social locale=en → produce steps",
                 eventType = "social",
+                eventTitle = "Wedding",
                 modelSteps = listOf(
                     "finish_current_task" to "Wrap up what you are doing",
                     "prepare_items" to "Bring a monetary gift",
@@ -381,6 +401,7 @@ class PlanPromptBuilder {
             FewShotSeed(
                 userTurn = "[EVENT] title=\"Dental checkup\" category=medical locale=en → produce steps",
                 eventType = "medical",
+                eventTitle = "Dental checkup",
                 modelSteps = listOf(
                     "finish_current_task" to "Wrap up what you are doing",
                     "prepare_items" to "Bring your insurance card",
@@ -390,6 +411,7 @@ class PlanPromptBuilder {
             FewShotSeed(
                 userTurn = "[EVENT] title=\"Business trip\" category=travel locale=en → produce steps",
                 eventType = "travel",
+                eventTitle = "Business trip",
                 modelSteps = listOf(
                     "finish_current_task" to "Wrap up what you are doing",
                     "gather_belongings" to "Check your ticket and charger",
@@ -399,6 +421,7 @@ class PlanPromptBuilder {
             FewShotSeed(
                 userTurn = "[EVENT] title=\"Team meeting\" category=business_meeting locale=en → produce steps",
                 eventType = "business_meeting",
+                eventTitle = "Team meeting",
                 modelSteps = listOf(
                     "finish_current_task" to "Wrap up what you are doing",
                     "prepare_items" to "Prepare your materials",

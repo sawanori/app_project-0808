@@ -8,6 +8,8 @@ import com.actionstarter.ai.model.ModelSelectorImpl
 import com.actionstarter.ai.model.ModelStorage
 import com.actionstarter.ai.model.ModelVerificationResult
 import com.actionstarter.ai.model.ModelVerifier
+import com.actionstarter.ai.prompt.PlanPromptBuilder
+import com.actionstarter.ai.prompt.RecoveryPromptBuilder
 import com.actionstarter.ai.schema.ContentSanityChecker
 import com.actionstarter.ai.schema.ContentSanityResult
 import com.actionstarter.ai.schema.RecoverySchemaValidationResult
@@ -22,6 +24,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import java.util.Locale
 
 /**
  * F96実装（計画書§7.1・§8.5・§8.6・§14 P7-C1／C5／P7契約確定）。`ai/`パッケージの唯一の外部
@@ -326,6 +329,8 @@ class LocalAiGateway(
                 )
             )
         }
+        val primaryInvalid = primaryValidation as ValidationOutcome.Invalid
+        val sanityRejectCountAfterPrimary = if (primaryInvalid.sanityRejectReason != null) 1 else 0
 
         // ①または②不合格 → retry 1回（新規single-turnセッション相当の SamplingPolicy.Retry で
         // 呼び直す。会話履歴の破棄自体は[model]実装〔P7-C5〕の内部関心事、S-2是正・ADR-0050）。
@@ -340,12 +345,27 @@ class LocalAiGateway(
                     retried = true,
                     elapsedNanos = System.nanoTime() - startedAtNanos,
                     benchmark = retryRaw.benchmark,
-                    selectedModelId = entry.id
+                    selectedModelId = entry.id,
+                    sanityRejectCount = sanityRejectCountAfterPrimary,
+                    lastSanityRejectReason = primaryInvalid.sanityRejectReason
                 )
             )
         }
 
-        return AiResult.Fallback(AiFallbackReason.SCHEMA_INVALID, (retryValidation as ValidationOutcome.Invalid).reason)
+        val retryInvalid = retryValidation as ValidationOutcome.Invalid
+        val finalSanityRejectCount = sanityRejectCountAfterPrimary + if (retryInvalid.sanityRejectReason != null) 1 else 0
+        val finalSanityRejectReason = retryInvalid.sanityRejectReason ?: primaryInvalid.sanityRejectReason
+        return AiResult.Fallback(
+            AiFallbackReason.SCHEMA_INVALID,
+            retryInvalid.reason,
+            metrics = buildRejectMetricsOrNull(
+                sanityRejectCount = finalSanityRejectCount,
+                lastSanityRejectReason = finalSanityRejectReason,
+                elapsedNanos = System.nanoTime() - startedAtNanos,
+                benchmark = retryRaw.benchmark,
+                selectedModelId = entry.id
+            )
+        )
     }
 
     private sealed interface ModelAttempt {
@@ -370,10 +390,33 @@ class LocalAiGateway(
      * finalFile(entry).absolutePath`を都度計算し[model.generatePlan]へ明示的に渡す
      * （[LocalLanguageModel.generatePlan]のKDoc「[modelPath]引数追加」参照）。
      */
-    private suspend fun invokeModel(context: PlanningContext, entry: ModelCatalogEntry, policy: SamplingPolicy): ModelAttempt {
+    private suspend fun invokeModel(context: PlanningContext, entry: ModelCatalogEntry, policy: SamplingPolicy): ModelAttempt =
+        invokeModelCall(entry) { modelPath -> model.generatePlan(context, modelPath, policy) }
+
+    /**
+     * [model]を[policy]で1回呼び出す（[invokeModel]のRecovery版、[invokeModelCall]共有）。
+     * [modelPath]は[entry]から都度計算し[model.generateRecovery]へ明示的に渡す
+     * （ADR-0062決定5と同型）。
+     */
+    private suspend fun invokeRecoveryModel(
+        context: RecoveryContext,
+        options: List<RecoveryOption>,
+        entry: ModelCatalogEntry,
+        policy: SamplingPolicy
+    ): ModelAttempt =
+        invokeModelCall(entry) { modelPath -> model.generateRecovery(context, options, modelPath, policy) }
+
+    /**
+     * [invokeModel]・[invokeRecoveryModel]共有（Phase 9コミット2リファクタ）。両者はPlan/Recovery
+     * どちらも[requestTimeoutMillis]での打ち切り・例外→[AiFallbackReason]写像ロジックが完全に
+     * 同一だったため、実際に呼び出す関数（`generatePlan`／`generateRecovery`、[modelPath]以外の
+     * 引数の型・個数が異なる）だけを[call]として渡す形に統一した。[CancellationException]
+     * （[TimeoutCancellationException]を除く）は握り潰さず再送出する（T-GW-13）。
+     */
+    private suspend fun invokeModelCall(entry: ModelCatalogEntry, call: suspend (modelPath: String) -> String): ModelAttempt {
         return try {
             val modelPath = modelStorage.finalFile(entry).absolutePath
-            val rawJson = withTimeout(requestTimeoutMillis) { model.generatePlan(context, modelPath, policy) }
+            val rawJson = withTimeout(requestTimeoutMillis) { call(modelPath) }
             val benchmark = (model as? BenchmarkMetricsSource)?.lastInferenceMetrics()
             ModelAttempt.RawJson(rawJson, benchmark)
         } catch (e: TimeoutCancellationException) {
@@ -397,21 +440,80 @@ class LocalAiGateway(
 
     private sealed interface ValidationOutcome {
         data class Valid(val response: AIPlanResponse) : ValidationOutcome
-        data class Invalid(val reason: String) : ValidationOutcome
+
+        /**
+         * @param sanityRejectReason Phase 9 L5（計画書§4.5）。①[SchemaValidator]によるrejectなら
+         *   `null`、②[ContentSanityChecker]によるrejectなら非null（[runValidationPipeline]が
+         *   [AiMetrics.sanityRejectCount]／[AiMetrics.lastSanityRejectReason]の集計に使う）。
+         */
+        data class Invalid(val reason: String, val sanityRejectReason: SanityRejectReason?) : ValidationOutcome
     }
 
-    /** ①[SchemaValidator]（形式）→②[ContentSanityChecker]（内容）の順で検証する（ADR-0047）。 */
+    /**
+     * ①[SchemaValidator]（形式）→②[ContentSanityChecker]（内容、L2）の順で検証する（ADR-0047）。
+     * [ContentSanityChecker.check]へ渡す`knownFewShotTitles`（R1a）は[PlanPromptBuilder]・
+     * [RecoveryPromptBuilder]両方のfew-shotタイトルの和集合とする（Plan/Recoveryが同一の
+     * モデルエンジンを共有する以上、エコー混線はどちらの模範例からも起こり得るため、
+     * [ContentSanityChecker]のKDoc「responsibility 4」参照）。
+     */
     private fun validate(rawJson: String, context: PlanningContext): ValidationOutcome {
         val schemaResult = schemaValidator.validate(rawJson)
         val response = when (schemaResult) {
-            is SchemaValidationResult.Invalid -> return ValidationOutcome.Invalid(schemaResult.reason)
+            is SchemaValidationResult.Invalid -> return ValidationOutcome.Invalid(schemaResult.reason, sanityRejectReason = null)
             is SchemaValidationResult.Valid -> schemaResult.response
         }
 
-        return when (val sanityResult = contentSanityChecker.check(response, context)) {
-            is ContentSanityResult.Invalid -> ValidationOutcome.Invalid(sanityResult.reason)
+        return when (val sanityResult = contentSanityChecker.check(response, context, knownFewShotTitles())) {
+            is ContentSanityResult.Invalid -> ValidationOutcome.Invalid(sanityResult.reason, sanityResult.rejectReason)
             ContentSanityResult.Valid -> ValidationOutcome.Valid(response)
         }
+    }
+
+    /**
+     * [PlanPromptBuilder.fewShotEventTitles]・[RecoveryPromptBuilder.fewShotEventTitles]の
+     * ja/en両ロケールぶんの和集合（[validate]・[validateRecovery]が共有、Phase 9コミット2）。
+     *
+     * **`locale`引数を取らずja/en両方を常に合算する理由（実装時の実測発見）**: 当初は
+     * [validate]は`context.locale`（[PlanningContext]から取得可能）を使う設計を検討したが、
+     * [validateRecovery]は[RecoveryContext]が`locale`を持たないため`Locale.getDefault()`を
+     * 使わざるを得ず、これがJVMテスト実行環境の既定localeに依存してテストを不安定化させる
+     * ことが実測で判明した（[com.actionstarter.ai.LocalAiGatewayTest]のT-P9-22が、テスト実行
+     * 環境の既定localeがjaでない場合に日本語few-shotタイトル集合を取得できず、R1a
+     * （[SanityRejectReason.FEW_SHOT_ECHO]）ではなくR2(a)（[SanityRejectReason.
+     * LENGTH_OUT_OF_RANGE]）でrejectされてしまい失敗した）。R1a（few-shotエコー検出）は
+     * 本来「その呼び出しのlocaleと一致する模範例だけ」に限定する必要がなく（LLMがどの言語の
+     * 模範例を暗記していたとしても、どちらの言語で出力してもエコーはエコーであるため）、
+     * [validate]側もja/en両方の和集合へ統一することで再現性のある決定的判定にした
+     * （QH-11「同一入力には常に同一の判定」の精神を、locale解決手段の違いによる非決定性からも
+     * 守る）。
+     */
+    private fun knownFewShotTitles(): Set<String> =
+        PlanPromptBuilder.fewShotEventTitles(Locale.JAPAN) + PlanPromptBuilder.fewShotEventTitles(Locale.US) +
+            RecoveryPromptBuilder.fewShotEventTitles(Locale.JAPAN) + RecoveryPromptBuilder.fewShotEventTitles(Locale.US)
+
+    /**
+     * Phase 9 L5（計画書§4.5）。[sanityRejectCount]が0より大きい（＝Primary/Retryの少なくとも
+     * 一方が②[ContentSanityChecker]でrejectされた）場合のみ[AiResult.Fallback.metrics]を構築し、
+     * 純粋に①[SchemaValidator]レベルの不合格だった場合は`null`のまま（後方互換、コミット1までの
+     * 既存挙動を維持）とする。
+     */
+    private fun buildRejectMetricsOrNull(
+        sanityRejectCount: Int,
+        lastSanityRejectReason: SanityRejectReason?,
+        elapsedNanos: Long,
+        benchmark: InferenceBenchmarkSnapshot?,
+        selectedModelId: String
+    ): AiMetrics? {
+        if (sanityRejectCount <= 0) return null
+        return buildMetrics(
+            retried = true,
+            elapsedNanos = elapsedNanos,
+            benchmark = benchmark,
+            selectedModelId = selectedModelId,
+            sanityRejectCount = sanityRejectCount,
+            lastSanityRejectReason = lastSanityRejectReason,
+            sanityPassed = false
+        )
     }
 
     /**
@@ -424,12 +526,23 @@ class LocalAiGateway(
      *
      * @param selectedModelId Phase 8.5追加（計画書§3設計8、ADR-0062）。実際にロード対象と
      *   なった[ModelCatalogEntry.id]をそのまま記録する（PIIではない、`T-AIMET-1`参照）。
+     * @param sanityRejectCount Phase 9追加（計画書§4.5）。**コミット2 Greenで実配線済み**——
+     *   [runValidationPipeline]・[runRecoveryValidationPipeline]がPrimary/Retryの各attemptで
+     *   ②[ContentSanityChecker]がrejectした回数（0〜2）を実測して渡す。
+     * @param lastSanityRejectReason 同上。直近のreject理由（非nullは②由来のrejectがあったことを
+     *   意味する）。
+     * @param sanityPassed Phase 9追加（計画書§4.5）。既定`true`（成功時の呼び出しは全て②を
+     *   通過済みのため）。[buildRejectMetricsOrNull]がPrimary/Retryとも②でrejectされた
+     *   [AiResult.Fallback.metrics]を構築する際のみ`false`を明示的に渡す。
      */
     private fun buildMetrics(
         retried: Boolean,
         elapsedNanos: Long,
         benchmark: InferenceBenchmarkSnapshot?,
-        selectedModelId: String
+        selectedModelId: String,
+        sanityRejectCount: Int = 0,
+        lastSanityRejectReason: SanityRejectReason? = null,
+        sanityPassed: Boolean = true
     ): AiMetrics = AiMetrics(
         modelLoadMs = benchmark?.modelLoadMs ?: 0L,
         firstTokenMs = benchmark?.firstTokenMs ?: 0L,
@@ -439,8 +552,10 @@ class LocalAiGateway(
         peakNativeHeapBytes = benchmark?.peakNativeHeapBytes ?: 0L,
         retried = retried,
         schemaValid = true,
-        sanityPassed = true,
-        selectedModelId = selectedModelId
+        sanityPassed = sanityPassed,
+        selectedModelId = selectedModelId,
+        sanityRejectCount = sanityRejectCount,
+        lastSanityRejectReason = lastSanityRejectReason
     )
 
     /**
@@ -449,16 +564,17 @@ class LocalAiGateway(
      * `explanation`を生成し、[AiResult]で封じ込めて返す。[generatePlan]と同一のパイプライン構造
      * （[inferenceMutex]で実推論呼び出しを含め直列化——計画書§8「Plan/Recovery AI呼び出しの
      * 同時発生」・§13 A-6訂正・T-GW-15、`resolveInstalledEntry`／`checkInstalledModel`の共通化、
-     * Primary→[RecoverySchemaValidator]検証（①形式＋pairing）→不合格ならRetry→再検証→
-     * なお不合格ならFallback(SCHEMA_INVALID)）を踏襲する。例外は一切外へ送出しない
-     * （[CancellationException]を除く）。
+     * Primary→[RecoverySchemaValidator]検証（①形式＋pairing）→[ContentSanityChecker.
+     * checkRecovery]検証（②内容sanity、L2）→不合格ならRetry→再検証→なお不合格なら
+     * Fallback(SCHEMA_INVALID)）を踏襲する。例外は一切外へ送出しない（[CancellationException]
+     * を除く）。
      *
-     * **②[ContentSanityChecker]内容sanity（L2）はコミット1のスコープ外**: 計画書§11コミット
+     * **②[ContentSanityChecker]内容sanity（L2）配線済み（コミット2 Green）**: 計画書§11コミット
      * 粒度（コミット1=「AIが生成できる」基盤、コミット2=「生成された内容の安全性」）どおり、
-     * L2ルール（few-shotエコー検出・最小品質ヒューリスティック）は`ContentSanityChecker`へ
-     * まだ実装されていない（T-P9-12〜25が対象、コミット2のRedスコープ）。現時点の
-     * `runRecoveryValidationPipeline`は①（[RecoverySchemaValidator]の形式＋pairing検証）のみを
-     * 行う。②を追加する配線変更はコミット2で行う。
+     * コミット1では[runRecoveryValidationPipeline]は①（[RecoverySchemaValidator]の形式＋pairing
+     * 検証）のみを行っていたが、本コミットで②（[validateRecovery]経由の[ContentSanityChecker.
+     * checkRecovery]、R1a/R2）を追加配線した（[validate]のRecovery版、L3retry・L5メトリクスの
+     * 集計方法も[runValidationPipeline]と同型）。
      */
     suspend fun generateRecovery(context: RecoveryContext, options: List<RecoveryOption>): AiResult<AIRecoveryResponse> {
         if (!preferences.aiEnabled) {
@@ -509,8 +625,8 @@ class LocalAiGateway(
         val primaryAttempt = invokeRecoveryModel(context, options, entry, SamplingPolicy.Primary)
         if (primaryAttempt is ModelAttempt.Failed) return primaryAttempt.fallback
         val primaryRaw = primaryAttempt as ModelAttempt.RawJson
-        val primaryValidation = recoverySchemaValidator.validate(primaryRaw.text, expectedSemanticActions)
-        if (primaryValidation is RecoverySchemaValidationResult.Valid) {
+        val primaryValidation = validateRecovery(primaryRaw.text, context, expectedSemanticActions)
+        if (primaryValidation is RecoveryValidationOutcome.Valid) {
             return AiResult.Success(
                 primaryValidation.response,
                 buildMetrics(
@@ -521,60 +637,74 @@ class LocalAiGateway(
                 )
             )
         }
+        val primaryInvalid = primaryValidation as RecoveryValidationOutcome.Invalid
+        val sanityRejectCountAfterPrimary = if (primaryInvalid.sanityRejectReason != null) 1 else 0
 
-        // ①不合格 → retry 1回（generatePlanと同じSamplingPolicy.Retryで呼び直す。会話履歴の
+        // ①または②不合格 → retry 1回（generatePlanと同じSamplingPolicy.Retryで呼び直す。会話履歴の
         // 破棄自体はmodel実装〔ai/adapter/〕の内部関心事）。
         val retryAttempt = invokeRecoveryModel(context, options, entry, SamplingPolicy.Retry)
         if (retryAttempt is ModelAttempt.Failed) return retryAttempt.fallback
         val retryRaw = retryAttempt as ModelAttempt.RawJson
-        val retryValidation = recoverySchemaValidator.validate(retryRaw.text, expectedSemanticActions)
-        if (retryValidation is RecoverySchemaValidationResult.Valid) {
+        val retryValidation = validateRecovery(retryRaw.text, context, expectedSemanticActions)
+        if (retryValidation is RecoveryValidationOutcome.Valid) {
             return AiResult.Success(
                 retryValidation.response,
                 buildMetrics(
                     retried = true,
                     elapsedNanos = System.nanoTime() - startedAtNanos,
                     benchmark = retryRaw.benchmark,
-                    selectedModelId = entry.id
+                    selectedModelId = entry.id,
+                    sanityRejectCount = sanityRejectCountAfterPrimary,
+                    lastSanityRejectReason = primaryInvalid.sanityRejectReason
                 )
             )
         }
 
-        return AiResult.Fallback(AiFallbackReason.SCHEMA_INVALID, (retryValidation as RecoverySchemaValidationResult.Invalid).reason)
+        val retryInvalid = retryValidation as RecoveryValidationOutcome.Invalid
+        val finalSanityRejectCount = sanityRejectCountAfterPrimary + if (retryInvalid.sanityRejectReason != null) 1 else 0
+        val finalSanityRejectReason = retryInvalid.sanityRejectReason ?: primaryInvalid.sanityRejectReason
+        return AiResult.Fallback(
+            AiFallbackReason.SCHEMA_INVALID,
+            retryInvalid.reason,
+            metrics = buildRejectMetricsOrNull(
+                sanityRejectCount = finalSanityRejectCount,
+                lastSanityRejectReason = finalSanityRejectReason,
+                elapsedNanos = System.nanoTime() - startedAtNanos,
+                benchmark = retryRaw.benchmark,
+                selectedModelId = entry.id
+            )
+        )
+    }
+
+    private sealed interface RecoveryValidationOutcome {
+        data class Valid(val response: AIRecoveryResponse) : RecoveryValidationOutcome
+
+        /** [ValidationOutcome.Invalid]のRecovery版。意味は同一（[sanityRejectReason]が非nullなら
+         * ②[ContentSanityChecker.checkRecovery]由来のreject）。 */
+        data class Invalid(val reason: String, val sanityRejectReason: SanityRejectReason?) : RecoveryValidationOutcome
     }
 
     /**
-     * [model]を[policy]で1回呼び出す（[invokeModel]のRecovery版、同型の例外→[AiFallbackReason]
-     * 写像）。[modelPath]は[entry]から都度計算し[model.generateRecovery]へ明示的に渡す
-     * （ADR-0062決定5と同型）。
+     * ①[RecoverySchemaValidator]（形式＋pairing）→②[ContentSanityChecker.checkRecovery]
+     * （内容、L2）の順で検証する（[validate]のRecovery版）。`knownFewShotTitles`（R1a）は
+     * [knownFewShotTitles]（ja/en和集合、locale非依存）を[validate]と共有する——理由は
+     * [knownFewShotTitles]のKDoc参照。
      */
-    private suspend fun invokeRecoveryModel(
+    private fun validateRecovery(
+        rawJson: String,
         context: RecoveryContext,
-        options: List<RecoveryOption>,
-        entry: ModelCatalogEntry,
-        policy: SamplingPolicy
-    ): ModelAttempt {
-        return try {
-            val modelPath = modelStorage.finalFile(entry).absolutePath
-            val rawJson = withTimeout(requestTimeoutMillis) { model.generateRecovery(context, options, modelPath, policy) }
-            val benchmark = (model as? BenchmarkMetricsSource)?.lastInferenceMetrics()
-            ModelAttempt.RawJson(rawJson, benchmark)
-        } catch (e: TimeoutCancellationException) {
-            ModelAttempt.Failed(
-                AiResult.Fallback(AiFallbackReason.TIMEOUT, "No response within ${requestTimeoutMillis}ms (§8.6 #8)")
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: UnsatisfiedLinkError) {
-            ModelAttempt.Failed(AiResult.Fallback(AiFallbackReason.MODEL_LOAD_FAILED, e.message ?: e.toString()))
-        } catch (e: OutOfMemoryError) {
-            // 二次防御（事前ガードをすり抜けた残余ケース）。§8.6 #13・T-GW-17と同型。
-            ModelAttempt.Failed(AiResult.Fallback(AiFallbackReason.OUT_OF_MEMORY, e.message ?: e.toString()))
-        } catch (e: Throwable) {
-            // 未分類の失敗はサイレントに握り潰さず、例外クラス名をdetailへ残す（T-GW-12と同型）。
-            ModelAttempt.Failed(
-                AiResult.Fallback(AiFallbackReason.UNKNOWN, "${e::class.qualifiedName}: ${e.message}")
-            )
+        expectedSemanticActions: Set<String>
+    ): RecoveryValidationOutcome {
+        val schemaResult = recoverySchemaValidator.validate(rawJson, expectedSemanticActions)
+        val response = when (schemaResult) {
+            is RecoverySchemaValidationResult.Invalid ->
+                return RecoveryValidationOutcome.Invalid(schemaResult.reason, sanityRejectReason = null)
+            is RecoverySchemaValidationResult.Valid -> schemaResult.response
+        }
+
+        return when (val sanityResult = contentSanityChecker.checkRecovery(response, context, knownFewShotTitles())) {
+            is ContentSanityResult.Invalid -> RecoveryValidationOutcome.Invalid(sanityResult.reason, sanityResult.rejectReason)
+            ContentSanityResult.Valid -> RecoveryValidationOutcome.Valid(response)
         }
     }
 
@@ -599,8 +729,33 @@ sealed interface AiResult<out T> {
     /** 成功。[metrics]は§57指標に対応する非PII計測値のみ（[AiMetrics]のKDoc参照）。 */
     data class Success<T>(val value: T, val metrics: AiMetrics) : AiResult<T>
 
-    /** 失敗。[reason]は必ず設定する（サイレント握り潰し禁止、§95.6）。 */
-    data class Fallback(val reason: AiFallbackReason, val detail: String?) : AiResult<Nothing>
+    /**
+     * 失敗。[reason]は必ず設定する（サイレント握り潰し禁止、§95.6）。
+     *
+     * **[metrics]追加（Phase 9、計画書§4.5・§9決定5、ADR-0063想定・既定`null`で後方互換）**:
+     * 両attempt（Primary/Retry）ともreject・失敗した場合でも、L5（品質防御ハーネスのfallback率
+     * 定量化・Phase 12計測基盤）向けに部分的なメトリクス（[AiMetrics.sanityRejectCount]等）を
+     * 残せるようにする拡張点。**コミット2 Redの本コミットではまだどの呼び出し元も本フィールドへ
+     * 実値を書き込んでいない**（全既存`Fallback(...)`呼び出しは無変更のまま既定`null`でコンパイル
+     * を維持する）。実配線はGreenで行う。
+     */
+    data class Fallback(val reason: AiFallbackReason, val detail: String?, val metrics: AiMetrics? = null) : AiResult<Nothing>
+}
+
+/**
+ * Phase 9新設（計画書§4.5、ADR-0063想定）。[ContentSanityChecker]（②内容sanity、L2）が
+ * `Invalid`と判定した理由の分類。[AiMetrics.lastSanityRejectReason]の型。
+ * PII非出力（enum定数名のみ、自由文を保持しない）。
+ */
+enum class SanityRejectReason {
+    FEW_SHOT_ECHO,
+    MIN_QUALITY,
+    TITLE_COPY,
+    FABRICATED_CONTENT,
+    LOCALE_MISMATCH,
+    DUPLICATE_ACTION_TYPE,
+    LENGTH_OUT_OF_RANGE,
+    BANNED_WORD
 }
 
 /**
@@ -624,6 +779,13 @@ sealed interface AiResult<out T> {
  * `noFieldHasStringType_cannotHoldFreeTextOrPii`は本フィールドのみを許可された唯一のString型
  * フィールドとして明示的に除外する（それ以外のString型フィールドが追加された場合は引き続き
  * 検知する）。
+ *
+ * **[sanityRejectCount]／[lastSanityRejectReason]追加（Phase 9、計画書§4.5、ADR-0063想定）**:
+ * L2（[com.actionstarter.ai.schema.ContentSanityChecker]）がPrimary/Retryの各attemptで
+ * rejectした回数（0〜2）と、直近のreject理由（[SanityRejectReason]、非PII enum）。
+ * **本コミット（コミット2 Red）時点では[buildMetrics]がまだ常に`0`/`null`を渡す**
+ * （L2がGatewayパイプラインへ配線されていないため、実際にrejectを検知できない。実配線は
+ * コミット2のGreenで行う）。
  */
 data class AiMetrics(
     val modelLoadMs: Long,
@@ -635,5 +797,7 @@ data class AiMetrics(
     val retried: Boolean,
     val schemaValid: Boolean,
     val sanityPassed: Boolean,
-    val selectedModelId: String
+    val selectedModelId: String,
+    val sanityRejectCount: Int,
+    val lastSanityRejectReason: SanityRejectReason?
 )

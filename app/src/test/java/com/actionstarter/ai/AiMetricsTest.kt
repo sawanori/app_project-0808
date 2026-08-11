@@ -21,6 +21,12 @@ import kotlin.reflect.typeOf
  * 8→9件へ更新した（born-greenのまま。追加フィールドもBooleanでString型ではないため
  * `noFieldHasStringType_cannotHoldFreeTextOrPii`の判定結果に影響しない）。
  *
+ * **T-P9-24（計画書§4.5、Phase 9コミット2、ADR-0063想定）**: `sanityRejectCount: Int`・
+ * `lastSanityRejectReason: SanityRejectReason?`が追加されたため、期待フィールド集合を
+ * 10→12件へ更新した。いずれもInt／enumでString型ではないため
+ * `noFieldHasStringType_onlySelectedModelIdIsAllowed`の許可リスト（`selectedModelId`のみ）は
+ * 無変更のまま成立する（born-green）。
+ *
  * **§60の例示リストとの関係**: T-AIMET-1原文は「AiMetricsのフィールド集合が§60の許可リストに
  * 一致し」と書くが、仕様§60自体は「送ってよい：」の直後に`event_category_hash`等を
  * **例として**（「例：」の見出し付きで）示しているに過ぎず、`AiMetrics`のフィールド名と
@@ -32,8 +38,9 @@ import kotlin.reflect.typeOf
  */
 class AiMetricsTest {
 
-    // 正常系: AiMetricsのフィールド集合が確定10フィールド（Phase 8.5のselectedModelId追加後、
-    // 計画書docs/plans/phase8.5-adaptive-model-selection.md §3設計8、ADR-0062）と完全一致する
+    // T-P9-24: 正常系 - AiMetricsのフィールド集合が確定12フィールド（Phase 9のsanityRejectCount/
+    // lastSanityRejectReason追加後、計画書docs/plans/phase9-recovery-ai.md §4.5、ADR-0063想定）
+    // と完全一致する
     @Test
     fun fieldNames_matchConfirmedAllowList() {
         val expected = setOf(
@@ -46,7 +53,9 @@ class AiMetricsTest {
             "retried",
             "schemaValid",
             "sanityPassed",
-            "selectedModelId"
+            "selectedModelId",
+            "sanityRejectCount",
+            "lastSanityRejectReason"
         )
 
         val actual = AiMetrics::class.memberProperties.map { it.name }.toSet()
@@ -57,6 +66,9 @@ class AiMetricsTest {
     // 正常系: 自由文フィールド（String型）を持たない——ただし`selectedModelId`のみ例外として
     // 明示許可する（Phase 8.5、開発者管理の固定カタログidでありPIIでも自由文でもないため。
     // ADR-0062）。それ以外のString型フィールドが追加された場合は引き続き検知する。
+    // T-P9-25（計画書§4.5、born-green）: sanityRejectCount(Int)/lastSanityRejectReason
+    // (SanityRejectReason?)はいずれもString型ではないため、本テストは無改修のまま成立する
+    // （L5メトリクス追加がPII/自由文混入経路を新設していないことの回帰確認）。
     @Test
     fun noFieldHasStringType_onlySelectedModelIdIsAllowed() {
         val stringType: KType = typeOf<String>()
