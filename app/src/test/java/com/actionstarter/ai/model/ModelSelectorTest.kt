@@ -1,5 +1,6 @@
 package com.actionstarter.ai.model
 
+import com.actionstarter.ai.EngineLoadStateSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -196,5 +197,64 @@ class ModelSelectorTest {
         val result = selector(availableBytes = 3L * GB, installed = entries).select()
 
         assertNull(result)
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 9.5（計画書`docs/plans/phase9.5-performance-quality.md`§3.10 F-5・§14発見②、
+    // 優先繰り上げ・Red検収での差し戻し訂正）: ロード済み候補のavailMemガードスキップ。
+    // select()の現行実装はまだengineLoadStateSourceを一切参照しないため、ロード済み候補が
+    // availMem不足で除外される既存の挙動を検証するT-P95-46はAssertionErrorでRedになるのが正しい。
+    // ------------------------------------------------------------------
+
+    private class FakeEngineLoadStateSource(private val path: String?) : EngineLoadStateSource {
+        override fun loadedModelPath(): String? = path
+    }
+
+    // T-P95-46（F-5、§14発見①・②の実例接地）: 正常 - Qwen06b-likeが導入済みかつ現在ロード済み・
+    // availMem=1.0GiB（通常なら両方不適合）でも、ロード済み候補はavailMemガードをスキップし
+    // 適合扱いになるため選ばれる（M実測§14発見②「auto経路でロード済みQwenがavailMem不足により
+    // ModelSelector.select()の段階で弾かれ候補0件になる」欠陥の修正）。
+    @Test
+    fun tP95_46_qwenAlreadyLoadedWithLowAvailMem_isTreatedAsFittingAndSelected() {
+        val entries = setOf(qwen06bLikeEntry())
+        val storage = FakeModelStorage(entries)
+        val loadedPath = storage.finalFile(qwen06bLikeEntry()).absolutePath
+
+        val result = ModelSelectorImpl(
+            deviceCapability = FakeDeviceCapability(availableBytes = 1L * GB),
+            modelStorage = storage,
+            candidates = candidates(),
+            engineLoadStateSource = FakeEngineLoadStateSource(loadedPath)
+        ).select()
+
+        assertEquals(
+            "ロード済み候補はavailMemガードをスキップし適合扱いで選ばれるべきです(T-P95-46、F-5)",
+            qwen06bLikeEntry(),
+            result
+        )
+    }
+
+    // T-P95-47（F-5回帰・born-green）: 正常 - Qwen06b-likeがロード済みでも、より高品質な
+    // Gemma4-likeが未ロードのままavailMemで通常どおり適合する場合は、品質順走査によりGemma4-like
+    // が優先される（ロード済み側に人為的な優先権を与えない設計の確認）。
+    @Test
+    fun tP95_47_higherQualityCandidateFitsNormally_stillPreferredOverLoadedLowerCandidate() {
+        val entries = setOf(gemma4LikeEntry(), qwen06bLikeEntry())
+        val storage = FakeModelStorage(entries)
+        val loadedPath = storage.finalFile(qwen06bLikeEntry()).absolutePath // Qwen側がロード済み
+
+        val result = ModelSelectorImpl(
+            deviceCapability = FakeDeviceCapability(availableBytes = 3L * GB), // Gemma4-likeも通常適合
+            modelStorage = storage,
+            candidates = candidates(),
+            engineLoadStateSource = FakeEngineLoadStateSource(loadedPath)
+        ).select()
+
+        assertEquals(
+            "ロード済みでない上位候補がavailMemで通常適合するなら、そちらが優先されるべきです" +
+                "(T-P95-47、F-5回帰)",
+            gemma4LikeEntry(),
+            result
+        )
     }
 }

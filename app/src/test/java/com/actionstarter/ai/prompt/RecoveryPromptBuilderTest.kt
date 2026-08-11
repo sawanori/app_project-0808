@@ -108,4 +108,24 @@ class RecoveryPromptBuilderTest {
             instruction.contains("clock time", ignoreCase = true) || instruction.contains("number", ignoreCase = true)
         )
     }
+
+    // T-P9-41（F-4、計画書§3.9・§14発見①、優先繰り上げ）: buildSystemInstructionが
+    // 「expected件数と同数だけ・列挙された値のみ」という強化された制約文言を含む（Qwen3-0.6Bが
+    // 実測で余分な1件を追加し続ける挙動〔§14発見①〕への、プロンプト側からのベストエフォート対策。
+    // 確実性はF-4のRecoverySchemaValidator側ロジックが担保し、本文言はあくまで補助策）。
+    // 現状のbuildSystemInstructionは旧文言（「echo each given value back exactly once,
+    // do not invent, omit, or duplicate any」）のみで、強化後の具体的な追加文言
+    // 「no more and no fewer」を含まないため、AssertionErrorでRedになるのが正しい。
+    @Test
+    fun tP9_41_buildSystemInstruction_containsStrengthenedExactCountConstraint() {
+        val builder = RecoveryPromptBuilder()
+
+        val instruction = builder.buildSystemInstruction(Locale.JAPAN)
+
+        assertTrue(
+            "「多くも少なくもしない（no more and no fewer）」という強化された件数制約文言を" +
+                "含むべきです(T-P9-41、F-4、§14発見①のQwen3-0.6B余剰追加挙動への対策): $instruction",
+            instruction.contains("no more and no fewer", ignoreCase = true)
+        )
+    }
 }

@@ -1566,4 +1566,185 @@ class LocalAiGatewayTest {
             result is AiResult.Fallback && (result as AiResult.Fallback).metrics?.sanityRejectCount == 2
         )
     }
+
+    // ------------------------------------------------------------------
+    // Phase 9.5（計画書`docs/plans/phase9.5-performance-quality.md`§3.10 F-5・§14発見②、
+    // 優先繰り上げ）: ロード済みモデルパスに対するOOM事前ガードのスキップ判定。
+    // LocalAiGatewayの現行実装はまだEngineLoadStateSourceを一切問い合わせないため、
+    // 「ロード済み+availMem低」のケースは従来どおりOUT_OF_MEMORY_PREVENTEDとなり、期待
+    // （ガードスキップ→モデル呼び出しを試行）とAssertionErrorで不一致になるのが正しい
+    // （commit 2のT-P9-19〜23と同型のbehavioral-gap Red）。
+    // ------------------------------------------------------------------
+
+    /** F-5専用fake。[EngineLoadStateSource]を実装し「指定パスが既にロード済み」を任意に模す。 */
+    private class LoadAwareFakeModel(
+        private val loadedPath: String?,
+        private val planRawJson: String? = null,
+        private val recoveryRawJson: String? = null
+    ) : LocalLanguageModel, EngineLoadStateSource {
+        override val modelIdentifier: String = "load-aware-fake-model"
+
+        var generatePlanCallCount: Int = 0
+            private set
+        var generateRecoveryCallCount: Int = 0
+            private set
+
+        override fun loadedModelPath(): String? = loadedPath
+
+        override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String {
+            generatePlanCallCount += 1
+            return planRawJson ?: throw UnsupportedOperationException("F-5 Recovery専用テストのため未使用")
+        }
+
+        override suspend fun generateRecovery(
+            context: RecoveryContext,
+            options: List<RecoveryOption>,
+            modelPath: String,
+            samplingPolicy: SamplingPolicy
+        ): String {
+            generateRecoveryCallCount += 1
+            return recoveryRawJson ?: throw UnsupportedOperationException("F-5 Plan専用テストのため未使用")
+        }
+    }
+
+    // T-P95-42（F-5）: 異常→正常 - 解決済みモデルパスが既にロード済み（EngineLoadStateSource経由）の
+    // 場合、Plan生成はavailMemが通常ガードの閾値を下回っていてもOOM事前ガードをスキップし
+    // モデル呼び出しを試行する。
+    @Test
+    fun tP95_42_generatePlan_engineAlreadyLoadedForResolvedPath_skipsOomGuardEvenWithLowAvailMem() = runTest {
+        val entry = fakeInstalledEntry()
+        val storage = installedModelStorage()
+        val resolvedModelPath = storage.finalFile(entry).absolutePath
+        val model = LoadAwareFakeModel(loadedPath = resolvedModelPath, planRawJson = validSingleStepResponse())
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapabilityWith(totalMemBytes = 8L * GB, availMemBytes = 100L * 1024 * 1024, "arm64-v8a"),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_42")
+        )
+
+        val result = gateway.generatePlan(planningContext())
+
+        assertTrue(
+            "ロード済みモデルパスであればavailMemが低くてもOOM事前ガードをスキップしモデル呼び出しを" +
+                "試行するべきです(T-P95-42、F-5): $result",
+            result !is AiResult.Fallback || (result as AiResult.Fallback).reason != AiFallbackReason.OUT_OF_MEMORY_PREVENTED
+        )
+        assertEquals(1, model.generatePlanCallCount)
+    }
+
+    // T-P95-43（F-5回帰）: 未ロード（EngineLoadStateSource.loadedModelPath()がnull）+availMem低の
+    // 場合は従来どおりOUT_OF_MEMORY_PREVENTEDを維持する。
+    @Test
+    fun tP95_43_generatePlan_engineNotLoaded_stillAppliesOomGuardWithLowAvailMem() = runTest {
+        val storage = installedModelStorage()
+        val model = LoadAwareFakeModel(loadedPath = null, planRawJson = validSingleStepResponse())
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapabilityWith(totalMemBytes = 8L * GB, availMemBytes = 100L * 1024 * 1024, "arm64-v8a"),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_43")
+        )
+
+        val result = gateway.generatePlan(planningContext())
+
+        assertTrue(
+            "未ロードならavailMemが低い場合は従来どおりOUT_OF_MEMORY_PREVENTEDになるべきです" +
+                "(T-P95-43、F-5回帰): $result",
+            result is AiResult.Fallback && (result as AiResult.Fallback).reason == AiFallbackReason.OUT_OF_MEMORY_PREVENTED
+        )
+        assertEquals(0, model.generatePlanCallCount)
+    }
+
+    // T-P95-44（F-5、Recovery版）: 異常→正常 - generateRecoveryもgeneratePlanと同一構造のガードを
+    // 個別に持つため、同一の修正・同一の検証を行う。
+    @Test
+    fun tP95_44_generateRecovery_engineAlreadyLoadedForResolvedPath_skipsOomGuardEvenWithLowAvailMem() = runTest {
+        val entry = fakeInstalledEntry()
+        val storage = installedModelStorage()
+        val resolvedModelPath = storage.finalFile(entry).absolutePath
+        val model = LoadAwareFakeModel(loadedPath = resolvedModelPath, recoveryRawJson = cleanRecoveryJson())
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapabilityWith(totalMemBytes = 8L * GB, availMemBytes = 100L * 1024 * 1024, "arm64-v8a"),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_44")
+        )
+
+        val result = gateway.generateRecovery(recoveryContext(), sampleRecoveryOptions())
+
+        assertTrue(
+            "ロード済みモデルパスであればavailMemが低くてもOOM事前ガードをスキップしモデル呼び出しを" +
+                "試行するべきです(T-P95-44、F-5): $result",
+            result !is AiResult.Fallback || (result as AiResult.Fallback).reason != AiFallbackReason.OUT_OF_MEMORY_PREVENTED
+        )
+        assertEquals(1, model.generateRecoveryCallCount)
+    }
+
+    // T-P95-45（F-5回帰、Recovery版）: 未ロード+availMem低の場合は従来どおり
+    // OUT_OF_MEMORY_PREVENTEDを維持する。
+    @Test
+    fun tP95_45_generateRecovery_engineNotLoaded_stillAppliesOomGuardWithLowAvailMem() = runTest {
+        val storage = installedModelStorage()
+        val model = LoadAwareFakeModel(loadedPath = null, recoveryRawJson = cleanRecoveryJson())
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapabilityWith(totalMemBytes = 8L * GB, availMemBytes = 100L * 1024 * 1024, "arm64-v8a"),
+            preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_45")
+        )
+
+        val result = gateway.generateRecovery(recoveryContext(), sampleRecoveryOptions())
+
+        assertTrue(
+            "未ロードならavailMemが低い場合は従来どおりOUT_OF_MEMORY_PREVENTEDになるべきです" +
+                "(T-P95-45、F-5回帰): $result",
+            result is AiResult.Fallback && (result as AiResult.Fallback).reason == AiFallbackReason.OUT_OF_MEMORY_PREVENTED
+        )
+        assertEquals(0, model.generateRecoveryCallCount)
+    }
+
+    // T-P95-48（F-5、auto経路・§14実測ケース接地、Red検収での差し戻し訂正）: 異常→正常 -
+    // M実測（§14発見①・②）で実際に観測した経路そのもの: auto選択でロード済みQwenがavailMem
+    // 不足によりModelSelector.select()の段階で候補から弾かれ（unresolvedEntryFallback()の
+    // OUT_OF_MEMORY_PREVENTED「auto: no candidate fits」で再現）、post-selectionガードへ
+    // 到達すらしなかった欠陥が、ModelSelectorImplへのengineLoadStateSource注入により解消し
+    // Successへ至る。T-P95-42はexplicit選択経路のみを検証しておりこの経路をカバーしていなかった
+    // ため、Red検収の指摘どおりauto経路版を追加する。
+    @Test
+    fun tP95_48_autoSelection_qwenAlreadyLoadedWithLowAvailMem_selectorNoLongerExcludesIt_generatePlanSucceeds() = runTest {
+        val entries = autoTestCatalog()
+        val preferences = preferences(aiEnabled = true, prefsFileName = "test_ai_prefs_tP95_48")
+            .apply { selectedModelId = AiPreferences.AUTO_SELECT_MODEL_ID }
+        val storage = installedModelStorageWithEntries(entries, preferences)
+        val resolvedModelPath = storage.finalFile(fakeQwen06bLikeEntry()).absolutePath
+        val model = LoadAwareFakeModel(loadedPath = resolvedModelPath, planRawJson = validSingleStepResponse())
+        val deviceCapability = deviceCapabilityWith(totalMemBytes = 8L * GB, availMemBytes = 100L * 1024 * 1024, "arm64-v8a")
+        val gateway = LocalAiGateway(
+            model = model,
+            modelStorage = storage,
+            modelVerifier = verifier(),
+            deviceCapability = deviceCapability,
+            preferences = preferences,
+            modelSelector = ModelSelectorImpl(
+                deviceCapability,
+                storage,
+                candidates = qualityOrderedCandidates(),
+                engineLoadStateSource = model
+            )
+        )
+
+        val result = gateway.generatePlan(planningContext())
+
+        assertTrue(
+            "auto経路でロード済みQwenがavailMem不足で弾かれず選ばれ、モデル呼び出しを試行するべきです" +
+                "(T-P95-48、F-5、§14発見①②実例接地): $result",
+            result !is AiResult.Fallback || (result as AiResult.Fallback).reason != AiFallbackReason.OUT_OF_MEMORY_PREVENTED
+        )
+        assertEquals(1, model.generatePlanCallCount)
+    }
 }

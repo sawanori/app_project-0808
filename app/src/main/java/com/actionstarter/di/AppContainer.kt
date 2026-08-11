@@ -284,12 +284,33 @@ class AppContainer(
     private val deviceCapability: DeviceCapability = DeviceCapabilityImpl(context)
 
     /**
+     * Phase 9.5新設（計画書`docs/plans/phase9.5-performance-quality.md`§3.10 F-5、§14発見②、
+     * Red検収での差し戻し訂正）。[modelSelector]・[localAiGateway]の両方が同一インスタンスを
+     * 共有するために昇格した単一の[LiteRtLmLocalLanguageModel]（従来は[localAiGateway]の
+     * `by lazy`ブロック内でインラインに`LiteRtLmLocalLanguageModel()`を生成していた）。
+     * [EngineLoadStateSource]（`loadedModelPath()`）が意味を持つのは、問い合わせ先のインスタンス
+     * が実際にEngineをロードする当のインスタンスと同一である場合に限るため、[modelSelector]の
+     * 選定時点ガードと[localAiGateway]のpost-selectionガードが同じロード状態を観測できるよう
+     * 単一インスタンスを両者へ配線する（計画書§3.10「両者は同じ`EngineLoadStateSource`単一情報源を
+     * 共有する」）。`by lazy`は他のAI関連プロパティと同じくR-7（起動を重くしない）を理由とする。
+     */
+    private val localLanguageModel: LiteRtLmLocalLanguageModel by lazy { LiteRtLmLocalLanguageModel() }
+
+    /**
      * Phase 8.5新設（計画書`docs/plans/phase8.5-adaptive-model-selection.md`§3設計4、
      * ADR-0062）。[localAiGateway]の`selectedModelId`＝`"auto"`時の自動選択に使う
      * （Step 4で`LocalAiGateway.resolveInstalledEntry`内部の分岐へ配線済み）。
      * `by lazy`は他のAI関連プロパティと同じくR-7（起動を重くしない）を理由とする。
+     *
+     * **Phase 9.5で`engineLoadStateSource`を追加配線（計画書§3.10 F-5、Red検収での差し戻し
+     * 訂正）**: [localLanguageModel]（[localAiGateway]と共有する単一インスタンス）を渡し、
+     * auto選択時にロード済み候補がavailMemガードで誤って除外されないようにする
+     * （[com.actionstarter.ai.model.ModelSelectorImpl]のクラスKDoc「@param
+     * engineLoadStateSource」参照）。
      */
-    private val modelSelector: ModelSelector by lazy { ModelSelectorImpl(deviceCapability, modelStorage) }
+    private val modelSelector: ModelSelector by lazy {
+        ModelSelectorImpl(deviceCapability, modelStorage, engineLoadStateSource = localLanguageModel)
+    }
 
     /**
      * F96実配線の入口（計画書§7.2・§14 P7-C1／P7-C4）。Phase 7完成条件（`ai/`が単体で完結して動く、
@@ -332,7 +353,10 @@ class AppContainer(
             // 旧modelPathProviderラムダ（ModelStorageを独立に再解決していた）は廃止した。
             // モデルパスはLocalAiGatewayが検証・選択したエントリからgeneratePlan呼び出し時に
             // 明示的に渡される（LiteRtLmLocalLanguageModelのクラスKDoc参照）。
-            model = LiteRtLmLocalLanguageModel(),
+            // Phase 9.5（計画書§3.10 F-5、Red検収での差し戻し訂正）: インラインの
+            // LiteRtLmLocalLanguageModel()生成をやめ、modelSelectorと共有する単一インスタンス
+            // localLanguageModelを渡す（localLanguageModelプロパティのKDoc参照）。
+            model = localLanguageModel,
             modelStorage = modelStorage,
             modelVerifier = ModelVerifierImpl(),
             deviceCapability = deviceCapability,

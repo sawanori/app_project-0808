@@ -82,7 +82,8 @@ class RecoveryPromptBuilder {
             appendLine("Rules:")
             appendLine(
                 "1. semantic_action must be exactly one of the values listed in the OPTIONS data " +
-                    "— echo each given value back exactly once, do not invent, omit, or duplicate any."
+                    "— echo each given value back exactly once, no more and no fewer. Do not invent, " +
+                    "omit, or duplicate any value."
             )
             appendLine(
                 "2. explanation is a SHORT, grammatically natural sentence in $explanationLanguage, " +

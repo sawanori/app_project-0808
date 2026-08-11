@@ -12,19 +12,28 @@ import org.json.JSONObject
  * 「Phase 9でgenerateRecoveryを実装する際に対となる検証メソッドを追加する」への対応）。
  *
  * **pairing検証（[SchemaValidator]にはない、Recovery固有の追加責務）**: 形式検証（enum・件数・
- * 長さ・additionalProperties）に加え、返却された`semantic_action`の集合が[expectedSemanticActions]
- * （`BasicRecoveryEngine`が既に決定した候補集合、呼び出し側が渡す）と完全一致（順不同・重複禁止）
- * しなければ`Invalid`とする。pairing不一致は「入力と出力の対応が壊れている」という形式契約違反
- * であり、[ContentSanityChecker]（②内容sanity）の責務ではなく本クラス（①形式）の責務とする
- * （計画書§3.3、重複action_type検出をContentSanityCheckerへ寄せたPlanの先例〔ADR-0047〕とは
- * 異なる判断であることに注意）。
+ * 長さ・additionalProperties）に加え、返却された`semantic_action`の集合と[expectedSemanticActions]
+ * （`BasicRecoveryEngine`が既に決定した候補集合、呼び出し側が渡す）を突き合わせる。重複は
+ * 無条件で`Invalid`。pairing不一致は「入力と出力の対応が壊れている」という形式契約違反であり、
+ * [ContentSanityChecker]（②内容sanity）の責務ではなく本クラス（①形式）の責務とする（計画書
+ * §3.3、重複action_type検出をContentSanityCheckerへ寄せたPlanの先例〔ADR-0047〕とは異なる
+ * 判断であることに注意）。
+ *
+ * **F-4: 交差一致への緩和（Phase 9.5計画書`docs/plans/phase9.5-performance-quality.md`§3.9、
+ * §14発見①、ADR-0064想定、Green実装済み）**: 当初（Phase 9）は完全一致必須だったが、
+ * Phase 9.5のベースライン実測（M、§14）でQwen3-0.6Bが安定して「正しいpairing2件＋余分な
+ * 3件目」を返す挙動が判明し、完全一致要求がRecovery全試行を常時Fallbackさせていた。
+ * [expectedSemanticActions]との交差が1件以上あれば、**交差分のみ**を`Valid.response.options`
+ * として採用する（余分な`semantic_action`は応答から除外、`LocalAiRecoveryContextualizer.overlay`
+ * のMap引き当てが元々base側に存在しないsemanticActionを無視する構造と整合）。交差0件は
+ * 引き続き`Invalid`。
  *
  * **JSONクレンジング方針（計画書§3.4・§13 A-8訂正）**: [SchemaValidator]と同じ非寛容パース方針
  * （コードフェンス等の前置き文が混入していれば剥がさず`Invalid`とする、
  * `SchemaValidatorTest.tSch19_markdownFencedJson_isInvalidNotSilentlyStripped`と同型の回帰）を
  * 独立に採用する。
  *
- * Step 4（Green）で[validate]を実装済み。
+ * Step 4（Green）で[validate]を実装済み（Phase 9 コミット1・Phase 9.5 F-4）。
  */
 class RecoverySchemaValidator {
 
@@ -79,21 +88,35 @@ class RecoverySchemaValidator {
             }
         }
 
-        // pairing検証（計画書§3.3、SchemaValidatorにはないRecovery固有の責務）: 返却された
-        // semantic_actionの集合が、Kotlin側が既に決定したexpectedSemanticActionsと完全一致
-        // （順不同・重複禁止）しなければInvalidとする。
+        // pairing検証（計画書§3.3、SchemaValidatorにはないRecovery固有の責務）。
+        //
+        // **F-4: 交差一致への緩和（計画書§3.9、§14発見①、ADR-0064想定）**: 当初は
+        // expectedSemanticActionsとの完全一致を要求していたが、M実測（§14）でQwen3-0.6Bが
+        // 「正しい2件+余分な3件目」を安定して返す挙動が判明し、完全一致要求が常時Fallbackを
+        // 招いていた（計画書§9再検討トリガー「pairing不一致に起因するFallback率が高い場合は
+        // Best-Effort部分適用を検討する」の発動条件が実測で成立）。返却された semantic_action
+        // 集合の重複は引き続き無条件でInvalidとする（expected集合の内外を問わないブランケット
+        // 判定、緩和しない）。重複がなければ、expectedSemanticActionsとの交差を計算し、交差が
+        // 1件以上あれば交差分のみをAIRecoveryResponse.optionsとして採用しValidとする（余分な
+        // semantic_actionのオプションは応答から除外する——LocalAiRecoveryContextualizer.overlay
+        // のMap引き当ては元々base側に存在しないsemanticActionを無視する構造のため、除外自体は
+        // 安全側の整合強化）。交差が0件（返却集合がexpected集合と完全に無関係）の場合は
+        // 引き続きInvalidとする。
         val returnedActions = options.map { it.semanticAction }
         if (returnedActions.toSet().size != returnedActions.size) {
             return RecoverySchemaValidationResult.Invalid("Duplicate semantic_action detected across options: $returnedActions")
         }
-        if (returnedActions.toSet() != expectedSemanticActions) {
+        val returnedActionSet = returnedActions.toSet()
+        val intersection = returnedActionSet.intersect(expectedSemanticActions)
+        if (intersection.isEmpty()) {
             return RecoverySchemaValidationResult.Invalid(
-                "Returned semantic_action set does not match the expected set " +
-                    "(expected=$expectedSemanticActions, actual=${returnedActions.toSet()})"
+                "Returned semantic_action set has no overlap with the expected set " +
+                    "(expected=$expectedSemanticActions, actual=$returnedActionSet)"
             )
         }
 
-        return RecoverySchemaValidationResult.Valid(AIRecoveryResponse(options = options))
+        val acceptedOptions = options.filter { it.semanticAction in intersection }
+        return RecoverySchemaValidationResult.Valid(AIRecoveryResponse(options = acceptedOptions))
     }
 
     private sealed interface OptionValidation {

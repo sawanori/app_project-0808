@@ -3,6 +3,7 @@ package com.actionstarter.ai.adapter
 import android.os.Debug
 import android.os.SystemClock
 import com.actionstarter.ai.BenchmarkMetricsSource
+import com.actionstarter.ai.EngineLoadStateSource
 import com.actionstarter.ai.InferenceBenchmarkSnapshot
 import com.actionstarter.ai.LocalLanguageModel
 import com.actionstarter.ai.SamplingPolicy
@@ -133,7 +134,7 @@ class LiteRtLmLocalLanguageModel(
     private val shotCount: Int = PlanPromptBuilder.DEFAULT_SHOT_COUNT,
     private val maxNumTokens: Int = defaultMaxNumTokensFor(shotCount),
     private val threadCount: Int = DEFAULT_THREAD_COUNT
-) : LocalLanguageModel, BenchmarkMetricsSource {
+) : LocalLanguageModel, BenchmarkMetricsSource, EngineLoadStateSource {
 
     override val modelIdentifier: String = "litert-lm:qwen3-0.6b-dynamic-int4-block32"
 
@@ -147,9 +148,22 @@ class LiteRtLmLocalLanguageModel(
 
     /**
      * Phase 8.5新設（計画書§3設計6、ADR-0062）。[engine]が現在ロード済みのモデルパス。
-     * [engineLifecycleMutex]配下でのみ読み書きする（[engine]と同じ規律）。[engine]が`null`のときは
+     * **書き込みは[engineLifecycleMutex]配下でのみ行う**（[engine]と同じ規律。単一書き込み元を
+     * [obtainEngine]／[closeEngineAndClearLocked]の2箇所に限定する）。[engine]が`null`のときは
      * 必ず`null`（[closeEngineAndClearLocked]が両方を同時にクリアする）。
+     *
+     * **`@Volatile`化（Phase 9.5、計画書§3.10 F-5）**: [loadedModelPath]（override関数、
+     * [EngineLoadStateSource]実装）が[LocalAiGateway]／[com.actionstarter.ai.model.
+     * ModelSelectorImpl]から`engineLifecycleMutex`を取得せずに読まれるようになった
+     * （読み取り専用の別コルーチン／別スレッドから、書き込み側のMutexをまたいで参照される）。
+     * Kotlin/JVMのMutexはスレッド非依存でコルーチンを跨ぐため、`@Volatile`なしでは書き込みが
+     * 他スレッドから見えるとは限らない（メモリ可視性の保証がない）。書き込み側の直列化
+     * （[engineLifecycleMutex]による単一書き込み元）自体は変更せず、[lastMetrics]と同型の
+     * 「単一書き込み元＋`@Volatile`読み取り」パターンを踏襲することで、読み取り側にロック
+     * 取得（デッドロック・再入不可の`Mutex`の性質に起因するリスク）を要求せずに可視性のみを
+     * 保証する。
      */
+    @Volatile
     private var loadedModelPath: String? = null
 
     /** Engineの生成・破棄（アンロード）を直列化する（§13 #8）。 */
@@ -159,6 +173,26 @@ class LiteRtLmLocalLanguageModel(
     private var lastMetrics: InferenceBenchmarkSnapshot? = null
 
     override fun lastInferenceMetrics(): InferenceBenchmarkSnapshot? = lastMetrics
+
+    /**
+     * Phase 9.5新設（計画書§3.10 F-5、[EngineLoadStateSource]実装、Green実装済み）。
+     * [LocalAiGateway]のOOM事前ガード（[LocalAiGateway.isEntryAlreadyLoaded]）・
+     * [com.actionstarter.ai.model.ModelSelectorImpl.select]の双方が、ロード済みモデルパスに
+     * 対してavailMemガードをスキップするかどうかの判定に使う。
+     *
+     * **実装は[loadedModelPath]（`private var`、`@Volatile`）フィールドの単純な委譲**
+     * （プロパティ`loadedModelPath`への裸のアクセスであり、この関数自身への再帰呼び出しでは
+     * ない——Kotlinはプロパティ名とインターフェースが要求する関数名`loadedModelPath()`の字面が
+     * 一致していても、呼び出し構文`()`の有無で両者を区別する）。書き込み元は
+     * [engineLifecycleMutex]配下の[obtainEngine]／[closeEngineAndClearLocked]の2箇所に限定した
+     * ままであり、本関数はロックを取得せずに読む（[loadedModelPath]フィールドのKDoc
+     * 「`@Volatile`化」参照——可視性は`@Volatile`が保証するため、読み取り側でのロック取得は
+     * 不要かつ意図的に行わない）。
+     *
+     * **本ファイルはJVMテストで一切検証できない**（class file version不一致、
+     * `AiGatewayTestFixtures`のKDoc参照）ため、本メソッドの正しさは実機androidTestでのみ確認可能。
+     */
+    override fun loadedModelPath(): String? = loadedModelPath
 
     override suspend fun generatePlan(context: PlanningContext, modelPath: String, samplingPolicy: SamplingPolicy): String =
         withContext(Dispatchers.IO) {

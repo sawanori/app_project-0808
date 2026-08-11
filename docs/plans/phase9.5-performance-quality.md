@@ -2,8 +2,8 @@
 
 > 対象仕様: §73「Phase 9・Local AI Recovery」の性能・品質フォローアップ、§57「性能指標」、§11.1〜§11.3実機実測系。直接の起点はPhase 9計画書§4.6「Phase 9.5候補（実機計測ループ要）」と、同計画書Step 4（コミット3 Green）報告が持ち越したリファクタ候補
 > 前提基盤: Phase 9（Local AI Recovery完了・A54実機受け入れ合格、ADR-0063）・Phase 8.5（`ModelSelector`自動選択・ADR-0062）・Phase 7（LiteRT-LM基盤・P7-C0/C5/C8実機実測、`LiteRtLmProbeTest`／`ModelComparisonProbeTest`のprobe規約確立）
-> 種別: 計測駆動フェーズ（コミット0・M実施済み。F-4/F-5はコード変更を伴う優先繰り上げ機能、Red段階）
-> 承認状態: **敵対的レビュー反映済み（§13）。コミット0（androidTestコンパイル復旧）実施済み。Mベースライン計測実施済み（§14、30試行）。実測で発見した2件の設計欠陥（Recovery pairing全滅・Planウォームゲート自爆）を受け、F-4/F-5を優先繰り上げしStep 3（Red）着手中**
+> 種別: 計測駆動フェーズ（コミット0・M実施済み。F-4/F-5はコード変更を伴う優先繰り上げ機能）
+> 承認状態: **敵対的レビュー反映済み（§13）。コミット0（androidTestコンパイル復旧）・Mベースライン計測（§14、30試行）実施済み。実測で発見した2件の設計欠陥（Recovery pairing全滅・Planウォームゲート自爆）を受け優先繰り上げしたF-4/F-5は、F-5当初Red実装がRed検収で修正層の誤同定により差し戻され（§13「Red検収時点の追加訂正」、§3.10）、二層構成（`ModelSelector`層＋`LocalAiGateway`層、単一`EngineLoadStateSource`共有）へ訂正のうえF-4・訂正済みF-5ともStep 4（Green）実装完了（:app:testDebugUnitTest tests=730/skipped=1/failures=0/errors=0〔Red時点の新規テストは全てGreen化、F-4の契約変更に伴い既存`LocalAiRecoveryContextualizerTest`のT-P9-2を新契約の期待値へ更新〕・:app:lintDebug error=0/warning=23、JUnit XML集計で確認済み）。F-4/F-5のコミットメッセージは検収待ち**
 
 ---
 
@@ -90,6 +90,28 @@ Phase 9 Step 4（コミット3）Green報告の判断を踏襲する: `buildConv
 ### 3.8 記録のみ: P4 KV／プレフィックスキャッシュAPI定点観測
 
 LiteRT-LMのリリースノートを定点観測し、対応APIが追加されたらTTFT桁改善が見込めるかを評価する。実装タスクではなく、Phase 9計画書§4.6の記載をそのまま監視対象として申し送る。
+
+### 3.9 F-4: Recovery pairing検証の交差一致緩和（§14発見①起因・優先繰り上げ）
+
+**経緯**: M実測（§14）で、Recovery全15試行が`SCHEMA_INVALID`で一貫してFallbackすることが判明した。実際の失敗パターンは複合的である——Primaryは正しく2件（expected集合と一致）返すが一方の`explanation`がContentSanityChecker②で`MIN_QUALITY`によりreject、続くRetryは3件目`skip_optional_and_important_steps`を余分に追加しpairing（①、完全一致）に失敗する。これは計画書§9の再検討トリガー「pairing不一致に起因するFallback率が高いことが判明した場合、Best-Effort部分適用（交差一致）への緩和を検討する」の発動条件が実測で成立したものであり、当初Phase 9.5の対象外だった（Phase 9計画書§4.4で「本フェーズでは採用しない」としていた）Best-Effort部分適用を、優先繰り上げでF-4として実施する。
+
+**変更内容**: `RecoverySchemaValidator`のpairing検証を「`expectedSemanticActions`との完全一致」から「**交差一致**」へ緩和する。返却された`semantic_action`集合（重複禁止は既存のまま維持）と`expectedSemanticActions`の交差が1件以上あれば、**交差分のみ**を`AIRecoveryResponse.options`として採用し`Valid`とする（余分な`semantic_action`のオプションは応答から除外する。`LocalAiRecoveryContextualizer.overlay`のMap引き当ては元々base側に存在しないsemanticActionを無視する構造のため、除外自体は安全側の整合強化）。交差が0件（完全に無関係な集合）の場合は引き続き`Invalid`。交差の内外を問わず重複検出は既存のまま（緩和しない）。
+
+あわせて`RecoveryPromptBuilder.buildSystemInstruction`のルール1を強化し、「expected件数と同数だけ・列挙された値のみを返す（多くも少なくもしない）」という制約をより明示的な文言で追記する（プロンプト強化はベストエフォートの補助策であり、確実性はKotlin側のF-4検証ロジックが担保する）。
+
+### 3.10 F-5: Planウォームゲート自爆の修正（§14発見②起因・優先繰り上げ、Red検収での差し戻し訂正・Green実装済み）
+
+**経緯**: M実測（§14）で、Engineが既にロード済みの状態でも、2回目以降の呼び出しで§8.6 #7のOOM事前ガードが「これから新規ロードする」前提の閾値をそのまま再適用し、ロード済みEngineの自己メモリ消費によってガード自体が自爆的に発動する（wallMs=1〜3msの即時Fallback）ことが判明した。5バッチ中2バッチ（起点availMemが相対的に低い場合）で再現しており、F-2（Engineウォームアップ）が実装されると「温めたのに2回目呼び出しで即Fallbackする」という直接的な悪影響を及ぼすため、F-2より先に優先繰り上げでF-5として修正する。
+
+**Red検収での差し戻し訂正（設計の根本的な誤同定を修正）**: 当初設計は`LocalAiGateway`のpost-selection OOMガード（`checkInstalledModel`成功後・`runValidationPipeline`直前の`hasAvailableMemory`チェック）のみを対象にしていたが、実測ログの`detail`文字列（`"auto: no candidate fits available memory (§8.6 #7, candidates=[...])"`）は`unresolvedEntryFallback()`が組み立てる固定文言そのものであり、この経路は`checkInstalledModel()`→`resolveInstalledEntry()`→`modelSelector.select()`がauto選択で`null`を返した場合にのみ到達する——すなわち実際の欠陥は**`ModelSelectorImpl.select()`自身が候補ごとに課す`hasAvailableMemory`フィルタの内部**にあり、post-selectionガードへ到達する**前**に選定そのものが失敗していた。当初のRedテスト（T-P95-42/44、明示選択のみ）はこの経路を一切踏んでおらず（明示選択は`ModelSelector`を経由しない）、実際に壊れているauto選択経路を検証できていなかった。§3.10の旧版が記載していた「`ModelSelector.select()`自体は変更しない」という設計判断は、この誤った前提（欠陥は選定後にある）に基づくものであり誤りだった。
+
+**訂正後の変更内容（二層構成、単一の`EngineLoadStateSource`を共有）**:
+1. 新規`interface EngineLoadStateSource { fun loadedModelPath(): String? }`（`BenchmarkMetricsSource`と同型の任意実装interface、`ai/EngineLoadStateSource.kt`）を新設し、`LiteRtLmLocalLanguageModel`が実装する（既存の`private var loadedModelPath`フィールドをそのまま公開する薄い委譲）。
+2. **層1（選定時点、新設）**: `ModelSelectorImpl`のコンストラクタへ`engineLoadStateSource: EngineLoadStateSource? = null`（既定`null`、後方互換）を追加する。`select()`の候補ごとのフィットネス判定を、「`modelStorage.finalFile(entry)`の絶対パスが`engineLoadStateSource?.loadedModelPath()`と一致すれば`hasAvailableMemory`チェックをスキップして適合扱い」へ変更する。**品質順走査自体は変更しない**——ロード済みでない上位候補が通常のavailMem判定で適合する場合はそちらが優先されたままである（T-P95-47、born-green）。
+3. **層2（post-selection、当初設計を維持）**: `LocalAiGateway`の`generatePlan`・`generateRecovery`双方のOOM事前ガードへ、`(model as? EngineLoadStateSource)?.loadedModelPath()`が解決済みエントリの絶対パスと一致する場合にガードをスキップする条件を追加する（新設`private fun isEntryAlreadyLoaded`で共有）。**この層は明示選択（`selectedModelId`が具体的なモデルID、`ModelSelector`を一切経由しない）経路で唯一の防御になるため層1と独立に必要**（T-P95-42・44が明示選択・ロード済みの成功、T-P95-43・45が明示選択・未ロードの回帰、T-P95-48がauto選択でロード済み候補が層1により選定候補へ復帰し層2も正常に通過することを回帰ロックする）。
+4. `AppContainer`は`modelSelector`・`localAiGateway`の両方が**同一の`LiteRtLmLocalLanguageModel`インスタンス**（新設`private val localLanguageModel by lazy { ... }`）を参照するよう配線する。`EngineLoadStateSource`が意味を持つのは問い合わせ先が実際にEngineをロードする当のインスタンスと同一である場合に限るため、両層が同じロード状態を観測できることが前提となる。
+
+**`@Volatile`対応（実装時に判明した追加修正）**: `loadedModelPath`フィールドへの書き込みは引き続き`engineLifecycleMutex`配下（`obtainEngine`／`closeEngineAndClearLocked`）に限定するが、新設の`loadedModelPath()`（`EngineLoadStateSource`実装）は`LocalAiGateway`／`ModelSelectorImpl`という別のコルーチン・別のMutex（`inferenceMutex`）から`engineLifecycleMutex`を取得せずに読まれる。Kotlin/JVMの`Mutex`はスレッド非依存でコルーチンを跨ぐため、フィールドを素の`var`のままにすると書き込みが他スレッドから可視とは限らない。同ファイル内で確立済みの`@Volatile private var lastMetrics`と同型のパターン（単一書き込み元をMutexで直列化したまま、フィールドを`@Volatile`化して読み取り側にロック取得を要求せず可視性のみ保証する）を踏襲した。
 
 ---
 
@@ -282,6 +304,8 @@ LiteRT-LMのリリースノートを定点観測し、対応APIが追加され�
 |---|---|---|---|
 | R-1 | Gemini | T-P95-10（現T-P95-11〜17相当）はJVMで実行不能ではないか | `DeviceCapability`は`interface`であり、`AiGatewayTestFixtures`等が確立済みのfake注入パターン（JVM単体テストで`hasAvailableMemory`等を差し替え可能）がそのまま使える。前提誤り。既存`LocalAiGatewayTest`が同型の判定をJVMで既に検証している実績とも整合しない指摘だったため不採用 |
 | R-2 | Gemini | Engineウォームアップと`engineLifecycleMutex`が奪い合いになり、ウォームアップがかえって本推論を遅延させ本末転倒になるのではないか | `engineLifecycleMutex`は「片方がロード中はもう片方が待つ」構造であり、ウォームアップが先に完了していれば本推論はEngine再利用（ロード待ちなし）で純粋に得をする。ロード完了前に本推論が割り込んだ場合も、待ち時間はウォームアップなしでの自前ロード時間と同程度でしかなく正味の損失はない。ただし「無意味なタイミングでの発火」自体への懸念はトリガー画面の見直し（A-7）で別途対応済みのため、Mutex奪い合いそのものを理由とした追加対策は不要と判断し不採用 |
+
+**Red検収時点の追加訂正（2026-08-12、初稿レビュー後）**: F-4/F-5のRed実装完了後の検収で、F-5が当初`LocalAiGateway`のpost-selectionガードのみを対象としており、実測ログの`detail`文字列から特定される実際の欠陥（`ModelSelectorImpl.select()`自身のavailMemフィルタがロード済み候補を除外する、`unresolvedEntryFallback()`経由）を修正できていないことが判明し、二層構成（`ModelSelector`層＋`LocalAiGateway`層、§3.10）へ差し戻し訂正した。
 
 ---
 

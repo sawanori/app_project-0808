@@ -204,7 +204,7 @@ class LocalAiGateway(
             // Phase 8.5: マージン定数はDeviceCapability.MEMORY_SAFETY_MARGIN_BYTESへ昇格した
             // （ModelSelectorImplと単一情報源を共有するため、計画書§3設計2）。
             val requiredPeakMemoryBytes = installedEntry.defaultProfilePeakRamBytes + DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES
-            if (!deviceCapability.hasAvailableMemory(requiredPeakMemoryBytes)) {
+            if (!isEntryAlreadyLoaded(installedEntry) && !deviceCapability.hasAvailableMemory(requiredPeakMemoryBytes)) {
                 return@withLock AiResult.Fallback(
                     AiFallbackReason.OUT_OF_MEMORY_PREVENTED,
                     "availMem is below required peak RAM ($requiredPeakMemoryBytes bytes incl. safety margin, §8.6 #7)"
@@ -265,6 +265,26 @@ class LocalAiGateway(
         }
 
         return InstalledModelCheck.Ready(entry)
+    }
+
+    /**
+     * Phase 9.5新設（計画書`docs/plans/phase9.5-performance-quality.md`§3.10 F-5、§14発見②、
+     * Red検収での差し戻し訂正）。[generatePlan]／[generateRecovery]の post-selection OOMガードが
+     * [entry]をスキップ対象にできるかどうかを判定する共有ヘルパー。[model]が任意interface
+     * [EngineLoadStateSource]を実装している場合のみ`(model as? EngineLoadStateSource)?.
+     * loadedModelPath()`を読み、[modelStorage.finalFile]で解決した[entry]の絶対パスと一致すれば
+     * `true`（[BenchmarkMetricsSource]の`as?`パターンと同型、[model]が実装しない場合は
+     * 常に`false`＝ガードは無変更で従来どおり動く、後方互換）。
+     *
+     * **[ModelSelectorImpl]側の同種ガード（選定時点、計画書§3.10）とは独立した層**: auto選択時は
+     * [modelSelector]自身が既にロード済み候補をavailMemガードから除外している可能性があるが、
+     * 明示選択（[AiPreferences.selectedModelId]が具体的なモデルIDの場合、[ModelSelector]を
+     * 一切経由しない）ではこのGateway側ガードのみが唯一の防御となるため、二層とも必要
+     * （T-P95-42〜45が明示選択経路、T-P95-48がauto経路を回帰ロックする）。
+     */
+    private fun isEntryAlreadyLoaded(entry: ModelCatalogEntry): Boolean {
+        val loadedPath = (model as? EngineLoadStateSource)?.loadedModelPath() ?: return false
+        return loadedPath == modelStorage.finalFile(entry).absolutePath
     }
 
     /**
@@ -599,7 +619,7 @@ class LocalAiGateway(
             val installedEntry = (modelCheck as InstalledModelCheck.Ready).entry
 
             val requiredPeakMemoryBytes = installedEntry.defaultProfilePeakRamBytes + DeviceCapability.MEMORY_SAFETY_MARGIN_BYTES
-            if (!deviceCapability.hasAvailableMemory(requiredPeakMemoryBytes)) {
+            if (!isEntryAlreadyLoaded(installedEntry) && !deviceCapability.hasAvailableMemory(requiredPeakMemoryBytes)) {
                 return@withLock AiResult.Fallback(
                     AiFallbackReason.OUT_OF_MEMORY_PREVENTED,
                     "availMem is below required peak RAM ($requiredPeakMemoryBytes bytes incl. safety margin, §8.6 #7)"

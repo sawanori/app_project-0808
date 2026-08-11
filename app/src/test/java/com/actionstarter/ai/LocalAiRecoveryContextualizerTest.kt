@@ -87,22 +87,27 @@ class LocalAiRecoveryContextualizerTest {
         assertTrue(applied.plan.options.all { it.explanation.isNotEmpty() })
     }
 
-    // T-P9-2: エッジ - AI側semanticActionが一部欠落→pairing不一致でRecoverySchemaValidatorが
-    // Invalid→Retry→なお不一致→Unchanged(無加工Basic)
+    // T-P9-2（F-4交差一致緩和により意味変更、計画書§3.9・§14発見①、Phase 9.5コミットF-4）:
+    // エッジ→正常 - AI側semanticActionが一部欠落（2件中1件のみ返却）でも、交差{keep_all_steps}が
+    // 非空のためRecoverySchemaValidatorはPrimaryの時点でValid（Retry不要）。overlayは交差に
+    // 含まれないchange_transport_modeをper-option縮退（explanation=""のまま）で扱う
+    // （overlayのKDoc「マッチ不能（未知semanticAction／supply不足）の候補」参照）。
+    // 旧テスト名`bothAttemptsInvalid_returnsUnchanged`は完全一致必須だった旧契約（Phase 9）の
+    // 検証であり、F-4がこのケースをUnchangedからApplied（部分適用）へ意図的に変更したため、
+    // 期待値ごと更新した（RecoverySchemaValidatorTestの同型更新と対の変更）。
     @Test
-    fun contextualize_missingOneSemanticActionInResponse_bothAttemptsInvalid_returnsUnchanged() = runTest {
+    fun contextualize_missingOneSemanticActionInResponse_intersectionNonEmpty_appliedWithPartialCoverage() = runTest {
         val basePlan = RecoveryPlan(
             options = listOf(option("keep_all_steps"), option("change_transport_mode"))
         )
-        // 両attemptとも1件しか返さない(pairing不一致を再現する固定応答)。
-        val incompleteResponse = AiGatewayTestFixtures.recoveryOptionsJson(
+        // Primaryが1件のみ返す(2件中1件の部分カバレッジ。F-4により交差非空でValidになる)。
+        val partialResponse = AiGatewayTestFixtures.recoveryOptionsJson(
             "keep_all_steps" to "Finish getting ready and leave when done."
         )
         val model = AiGatewayTestFixtures.FakeLocalLanguageModel(
             outcomes = emptyList(),
             recoveryOutcomes = listOf(
-                AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(incompleteResponse),
-                AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(incompleteResponse)
+                AiGatewayTestFixtures.FakeLocalLanguageModel.Outcome.Respond(partialResponse)
             )
         )
         val gateway = AiGatewayTestFixtures.readyGateway(model, prefsFileName = "p9_2")
@@ -111,14 +116,26 @@ class LocalAiRecoveryContextualizerTest {
         val result = contextualizer.contextualize(basePlan, sampleContext())
 
         assertTrue(
-            "pairing不一致がPrimary/Retryとも解消しない場合はUnchangedであるべきです(T-P9-2)",
-            result is RecoveryContextualizationResult.Unchanged
+            "F-4の交差一致緩和によりPrimaryが1/2件のみでもValid→Appliedへ至るべきです" +
+                "(T-P9-2、計画書§3.9): $result",
+            result is RecoveryContextualizationResult.Applied
         )
-        val unchanged = result as RecoveryContextualizationResult.Unchanged
+        val applied = result as RecoveryContextualizationResult.Applied
         assertEquals(
-            "Unchangedのplanは無加工のbasePlanと一致するべきです",
-            basePlan,
-            unchanged.plan
+            "件数・順序は§13不変のままbasePlanの2件を維持するべきです",
+            2,
+            applied.plan.options.size
+        )
+        assertEquals(
+            "交差に含まれるkeep_all_stepsはAI応答のexplanationへ差し替わるべきです",
+            "Finish getting ready and leave when done.",
+            applied.plan.options.first { it.semanticAction == "keep_all_steps" }.explanation
+        )
+        assertEquals(
+            "交差に含まれないchange_transport_modeはper-option縮退でexplanationが空文字のまま" +
+                "残るべきです(overlayのKDoc「マッチ不能の候補」)",
+            "",
+            applied.plan.options.first { it.semanticAction == "change_transport_mode" }.explanation
         )
     }
 
