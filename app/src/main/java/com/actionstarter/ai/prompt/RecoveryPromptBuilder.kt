@@ -110,6 +110,78 @@ class RecoveryPromptBuilder {
         }
     }
 
+    /**
+     * Phase 9.5新設（計画書§3.4 F-3）。[PlanPromptBuilder.estimateMaxNumTokens]のRecovery版。
+     * `maxNumTokens`（LiteRT-LM `EngineConfig`のコンテキスト長）の推奨値を、実際に組み立てる
+     * preface（[buildSystemInstruction]＋[buildFewShot]）の文字数と[maxOutputToken]（呼び出し側の
+     * 出力上限）から算出する。
+     *
+     * **本メソッドは構造分析により本番配線を縮退（descope）したドーマント設計文書として
+     * Green化した（計画書§3.4「F-3裁定」、2026-08-12）**: 実装そのものは正しく完結しており
+     * （計算ロジックはT-P95-58〜62で検証済み）、Recoveryのトークン予算分析を実行可能な形で
+     * 記録する目的で残している——だが[generateRecovery]の実際のEngine構築へは**意図的に
+     * 配線しない**。理由は以下の構造的制約による（実測を要さず設計自体が結論を出したケース）:
+     * [com.actionstarter.ai.adapter.LiteRtLmLocalLanguageModel]のEngineはプロセス内で1個の
+     * シングルトン（R-7）であり、`maxNumTokens`は`EngineConfig`構築時に一度だけ決まる値として
+     * `generatePlan`・`generateRecovery`の両方に共有される。本メソッドが返すRecovery専用の
+     * より小さい値を実際に適用しようとすると、2つの選択肢しかなく、どちらも採用に値しない:
+     * (a) **Engine全体でPlan/Recoveryの必要量の大きい方を採用する**——実質的に現状（Plan基準の
+     * `maxNumTokens`をそのまま使う）と同じであり、本メソッドを新設する意義がない。
+     * (b) **要求元（Plan/Recovery）に応じてプロファイルが変わるたびにEngineを再ロードする**——
+     * Plan⇄Recovery間を行き来するたびにEngine再生成（実機実測で確認済みのロード時間
+     * 約1.4秒）が挟まる。しかもRecoveryは「予定に遅れそうなときに助言する」という**時間
+     * クリティカルな**機能であり、まさにその瞬間に1.4秒のロード遅延を追加することは
+     * 最悪のUXになる。
+     * プロファイル分離という発想自体は、Engineが複数プロファイルを同時に持てる、または
+     * KVキャッシュ機構により再ロードなしでコンテキスト長を切り替えられる将来のランタイムでのみ
+     * 意味を持つ（計画書§9再検討トリガー・§3.8「記録のみ」のP4 KV／プレフィックスキャッシュ
+     * API定点観測と対になる将来課題として申し送る）。
+     *
+     * **Recoveryの出力上限は3件×explanation60字とPlanより小さい（計画書§3.4「Recoveryの出力上限
+     * （最大3件×explanation60字）はPlanのsteps出力より小さいため、より小さいmaxNumTokensで足りる
+     * 可能性がある」）**: `RecoveryJsonSchema`のmaxItems=3・explanation最大60字という確定契約
+     * （ADR-0063想定）に基づく。この分析結果自体（Recoveryは構造的により小さいコンテキスト
+     * 予算で足りる）は正しく、本メソッドが実行可能な形でそれを記録する。
+     *
+     * **[PlanPromptBuilder.estimateMaxNumTokens]の「baseline-delta方式」を踏襲しない理由**:
+     * Plan版は`BASELINE_PREFACE_CHARS_P7C5`（P7-C5実機実測で1024トークンが成功したときのpreface
+     * 文字数スナップショット）からの増分を算出する設計だが、Recoveryにはこれに相当する実機検証済み
+     * baselineが存在しない（P7-C5はPlanのみを対象とした実測）。存在しないbaselineを恣意的に
+     * 仮定すると誤った安全性の印象を与えるため、Recovery版は実際のpreface文字数と
+     * [maxOutputToken]から**直接**トークン数を見積もる（ja/enの最悪ケース採用は
+     * [PlanPromptBuilder.estimateMaxNumTokens]と同じ設計思想を踏襲する）。
+     *
+     * **`VERIFIED_WORKING_MAX_NUM_TOKENS`・`CONTEXT_LENGTH_CEILING`は[PlanPromptBuilder]のものを
+     * そのまま再利用（ADR-0057教訓の踏襲、計画書§3.4「既存VERIFIED_WORKING_MAX_NUM_TOKENS下限の
+     * clampはそのまま維持し、実機成功確認済みの値を下回らせない」）**: この下限はP7-C5実機実測が
+     * 確認した「このモデル・ランタイムが確実に動作するmaxNumTokensの最小値」であり、Plan固有の
+     * 値ではなくモデル・ランタイム自体の制約である。Recovery側で独自に再定義せず
+     * [PlanPromptBuilder.VERIFIED_WORKING_MAX_NUM_TOKENS]・[PlanPromptBuilder.
+     * CONTEXT_LENGTH_CEILING]を単一情報源として共有する。
+     *
+     * Step 4（Green）で実装済み。
+     *
+     * @param shotCount 見積りに使うfew-shot件数（既定[DEFAULT_SHOT_COUNT]）。
+     * @param maxOutputToken 呼び出し側が`sendMessage(maxOutputToken=)`へ渡す出力上限。
+     * @return [PlanPromptBuilder.VERIFIED_WORKING_MAX_NUM_TOKENS]以上・[PlanPromptBuilder.
+     *   CONTEXT_LENGTH_CEILING]以下にclampした推奨`maxNumTokens`値。
+     */
+    fun estimateMaxNumTokens(shotCount: Int = DEFAULT_SHOT_COUNT, maxOutputToken: Int): Int {
+        val localeRatios = listOf(
+            Locale.JAPAN to (JAPANESE_CHARS_PER_TOKEN_NUMERATOR to JAPANESE_CHARS_PER_TOKEN_DENOMINATOR),
+            Locale.US to (LATIN_CHARS_PER_TOKEN_NUMERATOR to LATIN_CHARS_PER_TOKEN_DENOMINATOR)
+        )
+        val prefaceTokens = localeRatios.maxOf { (locale, ratio) ->
+            val prefaceChars = buildSystemInstruction(locale).length +
+                buildFewShot(locale, shotCount).sumOf { it.userTurn.length + it.modelTurn.length }
+            val (numerator, denominator) = ratio
+            ceilDiv(prefaceChars * numerator, denominator)
+        }
+        val estimated = prefaceTokens + maxOutputToken
+        val blockAligned = ceilDiv(estimated, CONTEXT_BUDGET_BLOCK_SIZE) * CONTEXT_BUDGET_BLOCK_SIZE
+        return blockAligned.coerceIn(PlanPromptBuilder.VERIFIED_WORKING_MAX_NUM_TOKENS, PlanPromptBuilder.CONTEXT_LENGTH_CEILING)
+    }
+
     private fun displayTextLanguageName(locale: Locale): String =
         if (locale.language == Locale.JAPANESE.language) "Japanese" else "English"
 
@@ -148,6 +220,39 @@ class RecoveryPromptBuilder {
 
         private const val MIN_SHOT_COUNT: Int = 0
         private const val MAX_EMBEDDED_FIELD_LENGTH: Int = 200
+
+        // ------------------------------------------------------------------
+        // F-3（計画書§3.4）: estimateMaxNumTokens関連定数。
+        //
+        // **換算比率は[PlanPromptBuilder]の値を再利用しない（実装時の実測発見）**: 当初は
+        // [PlanPromptBuilder]の`JAPANESE_GROWTH_CHARS_PER_TOKEN_NUMERATOR`等（1.5トークン/文字・
+        // 0.5トークン/文字）をそのまま複製していたが、これらはPlan版の「baseline-delta方式」——
+        // 実機検証済みbaseline（1206文字・200トークン）からの**わずかな増分**にのみ適用される
+        // 前提で意図的に過大な安全係数を持つ——であり、Recovery版のように**preface全体**へ
+        // 直接適用すると（増分ではなく全体量に過大な安全係数が掛かるため）不合理に大きい見積り
+        // （実測: shotCount=2・maxOutputToken=200でRecovery=2304 > Plan=1280、期待は逆）に
+        // なることが実装時のテスト実行で判明した。Recovery版は「preface全体からの直接算出」
+        // という異なる計算モデルのため、より穏当な直接換算比率（下記）を独自に採用する。
+        // ------------------------------------------------------------------
+
+        /** 日本語の直接換算比率（1トークン/文字＝分子1・分母1）。[PlanPromptBuilder]の
+         * delta方式向け比率（1.5トークン/文字）とは異なる値を意図的に採用する（上記コメント
+         * 参照）。全角文字中心のCJKに対する保守的（安全側）な概算。 */
+        private const val JAPANESE_CHARS_PER_TOKEN_NUMERATOR: Int = 1
+        private const val JAPANESE_CHARS_PER_TOKEN_DENOMINATOR: Int = 1
+
+        /** 英語の直接換算比率（1トークン/3文字＝分子1・分母3）。[PlanPromptBuilder]のdelta方式
+         * 向け比率（0.5トークン/文字）とは異なる値を意図的に採用する（上記コメント参照）。 */
+        private const val LATIN_CHARS_PER_TOKEN_NUMERATOR: Int = 1
+        private const val LATIN_CHARS_PER_TOKEN_DENOMINATOR: Int = 3
+
+        /** [PlanPromptBuilder]の`CONTEXT_BUDGET_BLOCK_SIZE`と同値。 */
+        private const val CONTEXT_BUDGET_BLOCK_SIZE: Int = 128
+
+        /** 切り上げ除算（[PlanPromptBuilder]の同名関数と同型。`numerator`・`denominator`とも
+         * 正値であることを呼び出し側が保証する）。 */
+        private fun ceilDiv(numerator: Int, denominator: Int): Int =
+            (numerator + denominator - 1) / denominator
 
         /**
          * Phase 9新設（計画書§4.2 L2 R1aが参照する模範例集合、コミット2で実装）。[locale]の

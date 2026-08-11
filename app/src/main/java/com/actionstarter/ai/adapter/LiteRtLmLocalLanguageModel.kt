@@ -539,6 +539,15 @@ class LiteRtLmLocalLanguageModel(
         private fun defaultMaxNumTokensFor(shotCount: Int): Int =
             PlanPromptBuilder().estimateMaxNumTokens(shotCount = shotCount, maxOutputToken = MAX_OUTPUT_TOKEN)
 
+        // Phase 9.5 F-3（計画書§3.4「F-3裁定」、2026-08-12）: Recovery専用maxNumTokensプロファイルの
+        // Engineへの適用は構造分析により縮退（descope）確定——共有シングルトンEngine＋単一
+        // プロファイル構造では、(a)Plan/Recoveryの大きい方をEngine全体で採用=現状維持で無益、
+        // (b)プロファイル不一致のたびに再ロード=Plan⇄Recovery往復でスラッシング・時間クリティカルな
+        // Recovery応答に約1.4秒のロード遅延を差し込む最悪UX、のいずれも採用に値しないと判断した。
+        // 本ファイルへの配線用スタブ（旧`defaultRecoveryMaxNumTokensFor`、呼び出し元なし）は
+        // 将来配線の予定がないため削除した。分析自体は`RecoveryPromptBuilder.estimateMaxNumTokens`
+        // （ドーマント設計文書として実装・テスト済み、同KDoc参照）にそのまま残る。
+
         /**
          * §11.2コンテキスト長プロファイルの既定値（[PlanPromptBuilder.DEFAULT_SHOT_COUNT]向け、
          * ADR-0057）。**P7-C1が定めた固定256からP7-C5b（本ADR）で変更した**。`const val`に

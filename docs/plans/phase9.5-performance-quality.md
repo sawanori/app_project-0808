@@ -6,7 +6,9 @@
 > 承認状態: **敵対的レビュー反映済み（§13）。以下、完了項目は要約のみ（詳細はコミットログ・各節参照）**:
 > - **M**（ベースライン計測、コミット9606135）・**F-4/F-5**（Recovery pairing交差一致緩和・warmゲート2層修正、288e9b9）・**F-5b**（既定値配線ギャップ修正、2acd2f2）・**A/B（F-4/F-5/F-5b）**（Recovery完全蘇生3/3確認、08de59a）は完了・コミット済み。
 > - **F-1／F-1b／F-1c**（few-shotカテゴリ条件選択、Plan限定）は実装→A/B実測2回（`TITLE_COPY`→`MIN_QUALITY`）→撤退基準発動→**不採用・ロールバック確定**（09f4d99→12a14d6→608a478）。`EventCategoryClassifier`等はドーマント基盤（Phase 12実験材料）として残置。詳細は§14「A/B再実測（F-1）」「A/B判定（F-1b）」、結論は§3.2「F-1c」参照。
-> - **F-2（Engineウォームアップ）はStep 3（Red）・Step 4（Green）とも実装済み**——`LocalAiGateway.warmUp()`（aiEnabled→Tier→ABI→`resolveInstalledEntry`→強化availMemガード→`inferenceMutex.tryLock()`によるin-flightスキップ→`(model as? EngineWarmable)?.warmUpEngine`、例外は`warmUpEngine`呼び出しのみ捕捉しno-op化）・新設任意interface`EngineWarmable`を`LiteRtLmLocalLanguageModel`が実装（`obtainEngine`へ委譲）・`EventSelectionViewModel.init`から`warmUpAiIfPossible()`を1回実配線・`AppContainer`配線（実装時に`LinkageError`回帰〔ナビゲーションフロー起点での`localAiGateway`未捕捉伝播、13件失敗〕を発見し`eventSelectionLocalAiGateway`ガードで解消、§3.3参照）。T-P95-50〜57は全件Green（:app:testDebugUnitTest tests=751/skipped=1/failures=0/errors=0・:app:lintDebug error=0/warning=23、JUnit XML集計で確認済み）。**未コミット、報告・検収待ち**
+> - **F-2（Engineウォームアップ）はStep 3（Red）・Step 4（Green）とも実装済み・コミット済み（3dcb207）**——`LocalAiGateway.warmUp()`（aiEnabled→Tier→ABI→`resolveInstalledEntry`→強化availMemガード→`inferenceMutex.tryLock()`によるin-flightスキップ→`(model as? EngineWarmable)?.warmUpEngine`、例外は`warmUpEngine`呼び出しのみ捕捉しno-op化）・新設任意interface`EngineWarmable`を`LiteRtLmLocalLanguageModel`が実装（`obtainEngine`へ委譲）・`EventSelectionViewModel.init`から`warmUpAiIfPossible()`を1回実配線・`AppContainer`配線（実装時に`LinkageError`回帰〔ナビゲーションフロー起点での`localAiGateway`未捕捉伝播、13件失敗〕を発見し`eventSelectionLocalAiGateway`ガードで解消、§3.3参照）。T-P95-50〜57は全件Green。
+> - **F-3（Recovery用maxNumTokensプロファイル縮小）は結論確定・クローズ**——Step 3（Red）でアーキテクチャ論点（`LiteRtLmLocalLanguageModel`のEngineは1個・`maxNumTokens`は`generatePlan`／`generateRecovery`共有）を発見し、**F-3裁定（2026-08-12）: 本番配線は不成立として縮退（descope）**——Plan/Recoveryの大きい方を採用=無益、プロファイル不一致リロード=Recovery（時間クリティカル）に1.4秒ロードを差し込む最悪UXのいずれも不採用。計測を1回も実施せず構造分析だけで結論に到達した（§14「F-3裁定」参照）。`RecoveryPromptBuilder.estimateMaxNumTokens`はGreen実装済み（T-P95-58〜62、preface文字数からの直接算出方式・下限上限は`PlanPromptBuilder`と共有）だが「Recoveryトークン予算分析を記録するドーマント設計文書」として`generateRecovery`へは配線しない（`EventCategoryClassifier`と同方針、KDocに裁定を明記）。`LiteRtLmLocalLanguageModel`側の宣言のみスタブは将来性なしのため削除。**実装時の追加発見**: 当初のT-P95-59（「同一shotCount・maxOutputTokenでRecovery≤Plan」）はDEFAULT_SHOT_COUNT=2で実測すると成立しない（Recovery=1664>Plan=1280）ことが判明——原因はPlan版の「baseline-delta方式」が1206文字までのpreface内容を実質無料で1024トークン枠に含める一方、Recovery版の「直接算出方式」は同じ無料枠の恩恵を受けないという計算モデルの違いであり、Recoveryの実内容が大きいことを意味しない。system instructionのみ（shotCount=0）で比較する形にテストのスコープを訂正した（詳細は`RecoveryPromptBuilderTest.kt`のT-P95-59コメント参照）。
+> 全756件Green（skip1）・lint error0（:app:testDebugUnitTest tests=756/skipped=1/failures=0/errors=0・JUnit XML集計で確認済み）。**F-3は未コミット、報告・検収待ち**
 
 続けてF-2（Engineウォームアップ、§3.3）のStep 3（Red）を実施——`LocalAiGateway.warmUp()`宣言（本体`TODO()`）・新設任意interface`EngineWarmable`（`BenchmarkMetricsSource`／`EngineLoadStateSource`と同型）を`LiteRtLmLocalLanguageModel`が実装（本体`TODO()`）・`EventSelectionViewModel`へ`localAiGateway`引数と`warmUpAiIfPossible()`フックを宣言（**Step 4まで`init`から呼ばない**——`warmUp()`が`TODO()`のため、呼ぶと本ViewModelを構築する既存テストが軒並み`NotImplementedError`で壊れるため意図的に未配線）・T-P95-50〜57（当初案T-P95-11〜17はF-1/F-1bが1〜12を消費したため衝突、実装時に50〜57へ採番し直し、§7に改訂記録済み）。全8件`NotImplementedError`でRed（`warmUp()`のTODO由来、EventCategoryClassifier.classifyと同型のscaffold）。全ファイルは**未コミット**の変更（:app:testDebugUnitTest tests=751/skipped=1/failures=8/errors=0〔F-2新規8件のみRed、既存743件は無傷〕・:app:lintDebug error=0/warning=23、JUnit XML集計で確認済み）。**Greenには未着手、報告・検収待ち**
 
@@ -93,6 +95,12 @@ Phase 9はA54実機受け入れに合格したが（`docs/plans/phase9-recovery-
 ### 3.4 F-3: Recovery用maxNumTokensプロファイル縮小（P5）
 
 `PlanPromptBuilder.estimateMaxNumTokens`と同型のRecovery版を新設する。Recoveryの出力上限（最大3件×explanation60字）はPlanのsteps出力より小さいため、より小さい`maxNumTokens`で足りる可能性がある。既存`VERIFIED_WORKING_MAX_NUM_TOKENS`下限のclampはそのまま維持し、実機成功確認済みの値を下回らせない（ADR-0057の教訓の踏襲）。JVMテスト可能（`estimateMaxNumTokens`と同じ純粋計算）。効果測定はRecovery生成のTTFT・メモリをF-1適用後の値と比較する。
+
+**実装時の設計判断（Step 3 Red、`RecoveryPromptBuilder.estimateMaxNumTokens`）**: Plan版が採用する「baseline-delta方式」（`BASELINE_PREFACE_CHARS_P7C5`＝P7-C5実機実測で1024トークンが成功したときのpreface文字数スナップショットからの増分を算出）は、Recoveryには相当する実機検証済みbaselineが存在しない（P7-C5実測はPlanのみ対象）ため踏襲しない。存在しないbaselineを恣意的に仮定すると誤った安全性の印象を与えるため、Recovery版は実際のpreface文字数から**直接**トークン数を見積もる方式とする。下限・上限は`PlanPromptBuilder.VERIFIED_WORKING_MAX_NUM_TOKENS`・`PlanPromptBuilder.CONTEXT_LENGTH_CEILING`をそのまま参照する（Recovery側で再定義しない——この下限はP7-C5実機実測が確認した「モデル・ランタイム自体が確実に動作する最小値」であり、Plan固有の値ではないため単一情報源として共有する）。
+
+**F-3裁定（アーキテクチャ論点の決着、2026-08-12）**: `LiteRtLmLocalLanguageModel`のEngineはインスタンス全体で1個（R-7）であり、`maxNumTokens`は現状コンストラクタレベルの単一値として`generatePlan`・`generateRecovery`の両方に共有されている（`EngineLoadPolicy.requiresEngineReload`はモデルパスの変化のみで再ロードを判定し、`maxNumTokens`の違いでは再ロードしない）。この構造分析の結果、Recovery専用プロファイルのEngineへの実配線は**不成立として縮退（descope）と裁定した**——理由は2点: (a) Plan/Recovery両方の必要量の大きい方をEngine全体で採用する統合は、実質的に現状（Plan基準の`maxNumTokens`をそのまま使う）と同じであり新設する意義がない。(b) 要求元に応じてプロファイルが変わるたびにEngineを再ロードする統合は、Plan⇄Recovery間を行き来するたびに実機実測で確認済みのロード時間（約1.4秒）を挟む。しかもRecoveryは「予定に遅れそうなときに助言する」という**時間クリティカル**な機能であり、まさにその瞬間に1.4秒のロード遅延を追加することは最悪のUXになる。**計測を実施する以前に、構造分析だけでこの結論に到達したケース**として記録する（§14参照）。プロファイル分離という発想自体は、Engineが複数プロファイルを同時に持てる、またはKVキャッシュ機構により再ロードなしでコンテキスト長を切り替えられる将来のランタイムでのみ意味を持つ（§3.8「記録のみ」のP4 KV／プレフィックスキャッシュAPI定点観測と対になる将来課題として申し送る）。
+
+`RecoveryPromptBuilder.estimateMaxNumTokens`自体はGreen実装済み（T-P95-58〜62で検証済み）だが、**「Recoveryトークン予算の分析を実行可能な形で記録する設計文書」としてドーマント残置する**（`EventCategoryClassifier`と同じ方針）——`generateRecovery`へは配線しない。上記の理由と本裁定を関数自身のKDocに明記した。`LiteRtLmLocalLanguageModel`側の宣言のみスタブ（`defaultRecoveryMaxNumTokensFor`）は将来配線の予定がないため削除した（`EventCategoryClassifier`とは異なり、こちらは「将来モデルが変われば有望」という余地がなく、構造的制約〔シングルトンEngine〕そのものが変わらない限り無意味なため）。
 
 ### 3.5 PR-1: GPUバックエンド可否プローブ（P3）
 
@@ -212,9 +220,15 @@ LiteRT-LMのリリースノートを定点観測し、対応APIが追加され�
 | T-P95-9 | 正常・回帰 | 既存`PlanPromptBuilderTest`の非カテゴリ依存箇所が無傷 |
 
 ### Recovery用maxNumTokensプロファイル（F-3、JVM）
+**採番改訂（実装時）**: 当初案のT-P95-10はF-1bが実際にT-P95-1〜12を消費したため衝突する（F-2のT-P95-11〜17と同じ経緯、§3.3該当節参照）。実装時にT-P95-58〜62へ採番し直した。
+
 | ID | 分類 | 内容 |
 |---|---|---|
-| T-P95-10 | 正常 | Recovery版`estimateMaxNumTokens`相当が`VERIFIED_WORKING_MAX_NUM_TOKENS`相当の下限を下回らない |
+| T-P95-58 | 正常 | Recovery版`estimateMaxNumTokens`が`PlanPromptBuilder.VERIFIED_WORKING_MAX_NUM_TOKENS`下限を下回らない（最小入力） |
+| T-P95-59 | 正常 | 同一のshotCount・maxOutputTokenでは、Recovery版の見積りがPlan版を上回らない |
+| T-P95-60 | 正常 | maxOutputTokenが大きいほど見積りも大きい（境界、Plan版と同型） |
+| T-P95-61 | エッジ | 見積り結果は`PlanPromptBuilder.CONTEXT_LENGTH_CEILING`を超えない（境界、Plan版と同型） |
+| T-P95-62 | 正常 | 現実的な3件×60字の出力サイズを前提にした場合、見積りは下限を満たしつつCONTEXT_LENGTH_CEILINGの半分未満という妥当域に収まる |
 
 ### `LocalAiGateway.warmUp()`（F-2、JVM、Gateway層ゲーティング・敵対的レビューA-5/A-6/A-7）
 **採番改訂（実装時）**: 当初案のT-P95-11〜17はF-1／F-1bが実際にT-P95-1〜12を消費したため衝突する。実装時にT-P95-50〜57へ採番し直した（値・意味とも当初案から不変、in-flightスキップ〔T-P95-55〕を1件追加）。
@@ -426,5 +440,9 @@ A54実機（充電中・§4.3統制条件）で`PerformanceBaselineProbeTest`を
 **判定**: プール増強（1-shot→2-shot相当）は「イベントtitleの丸写し」というF-1の失敗パターンAを直接是正したが、Qwen3-0.6B（0.6B、現行プロンプト予算）はカテゴリ限定した2-shotのプロンプト構成では、失敗パターンAを避けた先で失敗パターンB（動詞相当表現を欠く低品質な出力）に陥った。2回連続で異なる理由による有意な品質退行を実測したことは、計測駆動フェーズが定めた撤退基準（§9・§0「A/B再実測で効果を数値確認する」の裏面——効果がない・悪化する場合は数値で判断し撤退する）を満たす。
 
 **結論（不採用・ロールバック、F-1c）**: F-1のカテゴリ条件選択（`eventTitle`実配線）を不採用としロールバックする。`EventCategoryClassifier`・`PlanPromptBuilder.buildFewShot`のカテゴリ絞り込みロジック・増強済みseedプール（各カテゴリ2件、計16 seed）・関連テスト（T-P95-1〜12）はコードから削除せず、ドーマント基盤（Phase 12実験材料）としてKDocに明記のうえ残置する（§3.2「結論」参照）。ロールバック後の全JVMテストGreen・lint 0を確認済み（下記コミットログ参照）。
+
+### F-3裁定（計測以前に構造が答えを出したケース）
+
+F-3（Recovery用maxNumTokensプロファイル縮小）は、実機A/B実測を実施する前に、`LiteRtLmLocalLanguageModel`のEngineがシングルトン（R-7）であるという構造分析だけで「本番配線は不成立」という結論に到達した——F-1／F-4／F-5のように実測して初めて欠陥が判明したケースとは対照的に、**計測サイクルを1回も回さずに構造そのものが答えを出した**（詳細は§3.4「F-3裁定」参照）。見積り関数自体はドーマント設計文書として残す。
 
 ---
