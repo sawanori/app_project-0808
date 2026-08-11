@@ -3,7 +3,7 @@
 > 対象仕様: §73「Phase 9・Local AI Recovery」の性能・品質フォローアップ、§57「性能指標」、§11.1〜§11.3実機実測系。直接の起点はPhase 9計画書§4.6「Phase 9.5候補（実機計測ループ要）」と、同計画書Step 4（コミット3 Green）報告が持ち越したリファクタ候補
 > 前提基盤: Phase 9（Local AI Recovery完了・A54実機受け入れ合格、ADR-0063）・Phase 8.5（`ModelSelector`自動選択・ADR-0062）・Phase 7（LiteRT-LM基盤・P7-C0/C5/C8実機実測、`LiteRtLmProbeTest`／`ModelComparisonProbeTest`のprobe規約確立）
 > 種別: 計測駆動フェーズ（コミット0・M実施済み。F-4/F-5はコード変更を伴う優先繰り上げ機能）
-> 承認状態: **敵対的レビュー反映済み（§13）。コミット0（androidTestコンパイル復旧）・Mベースライン計測（§14、30試行）実施済み。実測で発見した2件の設計欠陥（Recovery pairing全滅・Planウォームゲート自爆）を受け優先繰り上げしたF-4/F-5は、F-5当初Red実装がRed検収で修正層の誤同定により差し戻され（§13「Red検収時点の追加訂正」、§3.10）、二層構成（`ModelSelector`層＋`LocalAiGateway`層、単一`EngineLoadStateSource`共有）へ訂正しコミット済み（288e9b9）。**コミット後の実機A/B実測でF-4成立・F-5未発動（`LocalAiGateway`既定値`modelSelector`がengineLoadStateSource未配線という統合ギャップ）が判明し、F-5b（既定値へ自動配線）をGreen実装済み**（:app:testDebugUnitTest tests=731/skipped=1/failures=0/errors=0〔F-5b新規T-P95-49含む、既存全件無傷〕・:app:lintDebug error=0/warning=23、JUnit XML集計で確認済み）。F-5bのコミットメッセージは確定済み、コミット実行中**
+> 承認状態: **敵対的レビュー反映済み（§13）。コミット0（androidTestコンパイル復旧）・Mベースライン計測（§14、30試行）実施済み。実測で発見した2件の設計欠陥（Recovery pairing全滅・Planウォームゲート自爆）を受け優先繰り上げしたF-4/F-5は、F-5当初Red実装がRed検収で修正層の誤同定により差し戻され（§13「Red検収時点の追加訂正」、§3.10）、二層構成（`ModelSelector`層＋`LocalAiGateway`層、単一`EngineLoadStateSource`共有）へ訂正しコミット済み（288e9b9）。コミット後の実機A/B実測でF-4成立・F-5未発動（`LocalAiGateway`既定値`modelSelector`がengineLoadStateSource未配線という統合ギャップ）が判明し、F-5b（既定値へ自動配線）をGreen実装・コミット済み（2acd2f2）。**F-5bコミット後の実機A/B再測定でRecovery完全蘇生を確認済み**（§14「A/B再実測」、F-5b後3/3 Success、retried=false・sanity clean）
 
 ---
 
@@ -358,5 +358,31 @@ A54実機（充電中・§4.3統制条件）で`PerformanceBaselineProbeTest`を
 - 方式: 5プロセス×（コールド1＋ウォーム2）のペア計測をPlan・Recoveryそれぞれ独立に実施（§4.1）。
 - クールダウン: Plan最終バッチ終了後、Recovery第1バッチ開始前に180秒以上のクールダウンを実施（実測ログのタイムスタンプで確認）。
 - **軽度の熱ドリフト（オーケストレーター指摘を独自に再計算・裏付け）**: Recoveryの1バッチあたり平均wallMs（3試行平均）はバッチ1の約27.5秒からバッチ5の約29.7秒へ緩やかに増加した（約8%増）。オーケストレーターが報告した具体値「17.4→19.7秒」は本ログから同一の計算方法では再現できなかった（算出基準の相違の可能性があり、断定を避けるためここでは独自集計値のみを正式記録とする）。傾向自体（バッチが進むほど緩やかに遅くなる）は一致しており、§4.3のクールダウン統制が有効に機能していることの記録として残す。
+
+### A/B再実測（F-4/F-5/F-5b後、2026-08-12実施）
+
+コミット288e9b9（F-4/F-5）・2acd2f2（F-5b）のそれぞれ後にオーケストレーターが実機A/B再測定を実施し、`build/agent-logs/phase9.5-f45-ab-logcat.log`へ記録した。**Recovery完全蘇生を確認**——F-5b適用後バッチでは3/3試行が全てSuccessし、ベースライン（M、上記15/15全滅）から構造的に回復したことを実測で裏付けた。
+
+**推移表**:
+
+| 段階 | 対象コミット | 試行結果 | 備考 |
+|---|---|---|---|
+| ベースライン（M） | （Phase 9.5 M時点、修正前） | 0/15 Success | 上記「Recovery（15/15試行、全件Fallback）」節 |
+| F-4後 | 288e9b9（F-5は当時post-selectionガードのみ、既定値配線ギャップが未修正） | 1/3 Success | 06:24バッチ。cold=Success・warm×2=Fallback |
+| F-5b後 | 2acd2f2（既定値`modelSelector`へのengineLoadStateSource自動配線含む） | **3/3 Success** | 06:36バッチ。cold・warm×2すべてSuccess |
+
+**F-5b後バッチ（06:36）の実測値**:
+
+| 試行 | firstTokenMs（TTFT） | tokensPerSecond | wallMs | retried | sanity | selectedModelId |
+|---|---|---|---|---|---|---|
+| cold | 2407ms | 9.59 | 12185ms | false | clean | qwen |
+| warm1 | 2147ms | 10.70 | 9571ms | false | clean | qwen |
+| warm2 | 2164ms | 10.42 | 9985ms | false | clean | qwen |
+
+全3試行で`retried=false`（Primary単独でpairing・sanityとも通過、F-4の交差一致緩和がRetryを不要化したことの直接的な裏付け）・sanity clean（②内容sanityのreject 0件）・`selectedModelId=qwen`（auto選択がQwen3-0.6Bへ到達、F-5bの既定値配線が機能したことの裏付け）。
+
+**二重試行の無駄（26〜29s）解消・warm全体約10s**: M時点はPrimary・Retryの2回連続LLM呼び出しが常に発生しており（上記「軽度の熱ドリフト」節の1試行あたり平均wallMs実測27.5〜29.7秒はこの二重試行込みの値）、かつ全試行が最終的にFallbackしていた（無駄な二重試行）。F-5b後はPrimary単独（`retried=false`）で完結し、warm試行のwallMsは9571〜9985ms（約9.6〜10.0秒）——旧来の二重試行込みの27.5〜29.7秒から、単発成功の約10秒へ大幅に短縮された。
+
+**n=3である旨と根拠**: 本A/B再測定はF-5b後バッチ1回（cold1＋warm2＝3試行）のみであり、M（§4.1、5プロセス×3試行＝N=15のペア計測）と比べて意図的に小さいサンプルサイズである。理由は次の2点: (1)`SamplingPolicy.Primary`は`topK=1, temperature=0.0`（+アダプタ側で`topP=1.0, seed=0`固定）という完全決定的サンプリング設定であり（`SamplingPolicy.kt`のKDoc「品質ハーネス§4の表」参照）、同一モデル・同一入力・同一コードパスであれば出力は決定的に再現される。(2)本A/Bで検証している対象はモデル出力の品質・性能特性のばらつき（Mの目的、§4.1参照）ではなく、F-4（pairing検証ロジックの交差一致緩和）・F-5/F-5b（OOM事前ガードの構造的欠陥）という「構造的に常に発生するか、修正により構造的に発生しなくなるか」の二値的なロジック修正であるため、追加試行を重ねて確率的な変動を捉える限界価値は小さいと判断した。M自体のN=15設計は無効化していない（性能特性の分布計測という別目的にはNの大きいMの方法論が引き続き妥当）。
 
 ---
