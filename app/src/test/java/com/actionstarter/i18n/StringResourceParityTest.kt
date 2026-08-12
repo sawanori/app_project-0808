@@ -267,10 +267,12 @@ class StringResourceParityTest {
     // **Phase 10 C4追補（計画書§3.4「全削除導線」、T-P10-16/17/18）**: 130 + 10（「行動ログを
     // 削除」ボタン・確認ダイアログ・結果バナー用の新規10キー、
     // [tP10_settingsDeleteBehaviorLogKeys_existInBothLocales]の一覧と対応）= 140へ更新した。
+    // **出発画面欠陥修正追補（`docs/plans/departure-screen-fixes.md`欠陥③、T-DEPFIX-7/8）**:
+    // 140 + 1（戻るボタン用の新規1キー`departure_back_button_label`）= 141へ更新した。
     @Test
     fun tP11p1_keyCount_reflectsPhase11NetChange_andBothLocalesStayInSync() {
-        assertEquals("en key count after Phase 10 C4 (140 = 130 + 10 new Settings delete-flow keys)", 140, enStrings.size)
-        assertEquals("ja key count after Phase 10 C4 (140 = 130 + 10 new Settings delete-flow keys)", 140, jaStrings.size)
+        assertEquals("en key count after departure screen fix (141 = 140 + 1 new departure back button key)", 141, enStrings.size)
+        assertEquals("ja key count after departure screen fix (141 = 140 + 1 new departure back button key)", 141, jaStrings.size)
     }
 
     // T-SET-7（計画書§12.6、P7-C6・F97）: 正常系 - Settings画面の新規21キーがen/ja両方に存在する

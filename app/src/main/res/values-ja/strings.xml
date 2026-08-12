@@ -71,6 +71,8 @@
     <string name="accessibility_warning_announcement">警告: %1$s</string>
 
     <!-- Departure (Screen 4, 仕様§29/§35)。C3bでT-DEP-1..4向けに追加。 -->
+    <!-- 出発画面欠陥修正（docs/plans/departure-screen-fixes.md、欠陥③）: 戻り導線。settings_back_button_labelと同一文言。 -->
+    <string name="departure_back_button_label">戻る</string>
     <string name="departure_title">今すぐ出発</string>
     <string name="departure_estimated_arrival_label">到着予定時刻</string>
     <string name="departure_event_label">予定</string>

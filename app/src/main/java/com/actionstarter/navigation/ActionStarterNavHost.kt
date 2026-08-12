@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
@@ -384,7 +385,7 @@ fun ActionStarterNavHost(
             }
 
             composable(Destinations.Departure.route) {
-                DepartureRoute(vmFactory = vmFactory)
+                DepartureRoute(vmFactory = vmFactory, navController = navController)
             }
 
             composable(Destinations.Recovery.route) {
@@ -564,7 +565,7 @@ private fun EventSelectionRoute(
  * [DepartureViewModel]へそのまま委譲する（メソッド参照）。
  */
 @Composable
-private fun DepartureRoute(vmFactory: ViewModelProvider.Factory) {
+private fun DepartureRoute(vmFactory: ViewModelProvider.Factory, navController: NavHostController) {
     val context = LocalContext.current
     val viewModel: DepartureViewModel = viewModel(factory = vmFactory)
     val uiState by viewModel.uiState.collectAsState()
@@ -588,6 +589,19 @@ private fun DepartureRoute(vmFactory: ViewModelProvider.Factory) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // 出発画面欠陥修正（`docs/plans/departure-screen-fixes.md`§3.3、欠陥③、T-DEPFIX-8）:
+    // Departure routeへの遷移元はExecution完了（onNavigateToDeparture）の1経路のみで、
+    // popUpTo未指定のためExecutionはバックスタックに残存している。単純なpopBackStack()は
+    // 完了済み（アラーム・FGS停止済み）のExecution画面へ戻ってしまうため、
+    // ExecutionScreen.onNavigateToEventSelectionと同型の「EventSelectionまでバックスタックを
+    // 巻き戻す」遷移を戻るボタン・システムBack双方の唯一の経路とする（挙動の食い違いを避ける）。
+    val navigateBackToEventSelection: () -> Unit = {
+        navController.navigate(Destinations.EventSelection.route) {
+            popUpTo(Destinations.EventSelection.route) { inclusive = true }
+        }
+    }
+    BackHandler(enabled = true) { navigateBackToEventSelection() }
+
     DepartureScreen(
         uiState = uiState,
         onRequestLocationPermission = {
@@ -602,6 +616,7 @@ private fun DepartureRoute(vmFactory: ViewModelProvider.Factory) {
             context.startActivity(settingsIntent)
         },
         onManualTravelMinutesChange = viewModel::onManualTravelMinutesChanged,
-        onTransportModeSelected = viewModel::onTransportModeSelected
+        onTransportModeSelected = viewModel::onTransportModeSelected,
+        onNavigateBack = navigateBackToEventSelection
     )
 }

@@ -77,6 +77,8 @@
     <string name="accessibility_warning_announcement">Warning: %1$s</string>
 
     <!-- Departure (Screen 4, spec §29/§35). Added in C3b for T-DEP-1..4. -->
+    <!-- Departure screen defect fix (docs/plans/departure-screen-fixes.md, defect 3): back navigation, same style as settings_back_button_label. -->
+    <string name="departure_back_button_label">Back</string>
     <string name="departure_title">Leave now</string>
     <string name="departure_estimated_arrival_label">Estimated arrival</string>
     <string name="departure_event_label">Event</string>

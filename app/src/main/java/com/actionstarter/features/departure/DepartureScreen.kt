@@ -114,8 +114,13 @@ fun DepartureScreen(
     onRequestLocationPermission: () -> Unit = {},
     onOpenLocationSettings: () -> Unit = {},
     onManualTravelMinutesChange: (Int?) -> Unit = {},
-    onTransportModeSelected: (TransportMode) -> Unit = {}
+    onTransportModeSelected: (TransportMode) -> Unit = {},
+    onNavigateBack: () -> Unit = {}
 ) {
+    // 出発画面欠陥修正（`docs/plans/departure-screen-fixes.md`§3.3、T-DEPFIX-7/8、欠陥③）。
+    // 戻るボタンはSettingsScreenの"settings_back_button"と同型（TextButton、タイトル直上）。
+    // ActionStarterNavHostのDepartureRouteがonNavigateBackへEventSelection遷移
+    // （popUpTo inclusive）を実配線し、システムBack（BackHandler）も同一の遷移へ揃える。
     val locale = LocalConfiguration.current.locales[0]
     val timeFormatter = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale)
 
@@ -126,6 +131,12 @@ fun DepartureScreen(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 8.dp)
     ) {
+        TextButton(
+            onClick = onNavigateBack,
+            modifier = Modifier.testTag("departure_back_button")
+        ) {
+            Text(stringResource(R.string.departure_back_button_label))
+        }
         Text(
             text = stringResource(R.string.departure_title),
             style = MaterialTheme.typography.headlineMedium,
@@ -209,7 +220,11 @@ private fun DeparturePermissionAndRoutingSection(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        if (uiState.permissionState == LocationPermissionState.NOT_REQUESTED) {
+        // 出発画面欠陥修正（`docs/plans/departure-screen-fixes.md`§3.2、欠陥②、T-DEPFIX-6a/6b、
+        // アーキテクトレビューPass 1指摘反映）: 行き先未解決時は権限状態に関わらず権限カードを
+        // 一切出さない（位置権限の設定を開いても行き先未解決という真の問題は解決しないため、
+        // 的外れな誘導を避ける）。
+        if (uiState.permissionState == LocationPermissionState.NOT_REQUESTED && !uiState.isDestinationUnresolved) {
             LocationPermissionRationaleCard(onRequestLocationPermission = onRequestLocationPermission)
         }
 
@@ -257,7 +272,9 @@ private fun DeparturePermissionAndRoutingSection(
             }
         }
 
-        if (uiState.permissionState == LocationPermissionState.DENIED) {
+        // 出発画面欠陥修正（欠陥②、T-DEPFIX-6b、アーキテクトレビューPass 1指摘反映）: 上の
+        // Rationaleカードと同じ理由で`&& !uiState.isDestinationUnresolved`を追加した。
+        if (uiState.permissionState == LocationPermissionState.DENIED && !uiState.isDestinationUnresolved) {
             // P11-C6（F81取りこぼし是正、T-P11A-12e）: 計画書§6.1footprint表が元々要求していた
             // 設定導線ボタンへのcontentDescription付与。既存testTagと同一ノードへ追加するため
             // T-PERM3-3（可視テキストクエリ）への回帰影響はない。

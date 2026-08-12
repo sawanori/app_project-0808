@@ -14,6 +14,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.actionstarter.R
 import com.actionstarter.domain.model.ExecutionEvent
@@ -631,7 +632,11 @@ class AccessibilitySemanticsTest {
         )
 
         // 回帰保護（T-PERM3-3、変更禁止）: 可視テキストによるクエリも引き続き成立する。
+        // 出発画面欠陥修正（欠陥③）で戻るボタンが追加されDENIED状態の縦積みが既定ビューポートを
+        // 超えるため、performScrollTo()が必要になった（DepartureRoutingScreenTest.tPerm3_3と
+        // 同じ是正）。
         composeTestRule.onNodeWithText(context.getString(R.string.location_open_settings_button))
+            .performScrollTo()
             .assertIsDisplayed()
     }
 }

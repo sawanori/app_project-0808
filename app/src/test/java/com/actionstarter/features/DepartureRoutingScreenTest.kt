@@ -317,7 +317,12 @@ class DepartureRoutingScreenTest {
         val context = RuntimeEnvironment.getApplication()
 
         composeTestRule.onNodeWithText(context.getString(R.string.travel_time_manual_label)).assertIsDisplayed()
+        // 出発画面欠陥修正（欠陥③）で戻るボタンが画面最上部に追加され、DENIED状態の縦積みが
+        // Robolectric既定ビューポートを超えるようになったため、performScrollTo()が必要になった
+        // （DepartureScreen.ktのKDoc「レイアウト再チューニング（実測是正）」と同じ既知の制約、
+        // capacity表示テスト等の既存パターンを踏襲）。
         composeTestRule.onNodeWithText(context.getString(R.string.location_open_settings_button))
+            .performScrollTo()
             .assertIsDisplayed()
     }
 
@@ -460,6 +465,77 @@ class DepartureRoutingScreenTest {
      */
     private fun DepartureViewModel.onResumeForTest() {
         onResume()
+    }
+
+    // ------------------------------------------------------------------
+    // 出発画面欠陥修正（`docs/plans/departure-screen-fixes.md`§3.2・§3.3、T-DEPFIX-6a/6b/7、
+    // Step 3 Red）。アーキテクトレビューPass 1指摘（欠陥②の完全化）と欠陥③（戻れない）を対象とする。
+    // ------------------------------------------------------------------
+
+    // T-DEPFIX-6a: UI（アーキテクトレビューPass 1・確認/回帰ガード） - permissionState=GRANTEDかつ
+    // isDestinationUnresolved=trueのとき、権限カード（Rationale・設定を開く）がいずれも表示されず
+    // TravelTimeInputのみ表示される（計画書§3.2）。現行コードでも両カードの条件はGRANTEDでは
+    // 元々満たされないため、本ケースは確認用途（born-green）——Red対象は6bのみ。
+    @Test
+    fun tDepFix6a_grantedAndDestinationUnresolved_showsNoPermissionCards_onlyManualFallback() {
+        composeTestRule.setContent {
+            DepartureScreen(
+                uiState = DepartureUiState(
+                    permissionState = LocationPermissionState.GRANTED,
+                    isDestinationUnresolved = true
+                )
+            )
+        }
+        val context = RuntimeEnvironment.getApplication()
+
+        composeTestRule.onNodeWithText(context.getString(R.string.location_permission_rationale_title))
+            .assertDoesNotExist()
+        composeTestRule.onNodeWithText(context.getString(R.string.location_open_settings_button))
+            .assertDoesNotExist()
+        composeTestRule.onNodeWithTag(TRAVEL_TIME_INPUT_TEST_TAG).assertIsDisplayed()
+    }
+
+    // T-DEPFIX-6b: UI（アーキテクトレビューPass 1指摘・Red対象） - permissionState=DENIEDかつ
+    // isDestinationUnresolved=trueのとき、権限カード（Rationale・設定を開くの両方）が表示されず
+    // TravelTimeInputのみ表示される（的外れな設定導線の解消、計画書§3.2）。現行の設定を開く
+    // ボタンの表示条件は`permissionState == DENIED`のみのため、この組み合わせでは現在誤って
+    // 表示され本ケースは正しくRedになる。
+    @Test
+    fun tDepFix6b_deniedAndDestinationUnresolved_showsNoPermissionCards_onlyManualFallback() {
+        composeTestRule.setContent {
+            DepartureScreen(
+                uiState = DepartureUiState(
+                    permissionState = LocationPermissionState.DENIED,
+                    isDestinationUnresolved = true
+                )
+            )
+        }
+        val context = RuntimeEnvironment.getApplication()
+
+        composeTestRule.onNodeWithText(context.getString(R.string.location_permission_rationale_title))
+            .assertDoesNotExist()
+        composeTestRule.onNodeWithText(context.getString(R.string.location_open_settings_button))
+            .assertDoesNotExist()
+        composeTestRule.onNodeWithTag(TRAVEL_TIME_INPUT_TEST_TAG).assertIsDisplayed()
+    }
+
+    // T-DEPFIX-7: 正常 - DepartureScreenの戻るボタンタップでonNavigateBackが1回呼ばれる
+    // （計画書§3.3、欠陥③）。onNavigateBack引数はRed段階のスキャフォールドとしてDepartureScreenへ
+    // 追加済みだが戻るボタン自体のUIはまだ描画されない（Green段階で追加）ため、
+    // "departure_back_button"のノードが見つからずRedになるのが正しい。
+    @Test
+    fun tDepFix7_backButtonTap_invokesOnNavigateBack() {
+        var invoked = false
+        composeTestRule.setContent {
+            DepartureScreen(
+                uiState = DepartureUiState(),
+                onNavigateBack = { invoked = true }
+            )
+        }
+
+        composeTestRule.onNodeWithTag("departure_back_button").performClick()
+
+        assertTrue("戻るボタンタップでonNavigateBackが呼ばれるべきです(T-DEPFIX-7)", invoked)
     }
 }
 

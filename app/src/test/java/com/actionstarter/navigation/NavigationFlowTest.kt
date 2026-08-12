@@ -13,6 +13,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -139,6 +140,32 @@ class NavigationFlowTest {
             composeTestRule.onNodeWithText(context.getString(R.string.execution_done_button)).performClick()
         }
         composeTestRule.onNodeWithText(context.getString(R.string.departure_title)).assertIsDisplayed()
+    }
+
+    // T-DEPFIX-8（`docs/plans/departure-screen-fixes.md`§3.3・§4、Step 3 Red、欠陥③）: 正常系 -
+    // DepartureScreenの戻るボタン操作がEventSelection（popUpTo inclusive）へ遷移し、完了済みの
+    // Execution画面が再表示されない（tNav1と同じ経路でDepartureまで到達したうえで検証する）。
+    // 現時点ではDepartureScreenに戻るボタン自体が描画されない（欠陥③、Green段階でActionStarterNavHost
+    // の`DepartureRoute`へ配線する）ため、"departure_back_button"のノードが見つからずRedになるのが
+    // 正しい。
+    @Config(sdk = [26])
+    @Test
+    fun tDepFix8_departureBackButton_navigatesToEventSelection_doesNotResurrectExecution() {
+        val context = RuntimeEnvironment.getApplication()
+        composeTestRule.setContent { ActionStarterNavHost() }
+        waitForEventSelectionContent()
+
+        composeTestRule.onNodeWithText(context.getString(R.string.event_selection_prepare_button)).performClick()
+        composeTestRule.onNodeWithText(context.getString(R.string.plan_review_start_button)).performClick()
+        repeat(3) {
+            composeTestRule.onNodeWithText(context.getString(R.string.execution_done_button)).performClick()
+        }
+        composeTestRule.onNodeWithText(context.getString(R.string.departure_title)).assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("departure_back_button").performClick()
+
+        composeTestRule.onNodeWithText(context.getString(R.string.event_selection_prepare_button)).assertIsDisplayed()
+        composeTestRule.onNodeWithText(context.getString(R.string.departure_title)).assertDoesNotExist()
     }
 
     // T-NAV-2: 正常系 - 戻る操作（back）が各画面で妥当に動作する

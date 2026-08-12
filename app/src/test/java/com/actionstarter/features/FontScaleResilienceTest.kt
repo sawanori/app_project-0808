@@ -220,7 +220,9 @@ class FontScaleResilienceTest {
 
         composeTestRule.onNodeWithText(context.getString(R.string.location_permission_denied_message)).assertIsDisplayed()
         composeTestRule.onNodeWithTag(TRAVEL_TIME_INPUT_TEST_TAG).assertIsDisplayed()
-        composeTestRule.onNodeWithTag("departure_location_open_settings_button").assertIsDisplayed()
+        // 出発画面欠陥修正（欠陥③）で戻るボタンが追加され1.5xフォントスケール下でのDENIED状態の
+        // 縦積みが既定ビューポートを超えるため、performScrollTo()が必要になった。
+        composeTestRule.onNodeWithTag("departure_location_open_settings_button").performScrollTo().assertIsDisplayed()
     }
 
     // T-P11F-5: 正常系 - RecoveryScreen同上（候補3件表示時）。
