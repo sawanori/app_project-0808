@@ -65,6 +65,7 @@ class BehaviorLogDatabaseTest {
             "eventType",
             "eventCategory",
             "semanticAction",
+            "stepType",
             "durationMs",
             "aiAdopted",
             "fallbackReason"

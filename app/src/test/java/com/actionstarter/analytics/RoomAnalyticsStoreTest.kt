@@ -10,32 +10,27 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Phase 10 C1（計画書§3.4・§7、Step 3 Red）。[RoomAnalyticsStore]の異常系
+ * Phase 10 C1/C2（計画書§3.4・§7、Step 3 Red）。[RoomAnalyticsStore]の異常系
  * （T-P10-15「DB書き込み失敗がユーザー操作をブロックしない」・T-P10-17「全削除失敗を
  * サイレント化しない」）を、実DBではなくフェイクDAO（意図的に例外を投げる）で検証する。
+ * C2でのインターフェース再設計（`record(BehaviorEventEntity)`廃止・`recordXxx`個別
+ * メソッドへ移行）に伴い、代表として[AnalyticsStore.recordStepDone]で検証する。
  */
 class RoomAnalyticsStoreTest {
 
-    // T-P10-15: 異常 - DB書き込み失敗（IO例外）がユーザー操作（record呼び出し元）を
+    // T-P10-15: 異常 - DB書き込み失敗（IO例外）がユーザー操作（recordXxx呼び出し元）を
     // ブロックしない（try/catchでno-op化、例外を外へ投げない）。
     @Test
-    fun tP10_15_record_daoThrows_doesNotPropagateException() = runTest {
+    fun tP10_15_recordStepDone_daoThrows_doesNotPropagateException() = runTest {
         val throwingDao = FakeBehaviorEventDao(throwOnInsert = true)
         val profileDao = FakePersonalExecutionProfileDao()
         val store = RoomAnalyticsStore(throwingDao, profileDao)
 
         // 例外が外へ伝播しないこと自体がアサーション（伝播すればテスト自体が失敗する）。
-        store.record(
-            BehaviorEventEntity(
-                timestamp = 1L,
-                domain = BehaviorEventEntity.DOMAIN_RECOVERY,
-                eventType = BehaviorEventEntity.EVENT_TYPE_STEP_DONE,
-                eventCategory = "medical"
-            )
-        )
+        store.recordStepDone(eventCategory = "medical", stepType = "PREPARATION", durationMs = 60_000L)
 
         assertTrue(
-            "record()呼び出しでinsertが試行されるべきです(T-P10-15)",
+            "recordStepDone()呼び出しでinsertが試行されるべきです(T-P10-15)",
             throwingDao.insertAttempted
         )
     }

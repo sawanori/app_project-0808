@@ -5,6 +5,9 @@ import androidx.lifecycle.viewModelScope
 import com.actionstarter.R
 import com.actionstarter.ai.LocalAiRecoveryContextualizer
 import com.actionstarter.ai.RecoveryContextualizationResult
+import com.actionstarter.ai.prompt.EventCategoryClassifier
+import com.actionstarter.analytics.AnalyticsDomain
+import com.actionstarter.analytics.AnalyticsStore
 import com.actionstarter.domain.model.ExecutionPlan
 import com.actionstarter.domain.model.RecoveryContext
 import com.actionstarter.domain.model.RecoveryPlan
@@ -24,6 +27,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.Clock
 import java.time.Duration
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -86,13 +90,18 @@ class RecoveryViewModel(
     private val locationService: LocationService = UnavailableLocationService,
     private val clock: Clock = Clock.systemUTC(),
     private val notificationService: NotificationService? = null,
-    private val aiRecoveryContextualizer: LocalAiRecoveryContextualizer? = null
+    private val aiRecoveryContextualizer: LocalAiRecoveryContextualizer? = null,
+    // Phase 10 C2（計画書§3.2、ADR-0049決定5）。末尾・既定null（既存パターンと同型の
+    // 後方互換）。DELAY_DETECTED（init）・STEP_SKIPPED/RECOVERY_SELECTED（useThisPlan）・
+    // AI_WORDING_OUTCOME（refresh）の記録に使う。nullの間は記録をskip。
+    private val analyticsStore: AnalyticsStore? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(RecoveryUiState())
     val uiState: StateFlow<RecoveryUiState> = _uiState.asStateFlow()
 
     private val recoveryPlanApplier = RecoveryPlanApplier(clock)
+    private val eventCategoryClassifier = EventCategoryClassifier()
 
     /**
      * Phase 9新設（計画書§3.1 stale-write防御、オーケストレーター指摘A9）。[refresh]の
@@ -102,8 +111,30 @@ class RecoveryViewModel(
     private var computationGeneration: Int = 0
 
     init {
+        // Phase 10 C2（計画書§3.2「DELAY_DETECTED」、レビュー§13 No.4・Gemini G3/AD11）:
+        // RecoveryViewModelが構築されること自体がNavHost側のLatenessDetector判定
+        // （WillMissEvent）の唯一の帰結であるため、initで1回記録すればViewModel
+        // ライフサイクル単位の重複排除が自然に成立する（NavHostフックは廃止）。
+        // **refresh()とは別のlaunchにする**（§19精神「Enhancementは本体をブロックしない」の
+        // 徹底——記録が遅延・失敗してもBasic Recovery候補の計算（refresh）を1ミリ秒たりとも
+        // 遅らせてはならない。同一launch内で直列に書くとrefresh()の開始がrecordDelayDetected
+        // の完了待ちになってしまう）。
+        viewModelScope.launch {
+            sharedPlanViewModel.confirmedPlan.value?.let { plan ->
+                analyticsStore?.recordDelayDetected(eventCategoryFor(plan))
+            }
+        }
         viewModelScope.launch { refresh() }
     }
+
+    /**
+     * Phase 10 C2（計画書§3.2）。`plan.event.title`を`EventCategoryClassifier`へ渡し
+     * カテゴリのみを得る——タイトル自体は本メソッドのスコープを出ない（計画書§2「タイトル
+     * 生文を保存しない」）。`RecoveryContext`はlocaleを持たないため（クラスKDoc
+     * 「実装調査で判明した設計ギャップ」と同型の制約）[Locale.getDefault]を使う。
+     */
+    private fun eventCategoryFor(plan: ExecutionPlan): String =
+        eventCategoryClassifier.classify(plan.event.title, Locale.getDefault())
 
     /**
      * [sharedPlanViewModel.confirmedPlan]から[RecoveryContext]を構築し[recoveryEngine]で
@@ -145,10 +176,37 @@ class RecoveryViewModel(
                 // このrefresh()呼び出し以降に別のrefresh()が走っていた場合（世代が進んでいた場合）、
                 // 遅延到着したAI応答は現在表示中のbaseとは対応しないため無視する。
                 if (generation != computationGeneration) return@launch
+                // Phase 10 C2（計画書§3.2「AI_WORDING_OUTCOME」、レビューCRITICAL・§13 No.1）:
+                // stale-writeガードを通過した（＝実際に表示へ反映された、または反映見送りが
+                // 確定した）結果のみ記録する——Plan側（PlanReviewViewModel）と同じ「非stale時
+                // のみ記録」方針で揃える。eventCategoryは`refresh()`冒頭で確定済みの[plan]
+                // （ExecutionPlan、確定済みPlan本体）から算出する。
+                // §19精神の徹底（RecoveryViewModel init「別launchにする」注記と同じ理由）:
+                // 記録自体はcoroutineScope経由のchild launchへ切り離し、記録の遅延・失敗が
+                // 本launch（stale-write判定・_uiState反映）の完了を待たせない。
                 when (result) {
-                    is RecoveryContextualizationResult.Applied ->
+                    is RecoveryContextualizationResult.Applied -> {
                         _uiState.update { it.copy(options = result.plan.options) }
-                    is RecoveryContextualizationResult.Unchanged -> Unit // Basicのまま（既にuiStateへ反映済み）
+                        launch {
+                            analyticsStore?.recordAiWordingOutcome(
+                                domain = AnalyticsDomain.RECOVERY,
+                                eventCategory = eventCategoryFor(plan),
+                                aiAdopted = true,
+                                fallbackReason = null
+                            )
+                        }
+                    }
+                    is RecoveryContextualizationResult.Unchanged -> {
+                        // Basicのまま（既にuiStateへ反映済み）
+                        launch {
+                            analyticsStore?.recordAiWordingOutcome(
+                                domain = AnalyticsDomain.RECOVERY,
+                                eventCategory = eventCategoryFor(plan),
+                                aiAdopted = false,
+                                fallbackReason = result.reason.name
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -186,6 +244,23 @@ class RecoveryViewModel(
 
         sharedPlanViewModel.confirmPlan(updatedPlan)
         _uiState.value = _uiState.value.copy(isPlanApplied = true)
+
+        // Phase 10 C2（計画書§3.2「RECOVERY_SELECTED」「STEP_SKIPPED」）: UI状態更新後、
+        // 非ブロッキングで記録する。RecoveryPlanApplier自体は純粋関数のまま変更しない
+        // （計画書§3.2「STEP_SKIPPEDのフック点」、副作用は呼び出し元のViewModel層に置く）。
+        val category = eventCategoryFor(plan)
+        viewModelScope.launch {
+            analyticsStore?.recordRecoverySelected(
+                eventCategory = category,
+                semanticAction = option.semanticAction
+            )
+            if (option.skippedStepIds.isNotEmpty()) {
+                analyticsStore?.recordStepSkipped(
+                    eventCategory = category,
+                    semanticAction = option.semanticAction
+                )
+            }
+        }
     }
 
     private suspend fun buildRecoveryContext(plan: ExecutionPlan): RecoveryContext {

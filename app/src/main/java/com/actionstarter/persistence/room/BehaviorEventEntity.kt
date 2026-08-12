@@ -23,6 +23,13 @@ import androidx.room.PrimaryKey
  * @param eventType `STEP_DONE`/`STEP_SKIPPED`/`DELAY_DETECTED`/`RECOVERY_SELECTED`/
  *   `AI_WORDING_OUTCOME`の5種（計画書§2「仕様§53-54の広いイベント語彙のうち最小5種のみ実装」）。
  * @param semanticAction `RECOVERY_SELECTED`時のみ非null（`RecoveryOption.semanticAction`）。
+ * @param stepType `STEP_DONE`時のみ非null。`domain.model.ExecutionStepType.name`
+ *   （`TRANSITION`/`PREPARATION`/`DEPARTURE`/`TRAVEL`）。C3のPersonal Profile集計（計画書§3.3
+ *   導出表）が`averageTransitionDuration`／`averagePreparationDuration`のどちらへ振り分けるかの
+ *   フィルタ条件として使う——本フィールドがなければC3の集計クエリが対象ステップ種別を
+ *   区別できない（C2実装時の追加発見。Room `version`は1のまま据え置く——本スキーマは
+ *   いかなる実機・実ユーザーデータも経ていないため、マイグレーションではなく
+ *   `app/schemas/`の1.json再エクスポートで対応する）。
  * @param durationMs `STEP_DONE`時の実績所要時間（クランプ後、負値・計画窓超過はnull）。
  * @param aiAdopted `AI_WORDING_OUTCOME`時のみ非null。`ContextualizationResult.Applied`／
  *   `RecoveryContextualizationResult.Applied`なら`true`。
@@ -45,6 +52,8 @@ data class BehaviorEventEntity(
     val eventCategory: String,
     @ColumnInfo(name = "semantic_action")
     val semanticAction: String? = null,
+    @ColumnInfo(name = "step_type")
+    val stepType: String? = null,
     @ColumnInfo(name = "duration_ms")
     val durationMs: Long? = null,
     @ColumnInfo(name = "ai_adopted")

@@ -2,7 +2,10 @@ package com.actionstarter.features.execution
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.actionstarter.R
+import com.actionstarter.ai.prompt.EventCategoryClassifier
+import com.actionstarter.analytics.AnalyticsStore
 import com.actionstarter.domain.model.ExecutionPlan
 import com.actionstarter.domain.model.ExecutionStep
 import com.actionstarter.domain.model.ExecutionStepType
@@ -15,7 +18,9 @@ import com.actionstarter.services.permission.PermissionGate
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.time.Duration
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -94,13 +99,20 @@ import java.util.UUID
  *   ステップ列を参照するための注入経路。
  * @param notificationService Snooze時のアラーム再登録・劣化表示の判定に委譲する先（F59）。
  * @param permissionGate POST_NOTIFICATIONS等の許可状態照会（T-P5UI-6）。
+ * @param analyticsStore Phase 10 C2（計画書`docs/plans/phase10-behavior-log-profile.md`§3.2、
+ *   ADR-0049決定5）。末尾・既定`null`（既存パターンと同型の後方互換）。`STEP_DONE`イベントの
+ *   記録に使う（`handleConfirmedPlanDone`参照）。`null`の間は記録をskip（AI OFFユーザー相当の
+ *   no-op、C1の`AppContainer`初期化失敗防御と整合）。
  */
 class ExecutionViewModel(
     private val savedStateHandle: SavedStateHandle,
     private val sharedPlanViewModel: SharedPlanViewModel? = null,
     private val notificationService: NotificationService? = null,
-    private val permissionGate: PermissionGate? = null
+    private val permissionGate: PermissionGate? = null,
+    private val analyticsStore: AnalyticsStore? = null
 ) : ViewModel() {
+
+    private val eventCategoryClassifier = EventCategoryClassifier()
 
     /**
      * F58本番結線: [sharedPlanViewModel]が確定Planを持っていれば、それを本ViewModelの
@@ -156,8 +168,35 @@ class ExecutionViewModel(
 
     private fun buildInitialState(): ExecutionUiState {
         val plan = workingPlan
-        return if (plan != null) stateForConfirmedPlan(restoredIndex(), plan) else stateForIndex(restoredIndex())
+        val index = restoredIndex()
+        if (plan != null) ensureCurrentStepStartRecorded(index)
+        return if (plan != null) stateForConfirmedPlan(index, plan) else stateForIndex(index)
     }
+
+    /**
+     * Phase 10 C2（計画書§3.2「durationMsのプロセス死対策」、レビュー§13 No.5・Gemini G5）。
+     * [index]のステップが「いつ表示され始めたか」を[savedStateHandle]（既存
+     * [KEY_CURRENT_STEP_INDEX]と同じ画面回転・プロセス再生成耐性を持つ機構）へ記録する。
+     * **[index]が直前に記録済みの値と同じ場合は何もしない**（[KEY_STEP_START_RECORDED_FOR_INDEX]
+     * で判定）——画面回転等での[buildInitialState]再呼び出しのたびに開始時刻を今の時刻へ
+     * 上書きしてしまうと、[handleConfirmedPlanDone]が算出する`durationMs`が実際の所要時間より
+     * 常に短く出てしまう回帰を防ぐ。
+     */
+    private fun ensureCurrentStepStartRecorded(index: Int) {
+        if (savedStateHandle.get<Int>(KEY_STEP_START_RECORDED_FOR_INDEX) != index) {
+            savedStateHandle[KEY_CURRENT_STEP_STARTED_AT_MILLIS] = System.currentTimeMillis()
+            savedStateHandle[KEY_STEP_START_RECORDED_FOR_INDEX] = index
+        }
+    }
+
+    /**
+     * Phase 10 C2（計画書§3.2）。`plan.event.title`を`EventCategoryClassifier`へ渡し
+     * カテゴリのみを得る——タイトル自体は本メソッドのスコープを出ない（計画書§2「タイトル
+     * 生文を保存しない」）。`ExecutionPlan`／`RecoveryContext`のいずれもlocaleを持たないため
+     * （`RecoveryViewModel`と同じ制約）[Locale.getDefault]を使う。
+     */
+    private fun eventCategoryFor(plan: ExecutionPlan): String =
+        eventCategoryClassifier.classify(plan.event.title, Locale.getDefault())
 
     /**
      * [index]から[ExecutionUiState]を構成する（プレースホルダ経路。[workingPlan]が
@@ -259,9 +298,31 @@ class ExecutionViewModel(
      * 直行契約（currentStep=null）を発火させる。 */
     private fun handleConfirmedPlanDone() {
         val plan = workingPlan ?: return
-        val next = _uiState.value.currentStepIndex + 1
+        val completedIndex = _uiState.value.currentStepIndex
+        val completedStep = plan.steps.getOrNull(completedIndex)
+        val startedAtMillis = savedStateHandle.get<Long>(KEY_CURRENT_STEP_STARTED_AT_MILLIS)
+        val completedAtMillis = System.currentTimeMillis()
+        val next = completedIndex + 1
+
         savedStateHandle[KEY_CURRENT_STEP_INDEX] = next
+        ensureCurrentStepStartRecorded(next)
         _uiState.value = stateForConfirmedPlan(next, plan)
+
+        // Phase 10 C2（計画書§3.2「STEP_DONE」）: UI状態更新後、非ブロッキングで記録する
+        // （analyticsStoreがnullなら?.でno-op、記録自体の失敗はRoomAnalyticsStore内部でno-op化
+        // 済み、計画書§8）。
+        if (completedStep != null) {
+            val durationMs = computeClampedStepDurationMs(startedAtMillis, completedAtMillis)
+            val category = eventCategoryFor(plan)
+            val stepType = completedStep.type.name
+            viewModelScope.launch {
+                analyticsStore?.recordStepDone(
+                    eventCategory = category,
+                    stepType = stepType,
+                    durationMs = durationMs
+                )
+            }
+        }
     }
 
     /**
@@ -317,6 +378,9 @@ class ExecutionViewModel(
 
     private companion object {
         const val KEY_CURRENT_STEP_INDEX = "currentStepIndex"
+        // Phase 10 C2（計画書§3.2「durationMsのプロセス死対策」）。
+        const val KEY_CURRENT_STEP_STARTED_AT_MILLIS = "currentStepStartedAtMillis"
+        const val KEY_STEP_START_RECORDED_FOR_INDEX = "stepStartRecordedForIndex"
         const val PLACEHOLDER_STEP_COUNT = 3
         val POSTPONE_DURATION: Duration = Duration.ofMinutes(5)
         val PLACEHOLDER_STEP_IDS: List<UUID> = List(PLACEHOLDER_STEP_COUNT) { index ->
@@ -325,3 +389,24 @@ class ExecutionViewModel(
         val POST_NOTIFICATIONS_PERMISSION: String = android.Manifest.permission.POST_NOTIFICATIONS
     }
 }
+
+/**
+ * Phase 10 C2（計画書§3.2「durationMsのプロセス死対策」、レビュー§13 No.5・Gemini G5）。
+ * [ExecutionViewModel]から切り出した純関数——`ExecutionViewModelTest`から直接ユニットテスト
+ * できるようにするため、`private companion object`の外（トップレベル`internal`）に置く。
+ *
+ * [startedAtMillis]が`null`（記録なし、通常発生しない想定だが防御的に扱う）、負の所要時間
+ * （時刻の巻き戻り等、通常発生しないが防御的に扱う）、または[MAX_PLAUSIBLE_STEP_DURATION_MILLIS]
+ * （24時間、プロセス死から長時間経過後の復帰等で生じる非現実的な値の簡易フィルタ）を
+ * 超える場合は`null`を返す——Personal Profile集計（C3）へ不正な実績値を混入させない防御
+ * （計画書§3.2）。
+ */
+internal fun computeClampedStepDurationMs(startedAtMillis: Long?, completedAtMillis: Long): Long? {
+    if (startedAtMillis == null) return null
+    val raw = completedAtMillis - startedAtMillis
+    if (raw < 0) return null
+    if (raw > MAX_PLAUSIBLE_STEP_DURATION_MILLIS) return null
+    return raw
+}
+
+private const val MAX_PLAUSIBLE_STEP_DURATION_MILLIS = 24L * 60 * 60 * 1000

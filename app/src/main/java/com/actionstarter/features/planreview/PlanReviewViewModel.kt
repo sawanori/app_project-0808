@@ -6,6 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.actionstarter.ai.ContextualizationResult
 import com.actionstarter.ai.LocalAiPlanContextualizer
 import com.actionstarter.ai.overlay
+import com.actionstarter.ai.prompt.EventCategoryClassifier
+import com.actionstarter.analytics.AnalyticsDomain
+import com.actionstarter.analytics.AnalyticsStore
 import com.actionstarter.domain.model.ExecutionEvent
 import com.actionstarter.domain.model.ExecutionPlan
 import com.actionstarter.domain.model.PlanningContext
@@ -102,6 +105,10 @@ import java.util.UUID
  *   後方互換パターン、既存の6引数以下の構築を壊さない、T-P8-13）。`null`の間はAIフェーズを
  *   skip（Basic固定文言のまま・`uiState.aiState`は常に[AiContextualizationState.Idle]、§4.2）。
  *   非nullの間は[init]の`collectLatest`がtravel取得と並行してAI推論を起動する（§4.1・§4.3）。
+ * @param analyticsStore Phase 10 C2（計画書`docs/plans/phase10-behavior-log-profile.md`§3.2、
+ *   レビューCRITICAL・§13 No.1）。末尾・既定`null`（既存パターンと同型の後方互換）。
+ *   `AI_WORDING_OUTCOME`（`domain=PLAN`）の記録に使う——Phase 12比較実験の主データ
+ *   （計画書§0）。`null`の間は記録をskip。
  */
 class PlanReviewViewModel(
     private val planningEngine: PlanningEngine,
@@ -110,8 +117,11 @@ class PlanReviewViewModel(
     private val locationService: LocationService? = null,
     private val routingService: RoutingService? = null,
     private val permissionGate: PermissionGate? = null,
-    private val aiPlanContextualizer: LocalAiPlanContextualizer? = null
+    private val aiPlanContextualizer: LocalAiPlanContextualizer? = null,
+    private val analyticsStore: AnalyticsStore? = null
 ) : ViewModel() {
+
+    private val eventCategoryClassifier = EventCategoryClassifier()
 
     // ------------------------------------------------------------------
     // Phase 8 §4（Gemini G1 CRITICAL②反映）。書き込み口はlatestBase／latestAiResponseの2つのみ、
@@ -197,6 +207,34 @@ class PlanReviewViewModel(
                             // §4.3-1: 書き込みゲート（fetchTravelEstimateの既存パターンと同型）。
                             if (sharedPlanViewModel.selectedEvent.value?.id == event.id) {
                                 latestAiResponse.value = AiResponseCache(event.id, result)
+                                // Phase 10 C2（計画書§3.2「AI_WORDING_OUTCOME」、レビュー
+                                // CRITICAL・§13 No.1、Phase 12比較実験の主データ）: stale-write
+                                // ゲートを通過した（＝実際にUIへ反映される）結果のみ記録する
+                                // （Recovery側のrefresh()と同じ「非stale時のみ記録」方針）。
+                                // combinedUiStateFlow()（pure combineラムダ、再評価されうる）
+                                // 側では絶対に記録しない——ここが唯一の一発点。
+                                // §19精神の徹底（RecoveryViewModelの同型注記参照）: 記録自体は
+                                // child launchへ切り離し、記録の遅延・失敗が本launch（latestAiResponse
+                                // 反映）の完了を待たせない。
+                                val category = eventCategoryClassifier.classify(event.title, initialContext.locale)
+                                when (result) {
+                                    is ContextualizationResult.Applied -> launch {
+                                        analyticsStore?.recordAiWordingOutcome(
+                                            domain = AnalyticsDomain.PLAN,
+                                            eventCategory = category,
+                                            aiAdopted = true,
+                                            fallbackReason = null
+                                        )
+                                    }
+                                    is ContextualizationResult.Unchanged -> launch {
+                                        analyticsStore?.recordAiWordingOutcome(
+                                            domain = AnalyticsDomain.PLAN,
+                                            eventCategory = category,
+                                            aiAdopted = false,
+                                            fallbackReason = result.reason.name
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

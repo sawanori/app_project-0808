@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "5b25558c9e752f48ba3ca95226ac36a6",
+    "identityHash": "b18956519c48945312892b3ffaa7b91a",
     "entities": [
       {
         "tableName": "behavior_events",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `domain` TEXT NOT NULL, `event_type` TEXT NOT NULL, `event_category` TEXT NOT NULL, `semantic_action` TEXT, `duration_ms` INTEGER, `ai_adopted` INTEGER, `fallback_reason` TEXT)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `domain` TEXT NOT NULL, `event_type` TEXT NOT NULL, `event_category` TEXT NOT NULL, `semantic_action` TEXT, `step_type` TEXT, `duration_ms` INTEGER, `ai_adopted` INTEGER, `fallback_reason` TEXT)",
         "fields": [
           {
             "fieldPath": "id",
@@ -41,6 +41,11 @@
           {
             "fieldPath": "semanticAction",
             "columnName": "semantic_action",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "stepType",
+            "columnName": "step_type",
             "affinity": "TEXT"
           },
           {
@@ -112,7 +117,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '5b25558c9e752f48ba3ca95226ac36a6')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b18956519c48945312892b3ffaa7b91a')"
     ]
   }
 }

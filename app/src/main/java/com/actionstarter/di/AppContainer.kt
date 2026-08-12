@@ -554,7 +554,11 @@ class AppContainer(
                     // Phase 8実配線（計画書§6.1・§6.3）: イベント選択のたびにPlanReviewViewModel
                     // 側のcollectLatestがtravel取得と並行してcontextualizer.contextualizeを呼ぶ
                     // （§4.1）。localAiPlanContextualizerはLinkageError発生時null（KDoc参照）。
-                    aiPlanContextualizer = localAiPlanContextualizer
+                    aiPlanContextualizer = localAiPlanContextualizer,
+                    // Phase 10 C2（計画書§3.2、ADR-0049決定5）: AI_WORDING_OUTCOME（domain=PLAN、
+                    // Phase 12比較実験の主データ）の記録先。analyticsStoreはbehaviorLogDatabase
+                    // 初期化失敗時null（C1のAppContainer防御、KDoc参照）。
+                    analyticsStore = analyticsStore
                 )
             }
             initializer {
@@ -581,7 +585,11 @@ class AppContainer(
                     locationService = locationService,
                     clock = Clock.systemUTC(),
                     notificationService = notificationService,
-                    aiRecoveryContextualizer = localAiRecoveryContextualizer
+                    aiRecoveryContextualizer = localAiRecoveryContextualizer,
+                    // Phase 10 C2（計画書§3.2、ADR-0049決定5）: DELAY_DETECTED（init）・
+                    // STEP_SKIPPED/RECOVERY_SELECTED（useThisPlan）・AI_WORDING_OUTCOME
+                    // （domain=RECOVERY、refresh）の記録先。
+                    analyticsStore = analyticsStore
                 )
             }
             initializer {
@@ -589,7 +597,9 @@ class AppContainer(
                     savedStateHandle = createSavedStateHandle(),
                     sharedPlanViewModel = sharedPlanViewModel,
                     notificationService = notificationService,
-                    permissionGate = permissionGate
+                    permissionGate = permissionGate,
+                    // Phase 10 C2（計画書§3.2、ADR-0049決定5）: STEP_DONEの記録先。
+                    analyticsStore = analyticsStore
                 )
             }
             // F97実配線（計画書§7.1・§14 P7-C6／Phase 8.5 F-B）: SettingsViewModelは他画面と異なり
