@@ -264,10 +264,13 @@ class StringResourceParityTest {
     // **Phase 8.5 F-B追補（計画書§3設計F-B-5・§11確認事項1、ADR-0062）**: 126 + 4（「自動」行・
     // 推奨バッジ・メモリ不足注記用の新規4キー、[tP85_settingsFBNewKeys_existInBothLocales]の
     // 一覧と対応）= 130へ更新した。
+    // **Phase 10 C4追補（計画書§3.4「全削除導線」、T-P10-16/17/18）**: 130 + 10（「行動ログを
+    // 削除」ボタン・確認ダイアログ・結果バナー用の新規10キー、
+    // [tP10_settingsDeleteBehaviorLogKeys_existInBothLocales]の一覧と対応）= 140へ更新した。
     @Test
     fun tP11p1_keyCount_reflectsPhase11NetChange_andBothLocalesStayInSync() {
-        assertEquals("en key count after Phase 8.5 F-B (130 = 126 + 4 new Settings keys)", 130, enStrings.size)
-        assertEquals("ja key count after Phase 8.5 F-B (130 = 126 + 4 new Settings keys)", 130, jaStrings.size)
+        assertEquals("en key count after Phase 10 C4 (140 = 130 + 10 new Settings delete-flow keys)", 140, enStrings.size)
+        assertEquals("ja key count after Phase 10 C4 (140 = 130 + 10 new Settings delete-flow keys)", 140, jaStrings.size)
     }
 
     // T-SET-7（計画書§12.6、P7-C6・F97）: 正常系 - Settings画面の新規21キーがen/ja両方に存在する
@@ -321,6 +324,31 @@ class StringResourceParityTest {
         for (key in settingsFBNewKeys) {
             assertTrue("Phase 8.5 F-B new key '$key' missing from en strings.xml", key in enStrings)
             assertTrue("Phase 8.5 F-B new key '$key' missing from ja strings.xml", key in jaStrings)
+        }
+    }
+
+    // Phase 10 C4（計画書§3.4「全削除導線」、T-P10-16/17/18）: 正常系 - Settings画面の
+    // 「行動ログを削除」ボタン・確認ダイアログ・結果バナー用の新規10キーがen/ja両方に存在する
+    // （tSet7_settingsNewKeys等と同型のパリティ回帰ガード）。
+    @Test
+    fun tP10_settingsDeleteBehaviorLogKeys_existInBothLocales() {
+        val settingsDeleteBehaviorLogKeys = listOf(
+            "settings_data_section_title",
+            "settings_delete_behavior_log_description",
+            "settings_delete_behavior_log_button",
+            "settings_delete_behavior_log_dialog_title",
+            "settings_delete_behavior_log_dialog_message",
+            "settings_delete_behavior_log_dialog_confirm_button",
+            "settings_delete_behavior_log_dialog_cancel_button",
+            "settings_delete_behavior_log_success_message",
+            "settings_delete_behavior_log_failure_message",
+            "settings_delete_behavior_log_result_dismiss_button"
+        )
+
+        assertEquals("Phase 10 C4 Settings screen must add exactly 10 new keys", 10, settingsDeleteBehaviorLogKeys.size)
+        for (key in settingsDeleteBehaviorLogKeys) {
+            assertTrue("Phase 10 C4 new key '$key' missing from en strings.xml", key in enStrings)
+            assertTrue("Phase 10 C4 new key '$key' missing from ja strings.xml", key in jaStrings)
         }
     }
 

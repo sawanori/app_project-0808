@@ -607,12 +607,17 @@ class AppContainer(
             // どちらにも関心を持たない独立した設定画面のため）。availableModelsはコンストラクタの
             // 既定値（Gemma4・Qwen0.6B、ModelSelector.DEFAULT_AUTO_CANDIDATESと同じ候補集合）を
             // そのまま使う。
+            // Phase 10 C4（計画書§3.4「全削除導線」、Red段階）: analyticsStoreは「行動ログを削除」
+            // 導線（onDeleteBehaviorLogConfirmed、現時点ではTODO()スキャフォールド）の呼び出し先。
+            // analyticsStoreはbehaviorLogDatabase初期化失敗時null（C1のAppContainer防御、
+            // 上記analyticsStoreプロパティのKDoc参照）。
             initializer {
                 SettingsViewModel(
                     aiPreferences = aiPreferences,
                     modelDownloader = modelDownloader,
                     modelStorage = modelStorage,
-                    deviceCapability = deviceCapability
+                    deviceCapability = deviceCapability,
+                    analyticsStore = analyticsStore
                 )
             }
         }

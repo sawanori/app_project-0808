@@ -16,6 +16,7 @@ import com.actionstarter.ai.model.ModelCatalogEntry
 import com.actionstarter.ai.model.ModelDownloadFailureReason
 import com.actionstarter.ai.model.ModelLicense
 import com.actionstarter.ai.model.ModelStorage
+import com.actionstarter.features.settings.DeleteBehaviorLogResult
 import com.actionstarter.features.settings.DeviceUnsupportedReason
 import com.actionstarter.features.settings.ModelDownloadStatus
 import com.actionstarter.features.settings.ModelOption
@@ -468,6 +469,161 @@ class SettingsScreenTest {
 
         composeTestRule.onNodeWithTag("settings_download_button_$tagId").assertIsEnabled()
         composeTestRule.onNodeWithTag("settings_download_button_other-model").assertIsEnabled()
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 10 C4（計画書§3.4「全削除導線」、T-P10-16/17/18、Step 4 Green）。
+    // Phase 8.5 F-Bと同型でScreen側テストはGreen段階で追加する（完了報告で開示済み）。
+    // ------------------------------------------------------------------
+
+    // T-P10-18: 正常 - 「行動ログを削除」ボタンのタップはonDeleteBehaviorLogRequestedのみを
+    // 呼ぶ（ダイアログ表示自体はuiState.isDeleteBehaviorLogDialogVisibleが真実源であり、
+    // ボタンのonClickはローカルstateを持たない）。
+    @Test
+    fun deleteBehaviorLogButton_tap_invokesOnDeleteBehaviorLogRequested() {
+        var invoked = false
+        composeTestRule.setContent {
+            SettingsScreen(
+                uiState = singleModelUiState(),
+                onDeleteBehaviorLogRequested = { invoked = true }
+            )
+        }
+
+        // BehaviorLogSectionは容量表示より下にありRobolectricの仮想ビューポートを超えるため
+        // performScrollTo()が必要（capacity表示テストと同じ既存パターン、クラスKDoc参照）。
+        composeTestRule.onNodeWithTag("settings_delete_behavior_log_button").performScrollTo().performClick()
+
+        assertEqualsBoolean(true, invoked)
+    }
+
+    // T-P10-18: エッジケース（回帰ガード） - isDeleteBehaviorLogDialogVisible=false（既定）では
+    // 確認ダイアログが存在しない。
+    @Test
+    fun deleteBehaviorLogDialog_hiddenByDefault() {
+        composeTestRule.setContent {
+            SettingsScreen(uiState = singleModelUiState())
+        }
+
+        composeTestRule.onNodeWithTag("settings_delete_behavior_log_dialog").assertDoesNotExist()
+    }
+
+    // T-P10-18: 正常 - isDeleteBehaviorLogDialogVisible=trueで確認ダイアログが表示され、
+    // 破壊的操作である旨の文言（タイトル・本文）が明示される。
+    @Test
+    fun deleteBehaviorLogDialog_visible_showsDestructiveWording() {
+        composeTestRule.setContent {
+            SettingsScreen(uiState = singleModelUiState().copy(isDeleteBehaviorLogDialogVisible = true))
+        }
+        val context = RuntimeEnvironment.getApplication()
+
+        composeTestRule.onNodeWithTag("settings_delete_behavior_log_dialog").assertIsDisplayed()
+        composeTestRule.onNodeWithText(context.getString(R.string.settings_delete_behavior_log_dialog_title))
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText(context.getString(R.string.settings_delete_behavior_log_dialog_message))
+            .assertIsDisplayed()
+    }
+
+    // T-P10-18（誤タップ防止の直接証明）: 正常 - ダイアログの確定ボタンはonDeleteBehaviorLogConfirmed
+    // のみを呼び、onDeleteBehaviorLogRequestedは（削除ボタン自体をタップしていないため）呼ばれない。
+    @Test
+    fun deleteBehaviorLogDialog_confirmButton_tap_invokesOnlyOnDeleteBehaviorLogConfirmed() {
+        var confirmedInvoked = false
+        var requestedInvoked = false
+        composeTestRule.setContent {
+            SettingsScreen(
+                uiState = singleModelUiState().copy(isDeleteBehaviorLogDialogVisible = true),
+                onDeleteBehaviorLogRequested = { requestedInvoked = true },
+                onDeleteBehaviorLogConfirmed = { confirmedInvoked = true }
+            )
+        }
+
+        composeTestRule.onNodeWithTag("settings_delete_behavior_log_dialog_confirm_button").performClick()
+
+        assertEqualsBoolean(true, confirmedInvoked)
+        assertEqualsBoolean(false, requestedInvoked)
+    }
+
+    // T-P10-18: 異常（キャンセル経路） - ダイアログのキャンセルボタンはonDeleteBehaviorLogDialogDismissed
+    // のみを呼び、onDeleteBehaviorLogConfirmedは呼ばれない。
+    @Test
+    fun deleteBehaviorLogDialog_cancelButton_tap_invokesOnlyOnDeleteBehaviorLogDialogDismissed() {
+        var dismissedInvoked = false
+        var confirmedInvoked = false
+        composeTestRule.setContent {
+            SettingsScreen(
+                uiState = singleModelUiState().copy(isDeleteBehaviorLogDialogVisible = true),
+                onDeleteBehaviorLogDialogDismissed = { dismissedInvoked = true },
+                onDeleteBehaviorLogConfirmed = { confirmedInvoked = true }
+            )
+        }
+
+        composeTestRule.onNodeWithTag("settings_delete_behavior_log_dialog_cancel_button").performClick()
+
+        assertEqualsBoolean(true, dismissedInvoked)
+        assertEqualsBoolean(false, confirmedInvoked)
+    }
+
+    // T-P10-16/17: エッジケース（回帰ガード） - deleteBehaviorLogResult=null（既定）では結果
+    // バナーが存在しない。
+    @Test
+    fun deleteBehaviorLogResult_null_hidesResultBanner() {
+        composeTestRule.setContent {
+            SettingsScreen(uiState = singleModelUiState())
+        }
+
+        composeTestRule.onNodeWithTag("settings_delete_behavior_log_result_text").assertDoesNotExist()
+    }
+
+    // T-P10-16: 正常 - deleteBehaviorLogResult=Successで成功文言のバナーが表示される
+    // （サイレント化しない、§8「結果をUIへ明示」）。
+    @Test
+    fun deleteBehaviorLogResult_success_showsSuccessMessage() {
+        composeTestRule.setContent {
+            SettingsScreen(
+                uiState = singleModelUiState().copy(deleteBehaviorLogResult = DeleteBehaviorLogResult.Success)
+            )
+        }
+        val context = RuntimeEnvironment.getApplication()
+
+        composeTestRule.onNodeWithTag("settings_delete_behavior_log_result_text")
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText(context.getString(R.string.settings_delete_behavior_log_success_message))
+            .assertIsDisplayed()
+    }
+
+    // T-P10-17: 異常 - deleteBehaviorLogResult=Failureで失敗文言のバナーが表示される
+    // （サイレント化しない、§8「削除処理自体の失敗は握り潰さずUIへ結果を返す」）。
+    @Test
+    fun deleteBehaviorLogResult_failure_showsFailureMessage() {
+        composeTestRule.setContent {
+            SettingsScreen(
+                uiState = singleModelUiState().copy(deleteBehaviorLogResult = DeleteBehaviorLogResult.Failure)
+            )
+        }
+        val context = RuntimeEnvironment.getApplication()
+
+        composeTestRule.onNodeWithTag("settings_delete_behavior_log_result_text")
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText(context.getString(R.string.settings_delete_behavior_log_failure_message))
+            .assertIsDisplayed()
+    }
+
+    // T-P10-16/17: 正常 - 結果バナーの閉じるボタンはonDeleteBehaviorLogResultAcknowledgedを呼ぶ。
+    @Test
+    fun deleteBehaviorLogResultDismissButton_tap_invokesOnDeleteBehaviorLogResultAcknowledged() {
+        var invoked = false
+        composeTestRule.setContent {
+            SettingsScreen(
+                uiState = singleModelUiState().copy(deleteBehaviorLogResult = DeleteBehaviorLogResult.Success),
+                onDeleteBehaviorLogResultAcknowledged = { invoked = true }
+            )
+        }
+
+        composeTestRule.onNodeWithTag("settings_delete_behavior_log_result_dismiss_button").performScrollTo().performClick()
+
+        assertEqualsBoolean(true, invoked)
     }
 
     private fun assertEqualsBoolean(expected: Boolean, actual: Boolean?) {

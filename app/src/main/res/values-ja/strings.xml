@@ -236,4 +236,14 @@
     <string name="settings_capacity_available_format">空き容量: %1$.2f GB</string>
     <string name="settings_capacity_insufficient_warning">このモデルをダウンロードするための空き容量が不足しています。</string>
     <string name="settings_open_button_label">設定</string>
+    <string name="settings_data_section_title">データ</string>
+    <string name="settings_delete_behavior_log_description">Planの個人化に使われているローカル保存の行動ログを完全に削除します。</string>
+    <string name="settings_delete_behavior_log_button">行動ログを削除</string>
+    <string name="settings_delete_behavior_log_dialog_title">行動ログを削除しますか？</string>
+    <string name="settings_delete_behavior_log_dialog_message">ローカルに保存されている行動ログとPersonal Profileのデータをすべて完全に削除します。この操作は取り消せません。</string>
+    <string name="settings_delete_behavior_log_dialog_confirm_button">削除</string>
+    <string name="settings_delete_behavior_log_dialog_cancel_button">キャンセル</string>
+    <string name="settings_delete_behavior_log_success_message">行動ログを削除しました。</string>
+    <string name="settings_delete_behavior_log_failure_message">行動ログを削除できませんでした。もう一度お試しください。</string>
+    <string name="settings_delete_behavior_log_result_dismiss_button">閉じる</string>
 </resources>

@@ -243,4 +243,14 @@
     <string name="settings_capacity_available_format">Available: %1$.2f GB</string>
     <string name="settings_capacity_insufficient_warning">Not enough free space to download this model.</string>
     <string name="settings_open_button_label">Settings</string>
+    <string name="settings_data_section_title">Data</string>
+    <string name="settings_delete_behavior_log_description">Permanently delete the locally stored behavior log used to personalize your plans.</string>
+    <string name="settings_delete_behavior_log_button">Delete behavior log</string>
+    <string name="settings_delete_behavior_log_dialog_title">Delete behavior log?</string>
+    <string name="settings_delete_behavior_log_dialog_message">This permanently deletes all locally stored behavior log data and personal profile data. This action cannot be undone.</string>
+    <string name="settings_delete_behavior_log_dialog_confirm_button">Delete</string>
+    <string name="settings_delete_behavior_log_dialog_cancel_button">Cancel</string>
+    <string name="settings_delete_behavior_log_success_message">Behavior log deleted.</string>
+    <string name="settings_delete_behavior_log_failure_message">Couldn\'t delete the behavior log. Please try again.</string>
+    <string name="settings_delete_behavior_log_result_dismiss_button">OK</string>
 </resources>

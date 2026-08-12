@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -56,7 +57,20 @@ import com.actionstarter.ai.model.ModelDownloadFailureReason
  * "settings_model_status_text_&lt;id&gt;" / "settings_download_progress_&lt;id&gt;" /
  * "settings_download_button_&lt;id&gt;" / "settings_delete_button_&lt;id&gt;" /
  * "settings_capacity_required_text_&lt;id&gt;" / "settings_capacity_available_text" /
- * "settings_capacity_insufficient_warning_&lt;id&gt;"。
+ * "settings_capacity_insufficient_warning_&lt;id&gt;" /
+ * "settings_delete_behavior_log_button" / "settings_delete_behavior_log_dialog" /
+ * "settings_delete_behavior_log_dialog_confirm_button" /
+ * "settings_delete_behavior_log_dialog_cancel_button" /
+ * "settings_delete_behavior_log_result_text" / "settings_delete_behavior_log_result_dismiss_button"
+ * （Phase 10 C4、[BehaviorLogSection]参照）。
+ *
+ * **Phase 10 C4新設（計画書§3.4「全削除導線」、T-P10-16/17/18）**: [BehaviorLogSection]
+ * （「行動ログを削除」ボタン＋確認ダイアログ＋結果表示）を追加した。**結果表示（成功/失敗）は
+ * NavHostスコープの[com.actionstarter.navigation.ActionStarterNavHost]の`SnackbarHostState`
+ * ではなく、本Screen内の条件付きインラインText（`settings_ai_unsupported_reason`と同型の
+ * 既存様式）で実装した**——[SettingsScreen]自体は§10.6の疎結合規約どおり`uiState`＋
+ * コールバック引数のみで完結し、NavHost側の状態（`SnackbarHostState`・`coroutineScope`）へ
+ * 依存させないため。実装時の判断であり完了報告で開示済み。
  */
 @Composable
 fun SettingsScreen(
@@ -65,7 +79,11 @@ fun SettingsScreen(
     onAiEnabledToggled: (Boolean) -> Unit = {},
     onModelSelected: (ModelOption) -> Unit = {},
     onDownloadRequested: (ModelCatalogEntry) -> Unit = {},
-    onDeleteRequested: (ModelCatalogEntry) -> Unit = {}
+    onDeleteRequested: (ModelCatalogEntry) -> Unit = {},
+    onDeleteBehaviorLogRequested: () -> Unit = {},
+    onDeleteBehaviorLogDialogDismissed: () -> Unit = {},
+    onDeleteBehaviorLogConfirmed: () -> Unit = {},
+    onDeleteBehaviorLogResultAcknowledged: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -101,6 +119,114 @@ fun SettingsScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.testTag("settings_capacity_available_text")
         )
+        Spacer(Modifier.height(16.dp))
+        BehaviorLogSection(
+            uiState = uiState,
+            onDeleteBehaviorLogRequested = onDeleteBehaviorLogRequested,
+            onDeleteBehaviorLogResultAcknowledged = onDeleteBehaviorLogResultAcknowledged
+        )
+    }
+
+    // T-P10-18（誤タップ防止）: ダイアログの表示可否は uiState.isDeleteBehaviorLogDialogVisible
+    // （SettingsViewModel.onDeleteBehaviorLogRequestedが唯一の起点）が単一の真実源。
+    // confirmButtonのonClickのみがonDeleteBehaviorLogConfirmed（AnalyticsStore.clearAllを呼ぶ
+    // 唯一の経路、SettingsViewModelのKDoc参照）を呼ぶ。dismissButton／onDismissRequestは
+    // いずれもonDeleteBehaviorLogDialogDismissedのみを呼びclearAllへは到達しない。
+    if (uiState.isDeleteBehaviorLogDialogVisible) {
+        AlertDialog(
+            onDismissRequest = onDeleteBehaviorLogDialogDismissed,
+            title = { Text(stringResource(R.string.settings_delete_behavior_log_dialog_title)) },
+            text = { Text(stringResource(R.string.settings_delete_behavior_log_dialog_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = onDeleteBehaviorLogConfirmed,
+                    modifier = Modifier.testTag("settings_delete_behavior_log_dialog_confirm_button")
+                ) {
+                    Text(stringResource(R.string.settings_delete_behavior_log_dialog_confirm_button))
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = onDeleteBehaviorLogDialogDismissed,
+                    modifier = Modifier.testTag("settings_delete_behavior_log_dialog_cancel_button")
+                ) {
+                    Text(stringResource(R.string.settings_delete_behavior_log_dialog_cancel_button))
+                }
+            },
+            modifier = Modifier.testTag("settings_delete_behavior_log_dialog")
+        )
+    }
+}
+
+/**
+ * Phase 10 C4新設（計画書§3.4「全削除導線」、T-P10-16/17/18）。「行動ログを削除」区画。
+ * ボタンタップは[onDeleteBehaviorLogRequested]（ダイアログを開くのみ）を呼ぶだけで、
+ * 削除そのものは[SettingsScreen]直下の[AlertDialog]の確定操作でのみ発火する（誤タップ防止、
+ * 破壊的操作ガード）。[SettingsUiState.deleteBehaviorLogResult]が非nullの間は結果バナーを
+ * 表示する——成功は[MaterialTheme.colorScheme.primary]（`settings_model_status_installed`と
+ * 同型の成功色）、失敗は[MaterialTheme.colorScheme.error]（`settings_ai_unsupported_reason`と
+ * 同型のエラー色）。閉じるボタンで[onDeleteBehaviorLogResultAcknowledged]を呼びバナーを消す
+ * （§8「削除処理自体の失敗は握り潰さずUIへ結果を返す」を、ユーザーが明示的に確認するまで
+ * 消えない形で満たす）。
+ */
+@Composable
+private fun BehaviorLogSection(
+    uiState: SettingsUiState,
+    onDeleteBehaviorLogRequested: () -> Unit,
+    onDeleteBehaviorLogResultAcknowledged: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = stringResource(R.string.settings_data_section_title),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.settings_delete_behavior_log_description),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onDeleteBehaviorLogRequested,
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier.testTag("settings_delete_behavior_log_button")
+            ) {
+                Text(stringResource(R.string.settings_delete_behavior_log_button))
+            }
+            val result = uiState.deleteBehaviorLogResult
+            if (result != null) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val (messageRes, color) = when (result) {
+                        DeleteBehaviorLogResult.Success ->
+                            R.string.settings_delete_behavior_log_success_message to MaterialTheme.colorScheme.primary
+                        DeleteBehaviorLogResult.Failure ->
+                            R.string.settings_delete_behavior_log_failure_message to MaterialTheme.colorScheme.error
+                    }
+                    Text(
+                        text = stringResource(messageRes),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = color,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("settings_delete_behavior_log_result_text")
+                    )
+                    TextButton(
+                        onClick = onDeleteBehaviorLogResultAcknowledged,
+                        modifier = Modifier.testTag("settings_delete_behavior_log_result_dismiss_button")
+                    ) {
+                        Text(stringResource(R.string.settings_delete_behavior_log_result_dismiss_button))
+                    }
+                }
+            }
+        }
     }
 }
 

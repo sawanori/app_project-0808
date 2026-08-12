@@ -3,7 +3,7 @@
 > 対象仕様: `Action_Starter_Master_Specification_v2.0_Android.md`（本フェーズより採番判明済み、以後この版を「仕様」と呼ぶ）§74「Phase 10」（Personal Profile・履歴保存・次回Planへ反映）・§52「Personal Execution Profile」（Kotlin型定義）・§22/§23（Personal Profile構想・将来像）・§53「Analytics / Test Log」・§54「時刻ログ」・§55/§56（KPI定義）・§10「Local-first AI」・§58「Privacy」・§59「Local Data」・§60「Telemetry」・§32「Recovery Option」・§61「MVPに入れない機能」・§34「ユーザー最終決定」・§88「Developer UX Principle」
 > 前提基盤: 第1弾C-18（行動ログ、唯一の未達項目）・Phase 9/9.5（Recovery AI化・計測駆動改善、ADR-0063/0064）・既存scaffold `domain/model/PersonalExecutionProfile.kt`（Phase 8.5 C2で宣言のみ実装済み）・`persistence/ExecutionScheduleStore.kt`（Phase 5、ADR-0025）・ADR-0049決定5（`AnalyticsStore`をPhase 10/12で導入）
 > 種別: 機能実装フェーズ（A/B実測は伴わない。Phase 9.5と異なりRed→Green→実機受け入れの通常フローで進める）
-> 承認状態: **敵対的レビュー完了（§13、オーケストレーター9点＋Gemini 8件、CRITICAL2件は両者収束）・修正版確定。§12確認事項は委任フローどおり全8件確定。以後コード実装（Step 3〜）へ進む。**
+> 承認状態: **敵対的レビュー完了（§13、オーケストレーター9点＋Gemini 8件、CRITICAL2件は両者収束）・修正版確定。§12確認事項は委任フローどおり全8件確定。C1〜C4実装完了（Green、§11コミット粒度どおり）。ADR起票・実機受け入れへ進む。**
 
 ---
 
@@ -88,6 +88,14 @@ Phase 10は2つの柱からなる。**(A) 行動ログ**: `PlanReviewScreen`（A
 - **保持期間・ローテーション**: 仕様に規定なし。**確定値は直近180日 or 直近500件のいずれか小さい方**（§12確認事項3、確定）。書き込み時に古い行を削除するローテーションとし、ローテーション自体の失敗は書き込み本体をブロックしない（§8）。
 - **全削除導線**: Settings画面へ「行動ログを削除」アクションを新設し、確認ダイアログ（破壊的操作ガード必須）を経て`BehaviorEventEntity`・`PersonalExecutionProfileEntity`両方を全削除する`AnalyticsStore.clearAll()`を設ける。削除処理自体の失敗は握り潰さずUIへ結果を返す（§8、サイレント障害の原則違反を避ける）。
 - **書き込み/clearAll排他（レビュー§13 No.6、Gemini G6）**: `RoomAnalyticsStore`内で`Mutex`を保持し、通常のイベント記録・Profile集計・`clearAll()`の全操作を直列化する。`clearAll()`実行中に別コルーチンからの書き込みが割り込み、削除直後に古いデータが復活する競合を防ぐ。
+
+#### 3.4.1 実装注記（C4 Green、Step 4完了記録）
+
+- **全削除導線**: `SettingsViewModel`に`onDeleteBehaviorLogRequested`（確認ダイアログ表示のみ）・`onDeleteBehaviorLogDialogDismissed`（キャンセル）・`onDeleteBehaviorLogConfirmed`（`AnalyticsStore.clearAll()`を呼ぶ唯一の経路、結果をSuccess/Failureで`SettingsUiState.deleteBehaviorLogResult`へ明示）・`onDeleteBehaviorLogResultAcknowledged`（結果バナーのクローズ）の4メソッドを実装した。`analyticsStore`が`null`（Room初期化失敗、C1の`AppContainer`防御と同型）の場合もサイレントに無視せず`Failure`として明示する。
+- **確認ダイアログ**: `SettingsScreen`に`AlertDialog`（破壊的操作の文言を明示するtitle/message、confirm/dismiss独立ボタン）を追加した。`confirmButton`のonClickのみが`onDeleteBehaviorLogConfirmed`（clearAllを呼ぶ経路）を呼び、通常ボタン・`dismissButton`・`onDismissRequest`はいずれも到達しない（T-P10-18の構造的保証）。
+- **結果表示の実装方式（コーディネーター指示「スナックバー等既存様式に合わせる」への回答）**: 当初`ActionStarterNavHost`の`SnackbarHostState`（T-NAV-4で確立済みの既存様式）の使用を検討したが、これは`SettingsScreen`自体には結びついておらずNavHostスコープの状態であり、配線するには`SettingsScreen`の§10.6疎結合契約（`uiState`＋コールバック引数のみで完結）を破ってNavHost状態への依存を持ち込む必要があった。代わりに、同じ`SettingsScreen.kt`内に既に存在する条件付きインラインText様式（`settings_ai_unsupported_reason`のエラー色表示、`settings_model_status_installed`の成功色表示）を「既存様式」として採用し、成功/失敗バナー＋明示的な閉じるボタン（`onDeleteBehaviorLogResultAcknowledged`）として実装した。§10.6準拠を維持しつつ、コーディネーター指示の趣旨（既存様式の踏襲・サイレント化しない明示表示）を満たす判断として完了報告で開示した。
+- **T-P10-16b（Mutex直列化の決定的検証）**: `RoomAnalyticsStoreTest`へ`tP10_16b_clearAll_concurrentWithInFlightRecord_mutexSerializes_noStaleDataSurvives`を追加した。T-P95-55（`LocalAiGatewayTest`）で確立した`CompletableDeferred`シグナル方式を踏襲し、`record()`がmutex内でinsert中（人工遅延200ms）であることを確認してから`clearAll()`を起動、`insertCompleted`が必ず`deleteAllInvoked`より先に記録されることを直列化の決定的証拠とした。`clearAll()`から`mutex.withLock`を一時的に外すミューテーション検査で本テストが正しくRed化することを確認済み。
+- **strings.xml**: `settings_data_section_title`ほか新規10キーをen/ja両方へ追加し、`StringResourceParityTest`のキー総数ピン（130→140）と新規キー一覧テストを追随させた。
 
 ### 3.5 スコープ外（見送り・理由を明記）
 

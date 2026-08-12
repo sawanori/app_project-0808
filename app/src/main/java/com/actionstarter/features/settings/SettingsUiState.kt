@@ -28,14 +28,44 @@ import com.actionstarter.ai.model.ModelStorage
  * @param availableBytes 現在の空き容量（[ModelStorage.availableBytes]、T-SET-5）。行ごとの
  *   必要容量は[ModelOptionUiState.requiredBytesForDownload]と比較して呼び出し側
  *   （[SettingsScreen]）が容量不足を判定する。
+ * @param isDeleteBehaviorLogDialogVisible Phase 10 C4新設（計画書§3.4「全削除導線」、T-P10-18、
+ *   Red段階スキャフォールド）。「行動ログを削除」ボタンは本フラグを`true`にするだけで
+ *   [com.actionstarter.analytics.AnalyticsStore.clearAll]自体は呼ばない（誤タップ防止の
+ *   確認ダイアログゲート）。実際の削除は確認ダイアログの確定操作
+ *   （[SettingsViewModel.onDeleteBehaviorLogConfirmed]）でのみ発火する。
+ * @param deleteBehaviorLogResult Phase 10 C4新設（計画書§3.4・§8「削除処理自体の失敗は握り潰さず
+ *   UIへ結果を返す」、T-P10-16/17）。削除確定後の結果（成功/失敗）を明示する。`null`は
+ *   「未実行、または結果表示済みで[SettingsViewModel.onDeleteBehaviorLogResultAcknowledged]で
+ *   クリア済み」を意味する。
  */
 data class SettingsUiState(
     val aiEnabled: Boolean = false,
     val isDeviceSupported: Boolean = true,
     val deviceUnsupportedReason: DeviceUnsupportedReason? = null,
     val models: List<ModelOptionUiState> = defaultModelOptions(),
-    val availableBytes: Long = 0L
+    val availableBytes: Long = 0L,
+    val isDeleteBehaviorLogDialogVisible: Boolean = false,
+    val deleteBehaviorLogResult: DeleteBehaviorLogResult? = null
 )
+
+/**
+ * Phase 10 C4新設（計画書§3.4「全削除導線」、T-P10-16/17、Red段階スキャフォールド）。
+ * [SettingsViewModel.onDeleteBehaviorLogConfirmed]完了後の結果（[SettingsUiState.
+ * deleteBehaviorLogResult]）。サイレント障害を避けるため、成功・失敗いずれも明示的に
+ * UIへ返す（§8エラー＆レスキューマップ「全データ削除（Settings）」行）。
+ */
+sealed interface DeleteBehaviorLogResult {
+    /** [com.actionstarter.analytics.AnalyticsStore.clearAll]がResult.successを返した。 */
+    data object Success : DeleteBehaviorLogResult
+
+    /**
+     * [com.actionstarter.analytics.AnalyticsStore.clearAll]がResult.failureを返した場合、
+     * または[SettingsViewModel]に`analyticsStore`が注入されていない場合（Room初期化失敗、
+     * C1の[com.actionstarter.di.AppContainer]防御と同型）。理由文言は失敗理由を問わず一律
+     * （破壊的操作の失敗を握り潰さず明示する、という要件自体が主眼のため）。
+     */
+    data object Failure : DeleteBehaviorLogResult
+}
 
 /**
  * [SettingsUiState.models]の既定値（「自動」＋実カタログ候補、いずれも未DL・非選択状態）。

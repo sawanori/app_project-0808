@@ -412,7 +412,14 @@ fun ActionStarterNavHost(
                     onAiEnabledToggled = viewModel::onAiEnabledToggled,
                     onModelSelected = viewModel::onModelSelected,
                     onDownloadRequested = { entry -> viewModel.onDownloadRequested(entry) },
-                    onDeleteRequested = viewModel::onDeleteRequested
+                    onDeleteRequested = viewModel::onDeleteRequested,
+                    // Phase 10 C4実配線（計画書§3.4「全削除導線」）: onDeleteBehaviorLogConfirmedは
+                    // Job（onDownloadRequestedと同型のテスト用フック）を返すため、
+                    // onDownloadRequestedと同じくラムダで戻り値を捨てる。
+                    onDeleteBehaviorLogRequested = viewModel::onDeleteBehaviorLogRequested,
+                    onDeleteBehaviorLogDialogDismissed = viewModel::onDeleteBehaviorLogDialogDismissed,
+                    onDeleteBehaviorLogConfirmed = { viewModel.onDeleteBehaviorLogConfirmed() },
+                    onDeleteBehaviorLogResultAcknowledged = viewModel::onDeleteBehaviorLogResultAcknowledged
                 )
             }
         }

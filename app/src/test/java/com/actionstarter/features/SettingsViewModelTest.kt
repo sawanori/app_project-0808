@@ -14,6 +14,10 @@ import com.actionstarter.ai.model.ModelDownloader
 import com.actionstarter.ai.model.ModelLicense
 import com.actionstarter.ai.model.ModelStorage
 import com.actionstarter.ai.model.ModelVerifierImpl
+import com.actionstarter.analytics.AnalyticsDomain
+import com.actionstarter.analytics.AnalyticsStore
+import com.actionstarter.domain.model.PersonalExecutionProfile
+import com.actionstarter.features.settings.DeleteBehaviorLogResult
 import com.actionstarter.features.settings.DeviceUnsupportedReason
 import com.actionstarter.features.settings.ModelDownloadStatus
 import com.actionstarter.features.settings.ModelOption
@@ -97,6 +101,39 @@ class SettingsViewModelTest {
         override var aiEnabled: Boolean = false,
         override var selectedModelId: String? = null
     ) : AiPreferences
+
+    /**
+     * Phase 10 C4新設（計画書§3.4、T-P10-16/17/18、Red段階）。[clearAllResult]で
+     * [AnalyticsStore.clearAll]の戻り値を制御し、[clearAllCallCount]で誤タップ防止ガード
+     * （確認前にclearAllが呼ばれていないこと）を検証する。他4つのrecordXxxメソッドは
+     * Settings画面の削除導線と無関係のため呼び出し記録を持たない
+     * （[RecoveryViewModelAnalyticsTest.FakeAnalyticsStore]等、既存Phase 10テストと同型の
+     * 最小fake）。
+     */
+    private class FakeAnalyticsStore(
+        private val clearAllResult: Result<Unit> = Result.success(Unit)
+    ) : AnalyticsStore {
+        var clearAllCallCount: Int = 0
+            private set
+
+        override suspend fun recordStepDone(eventCategory: String, stepType: String, durationMs: Long?) = Unit
+        override suspend fun recordStepSkipped(eventCategory: String, semanticAction: String) = Unit
+        override suspend fun recordDelayDetected(eventCategory: String) = Unit
+        override suspend fun recordRecoverySelected(eventCategory: String, semanticAction: String) = Unit
+        override suspend fun recordAiWordingOutcome(
+            domain: AnalyticsDomain,
+            eventCategory: String,
+            aiAdopted: Boolean,
+            fallbackReason: String?
+        ) = Unit
+
+        override suspend fun getProfile(eventCategory: String): PersonalExecutionProfile? = null
+
+        override suspend fun clearAll(): Result<Unit> {
+            clearAllCallCount++
+            return clearAllResult
+        }
+    }
 
     /**
      * [availableMemoryBytes]はPhase 8.5 F-B追加（§11確認事項1、`isMemoryInsufficient`用）。
@@ -789,6 +826,166 @@ class SettingsViewModelTest {
             "選択値(AiPreferences.selectedModelId)自体は削除操作で変更されないべきです(計画書§7)",
             gemma.id,
             prefs.selectedModelId
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 10 C4新規（計画書§3.4「全削除導線」、T-P10-16/17/18、Step 3 Red）。
+    // onDeleteBehaviorLogRequested・onDeleteBehaviorLogDialogDismissed・
+    // onDeleteBehaviorLogConfirmed・onDeleteBehaviorLogResultAcknowledgedは全件`TODO()`のため
+    // NotImplementedErrorでRedになるのが正しい（Phase 8.5 F-B、本ファイル上部のクラスKDoc
+    // 「以下は全件...TODO()のため...」の記述と同型のスキャフォールド）。コーディネーター指示に
+    // よりGreenは次ラウンドへ分離するため、本ラウンドではRed化の確認のみを目的とする。
+    // ------------------------------------------------------------------
+
+    private fun newViewModelForDeletion(analyticsStore: FakeAnalyticsStore): SettingsViewModel {
+        val storage = FakeModelStorage(tempDir())
+        val entry = entryFor("model-a", "content".toByteArray())
+        return SettingsViewModel(
+            aiPreferences = FakeAiPreferences(),
+            modelDownloader = ModelDownloader(storage, ModelVerifierImpl(), FakeHttpRangeClient(200, ByteArray(0))),
+            modelStorage = storage,
+            deviceCapability = FakeDeviceCapability(),
+            availableModels = listOf(entry),
+            analyticsStore = analyticsStore
+        )
+    }
+
+    // T-P10-18: 正常 - 削除ボタン相当の操作は確認ダイアログを表示するのみで、clearAll()を
+    // 一切呼ばない（誤タップ防止）。
+    @Test
+    fun onDeleteBehaviorLogRequested_showsConfirmationDialog_doesNotCallClearAllYet() {
+        val analyticsStore = FakeAnalyticsStore()
+        val viewModel = newViewModelForDeletion(analyticsStore)
+
+        viewModel.onDeleteBehaviorLogRequested()
+
+        assertTrue(
+            "確認ダイアログを表示するべきです(T-P10-18)",
+            viewModel.uiState.value.isDeleteBehaviorLogDialogVisible
+        )
+        assertEquals(
+            "ダイアログ表示だけではclearAll()を呼んではいけません(T-P10-18、誤タップ防止)",
+            0,
+            analyticsStore.clearAllCallCount
+        )
+    }
+
+    // T-P10-18: 異常（キャンセル経路） - ダイアログをキャンセルしてもclearAll()は呼ばれない。
+    @Test
+    fun onDeleteBehaviorLogDialogDismissed_hidesDialog_doesNotCallClearAll() {
+        val analyticsStore = FakeAnalyticsStore()
+        val viewModel = newViewModelForDeletion(analyticsStore)
+        viewModel.onDeleteBehaviorLogRequested()
+
+        viewModel.onDeleteBehaviorLogDialogDismissed()
+
+        assertFalse(
+            "キャンセル後はダイアログが閉じるべきです(T-P10-18)",
+            viewModel.uiState.value.isDeleteBehaviorLogDialogVisible
+        )
+        assertEquals(
+            "キャンセル経路ではclearAll()を呼んではいけません(T-P10-18)",
+            0,
+            analyticsStore.clearAllCallCount
+        )
+    }
+
+    // T-P10-16: 正常 - 確認操作でclearAll()が正確に1回呼ばれ、ダイアログが閉じる
+    // （確認ダイアログを経由した場合のみ削除APIへ到達することの直接証明）。
+    @Test
+    fun onDeleteBehaviorLogConfirmed_callsClearAllExactlyOnce_hidesDialog() = runTest {
+        val analyticsStore = FakeAnalyticsStore()
+        val viewModel = newViewModelForDeletion(analyticsStore)
+        viewModel.onDeleteBehaviorLogRequested()
+
+        viewModel.onDeleteBehaviorLogConfirmed().join()
+
+        assertEquals(
+            "確認操作でclearAll()が正確に1回呼ばれるべきです(T-P10-16)",
+            1,
+            analyticsStore.clearAllCallCount
+        )
+        assertFalse(
+            "確認後はダイアログが閉じるべきです",
+            viewModel.uiState.value.isDeleteBehaviorLogDialogVisible
+        )
+    }
+
+    // T-P10-16: 正常 - clearAll()成功時はuiState.deleteBehaviorLogResultがSuccessになる。
+    @Test
+    fun onDeleteBehaviorLogConfirmed_success_setsSuccessResult() = runTest {
+        val analyticsStore = FakeAnalyticsStore(clearAllResult = Result.success(Unit))
+        val viewModel = newViewModelForDeletion(analyticsStore)
+        viewModel.onDeleteBehaviorLogRequested()
+
+        viewModel.onDeleteBehaviorLogConfirmed().join()
+
+        assertEquals(
+            "成功時はSuccessを明示するべきです(T-P10-16)",
+            DeleteBehaviorLogResult.Success,
+            viewModel.uiState.value.deleteBehaviorLogResult
+        )
+    }
+
+    // T-P10-17: 異常 - clearAll()失敗時は例外を握り潰さずuiState.deleteBehaviorLogResultが
+    // Failureになる（サイレント化しない、§8エラー＆レスキューマップ「全データ削除（Settings）」行）。
+    @Test
+    fun onDeleteBehaviorLogConfirmed_failure_setsFailureResult_doesNotSwallow() = runTest {
+        val analyticsStore = FakeAnalyticsStore(
+            clearAllResult = Result.failure(IllegalStateException("simulated Room I/O failure"))
+        )
+        val viewModel = newViewModelForDeletion(analyticsStore)
+        viewModel.onDeleteBehaviorLogRequested()
+
+        viewModel.onDeleteBehaviorLogConfirmed().join()
+
+        assertEquals(
+            "失敗を握り潰さずFailureとして明示するべきです(T-P10-17)",
+            DeleteBehaviorLogResult.Failure,
+            viewModel.uiState.value.deleteBehaviorLogResult
+        )
+    }
+
+    // T-P10-17エッジケース: analyticsStoreが未注入(null、Room初期化失敗時のC1 AppContainer防御と
+    // 同型)でもクラッシュせず、サイレントに何もしないのではなくFailureとして明示する。
+    @Test
+    fun onDeleteBehaviorLogConfirmed_analyticsStoreNull_setsFailureResult_doesNotCrash() = runTest {
+        val storage = FakeModelStorage(tempDir())
+        val entry = entryFor("model-a", "content".toByteArray())
+        val viewModel = SettingsViewModel(
+            aiPreferences = FakeAiPreferences(),
+            modelDownloader = ModelDownloader(storage, ModelVerifierImpl(), FakeHttpRangeClient(200, ByteArray(0))),
+            modelStorage = storage,
+            deviceCapability = FakeDeviceCapability(),
+            availableModels = listOf(entry),
+            analyticsStore = null
+        )
+        viewModel.onDeleteBehaviorLogRequested()
+
+        viewModel.onDeleteBehaviorLogConfirmed().join()
+
+        assertEquals(
+            "analyticsStore未注入時もクラッシュせずFailureとして明示するべきです(T-P10-17、C1防御と同型)",
+            DeleteBehaviorLogResult.Failure,
+            viewModel.uiState.value.deleteBehaviorLogResult
+        )
+    }
+
+    // T-P10-16/17: 正常 - 結果表示の確認操作でdeleteBehaviorLogResultがnullへ戻る。
+    @Test
+    fun onDeleteBehaviorLogResultAcknowledged_clearsResult() = runTest {
+        val analyticsStore = FakeAnalyticsStore(clearAllResult = Result.success(Unit))
+        val viewModel = newViewModelForDeletion(analyticsStore)
+        viewModel.onDeleteBehaviorLogRequested()
+        viewModel.onDeleteBehaviorLogConfirmed().join()
+        assertEquals(DeleteBehaviorLogResult.Success, viewModel.uiState.value.deleteBehaviorLogResult)
+
+        viewModel.onDeleteBehaviorLogResultAcknowledged()
+
+        assertNull(
+            "確認操作後はdeleteBehaviorLogResultがnullへ戻るべきです",
+            viewModel.uiState.value.deleteBehaviorLogResult
         )
     }
 }

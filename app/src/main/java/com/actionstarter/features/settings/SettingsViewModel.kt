@@ -10,6 +10,7 @@ import com.actionstarter.ai.model.ModelCatalogEntry
 import com.actionstarter.ai.model.ModelDownloadResult
 import com.actionstarter.ai.model.ModelDownloader
 import com.actionstarter.ai.model.ModelStorage
+import com.actionstarter.analytics.AnalyticsStore
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +38,18 @@ import kotlinx.coroutines.launch
  * **Step 4（Green）で実装完了（本コミット）**: [refresh]・[onModelSelected]・
  * [onDownloadRequested]・[onDeleteRequested]の本体を実装した。[onAiEnabledToggled]は
  * 多モデル化と無関係な既存ロジックのため変更していない。
+ *
+ * **Phase 10 C4実装（計画書§3.4「全削除導線」、ADR-0049決定5、Step 3 Red→Step 4 Green）**:
+ * [analyticsStore]を末尾・既定`null`で追加した（[com.actionstarter.features.execution.
+ * ExecutionViewModel]等のPhase 10 C2/C3と同型の後方互換パターン。既存の4引数構築を壊さない）。
+ * 「行動ログを削除」導線の本体（[onDeleteBehaviorLogRequested]・
+ * [onDeleteBehaviorLogDialogDismissed]・[onDeleteBehaviorLogConfirmed]・
+ * [onDeleteBehaviorLogResultAcknowledged]）は、Red段階では本クラスのPhase 8.5 F-B前例
+ * （[refresh]等を`TODO()`でスキャフォールドした手法、
+ * [com.actionstarter.features.SettingsViewModelTest]のクラスKDoc参照）と同型の`TODO()`
+ * スキャフォールドとして追加し、Green（本コミット）で実装を完了した。[SettingsScreen]側の
+ * 確認ダイアログUI・削除結果表示（インラインバナー方式、KDoc[SettingsUiState.
+ * deleteBehaviorLogResult]参照）もGreenで併せて配線した。
  */
 class SettingsViewModel(
     private val aiPreferences: AiPreferences,
@@ -46,7 +59,8 @@ class SettingsViewModel(
     private val availableModels: List<ModelCatalogEntry> = listOf(
         ModelCatalog.GEMMA_4_E2B_IT,
         ModelCatalog.QWEN3_0_6B_INT4_BLOCK32
-    )
+    ),
+    private val analyticsStore: AnalyticsStore? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -208,6 +222,63 @@ class SettingsViewModel(
     fun onDeleteRequested(entry: ModelCatalogEntry) {
         modelStorage.delete(entry)
         refresh()
+    }
+
+    /**
+     * Phase 10 C4実装（計画書§3.4「全削除導線」、T-P10-18、Green）。「行動ログを
+     * 削除」ボタンのタップ操作。**確認ダイアログを表示するだけで[AnalyticsStore.clearAll]は
+     * 一切呼ばない**（誤タップ防止のガード自体がこのメソッドの全責務。実削除は
+     * [onDeleteBehaviorLogConfirmed]でのみ発火する）。
+     */
+    fun onDeleteBehaviorLogRequested() {
+        _uiState.update { it.copy(isDeleteBehaviorLogDialogVisible = true) }
+    }
+
+    /**
+     * Phase 10 C4実装（計画書§3.4、T-P10-18、Green）。確認ダイアログの
+     * キャンセル／dismiss操作。ダイアログを閉じるのみで[AnalyticsStore.clearAll]は呼ばない。
+     */
+    fun onDeleteBehaviorLogDialogDismissed() {
+        _uiState.update { it.copy(isDeleteBehaviorLogDialogVisible = false) }
+    }
+
+    /**
+     * Phase 10 C4実装（計画書§3.4「全削除導線」・§8エラー＆レスキューマップ「全データ削除
+     * （Settings）」行、T-P10-16/17、Green）。確認ダイアログの確定操作——
+     * **[AnalyticsStore.clearAll]を呼ぶ唯一の経路**。ダイアログを閉じたうえで、結果
+     * （成功/失敗）を[SettingsUiState.deleteBehaviorLogResult]へ握り潰さず反映する
+     * （§8「削除処理自体の失敗は握り潰さずUIへ結果を返す」）。[analyticsStore]が`null`
+     * （Room初期化失敗、C1の[com.actionstarter.di.AppContainer]防御と同型）の場合も
+     * サイレントに何もしないのではなく[DeleteBehaviorLogResult.Failure]として明示する
+     * （`IllegalStateException`をResult.failure相当として扱う。§8の「握り潰さない」原則を
+     * null-storeケースにも一貫適用する）。
+     *
+     * 戻り値[Job]は[onDownloadRequested]と同型のテスト用フック（`.join()`で完了を待てる）。
+     */
+    fun onDeleteBehaviorLogConfirmed(): Job {
+        _uiState.update { it.copy(isDeleteBehaviorLogDialogVisible = false) }
+        return viewModelScope.launch {
+            val store = analyticsStore
+            val result = store?.clearAll()
+                ?: Result.failure(IllegalStateException("analyticsStore is unavailable (Room initialization failed)"))
+            _uiState.update {
+                it.copy(
+                    deleteBehaviorLogResult = if (result.isSuccess) {
+                        DeleteBehaviorLogResult.Success
+                    } else {
+                        DeleteBehaviorLogResult.Failure
+                    }
+                )
+            }
+        }
+    }
+
+    /**
+     * Phase 10 C4実装（計画書§3.4、Green）。成功/失敗表示をUIが表示し終えた後の
+     * 確認操作。[SettingsUiState.deleteBehaviorLogResult]を`null`へ戻す。
+     */
+    fun onDeleteBehaviorLogResultAcknowledged() {
+        _uiState.update { it.copy(deleteBehaviorLogResult = null) }
     }
 
     /**
