@@ -8,6 +8,7 @@ import com.actionstarter.ai.LocalAiPlanContextualizer
 import com.actionstarter.analytics.AnalyticsDomain
 import com.actionstarter.analytics.AnalyticsStore
 import com.actionstarter.domain.model.ExecutionEvent
+import com.actionstarter.domain.model.PersonalExecutionProfile
 import com.actionstarter.domain.valueobject.CalendarSource
 import com.actionstarter.features.planreview.PlanReviewViewModel
 import com.actionstarter.navigation.SharedPlanViewModel
@@ -23,6 +24,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.time.Duration
 import java.time.Instant
 import java.util.Locale
 import java.util.UUID
@@ -147,7 +149,64 @@ class PlanReviewViewModelAnalyticsTest {
         )
     }
 
-    private class FakeAnalyticsStore : AnalyticsStore {
+    // T-P10-12: 正常（回帰） - analyticsStore.getProfileが非nullのPersonalExecutionProfileを
+    // 返すとき、BasicPlanningEngineの既存フォールバック式（profile?.averageTransitionDuration
+    // ?: BasicPlanningDefaults.TRANSITION等、planning/BasicPlanningEngine.kt無改修）が実績値を
+    // 採用し、transitionStartへ反映される。既定値（TRANSITION=5分・PREPARATION=15分）とは
+    // 明確に異なる値（99分・77分）を使い、デフォルトへのフォールバックと区別する。
+    @Test
+    fun tP10_12_nonNullProfile_isUsedByBasicPlanningEngineExistingFallback() = runTest(testDispatcher) {
+        val event = sampleEvent()
+        val profile = PersonalExecutionProfile(
+            eventCategory = "medical",
+            averageTransitionDuration = Duration.ofMinutes(99),
+            averagePreparationDuration = Duration.ofMinutes(77),
+            averageResponseDelay = Duration.ZERO,
+            averageDepartureDelay = Duration.ZERO,
+            preferredArrivalBuffer = Duration.ZERO
+        )
+        val fakeStore = FakeAnalyticsStore(profileToReturn = profile)
+
+        val viewModel = PlanReviewViewModel(
+            planningEngine = BasicPlanningEngine(),
+            sharedPlanViewModel = SharedPlanViewModel().apply { selectEvent(event) },
+            analyticsStore = fakeStore
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val plan = viewModel.uiState.value.plan
+        assertEquals(
+            "travelEstimate=null（arrivalBuffer=10分・travel=0分）でProfile実績値" +
+                "（transition=99分・preparation=77分）を使うと、transitionStartはevent.startDateから" +
+                "10+99+77=186分手前になるべきです(T-P10-12)",
+            event.startDate.minus(Duration.ofMinutes(10 + 99 + 77)),
+            plan?.transitionStart
+        )
+    }
+
+    // T-P10-12b: 正常（回帰） - getProfileがnullを返す（Profileなし）ときは、既存の
+    // ハードコード既定値（TRANSITION=5分・PREPARATION=15分）へフォールバックする
+    // （既存挙動の保存、C3以前と完全同一）。
+    @Test
+    fun tP10_12b_nullProfile_fallsBackToExistingHardcodedDefaults() = runTest(testDispatcher) {
+        val event = sampleEvent()
+        val fakeStore = FakeAnalyticsStore(profileToReturn = null)
+
+        val viewModel = PlanReviewViewModel(
+            planningEngine = BasicPlanningEngine(),
+            sharedPlanViewModel = SharedPlanViewModel().apply { selectEvent(event) },
+            analyticsStore = fakeStore
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val plan = viewModel.uiState.value.plan
+        assertEquals(
+            event.startDate.minus(Duration.ofMinutes(10 + 5 + 15)),
+            plan?.transitionStart
+        )
+    }
+
+    private class FakeAnalyticsStore(private val profileToReturn: PersonalExecutionProfile? = null) : AnalyticsStore {
         data class AiWordingOutcomeCall(
             val domain: AnalyticsDomain,
             val eventCategory: String,
@@ -161,6 +220,7 @@ class PlanReviewViewModelAnalyticsTest {
         override suspend fun recordStepSkipped(eventCategory: String, semanticAction: String) = Unit
         override suspend fun recordDelayDetected(eventCategory: String) = Unit
         override suspend fun recordRecoverySelected(eventCategory: String, semanticAction: String) = Unit
+        override suspend fun getProfile(eventCategory: String): PersonalExecutionProfile? = profileToReturn
 
         override suspend fun recordAiWordingOutcome(
             domain: AnalyticsDomain,

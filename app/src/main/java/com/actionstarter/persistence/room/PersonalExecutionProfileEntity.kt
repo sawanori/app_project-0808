@@ -24,14 +24,17 @@ import androidx.room.PrimaryKey
  * PersonalExecutionProfile`（全フィールド非null`Duration`）への変換は集計・読み出し側
  * （C3実装予定）の責務とする。
  *
- * **C3設計メモ（申し送り）**: `domain.model.PersonalExecutionProfile`は6フィールドとも
- * 非null`Duration`で宣言されており、null許容ではない（型定義自体は本フェーズ非変更、
- * 計画書§5）。したがって本エンティティから変換する際、常にnullな3フィールドへ
- * `Duration.ZERO`等のプレースホルダを充てる必要が生じる——ただし本フェーズは
- * `BasicPlanningEngine`がこの3フィールドを一切参照しないため実害はない。**将来フェーズで
- * この3フィールドを消費する実装を追加する場合は、プレースホルダZEROと「実測ゼロ」を
- * 区別する手段（例: `domain.model.PersonalExecutionProfile`自体のnull許容化、または
- * 別途「計測済みフィールドの集合」を返す設計）を先に用意すること。**
+ * **C3で解消した設計テンション（C1メモの申し送りへの回答、コーディネーター裁定）**:
+ * `domain.model.PersonalExecutionProfile`は6フィールドとも非null`Duration`で宣言されており
+ * null許容ではない（型定義自体は本フェーズ非変更、計画書§5）。本エンティティ→ドメイン型への
+ * 変換（`RoomAnalyticsStore.getProfile`）では、常にnullな3フィールド（および現時点で
+ * サンプルがなくnullな残り2フィールドも同様に）へ**`Duration.ZERO`をプレースホルダとして
+ * 充てる**と裁定した。本フェーズは`BasicPlanningEngine`がこの3フィールドを一切参照しない
+ * ため実害はない。**将来フェーズでこの3フィールドを消費する実装を追加する場合は、
+ * プレースホルダZEROと「実測ゼロ」を区別する手段（例: `domain.model.
+ * PersonalExecutionProfile`自体のnull許容化、または別途「計測済みフィールドの集合」を
+ * 返す設計）を先に用意すること——本裁定はこの区別を後回しにする決定であり、解決した
+ * わけではない点に注意。**
  */
 @Entity(tableName = "personal_execution_profiles")
 data class PersonalExecutionProfileEntity(

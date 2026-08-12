@@ -331,6 +331,8 @@ class RecoveryViewModelAnalyticsTest {
             aiWordingOutcomeCalls += AiWordingOutcomeCall(domain, eventCategory, aiAdopted, fallbackReason)
         }
 
+        override suspend fun getProfile(eventCategory: String): com.actionstarter.domain.model.PersonalExecutionProfile? = null
+
         override suspend fun clearAll(): Result<Unit> = Result.success(Unit)
     }
 }

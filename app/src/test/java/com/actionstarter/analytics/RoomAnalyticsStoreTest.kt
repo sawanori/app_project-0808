@@ -81,10 +81,12 @@ class RoomAnalyticsStoreTest {
 
         override suspend fun getAll(): List<BehaviorEventEntity> = emptyList()
 
-        override suspend fun getRecentByCategoryAndType(
+        override suspend fun getRecentStepDurations(
             eventCategory: String,
             eventType: String,
-            sinceMillis: Long
+            stepType: String,
+            sinceMillis: Long,
+            maxCount: Int
         ): List<BehaviorEventEntity> = emptyList()
 
         override suspend fun deleteOlderThan(beforeMillis: Long): Int = 0

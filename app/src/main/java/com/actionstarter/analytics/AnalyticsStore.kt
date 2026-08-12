@@ -1,5 +1,7 @@
 package com.actionstarter.analytics
 
+import com.actionstarter.domain.model.PersonalExecutionProfile
+
 /**
  * Phase 10 C2（計画書`docs/plans/phase10-behavior-log-profile.md`§2・§3.2、レビュー§13
  * No.1）。[AnalyticsDomain.PLAN]／[AnalyticsDomain.RECOVERY]の2値。`AI_WORDING_OUTCOME`が
@@ -55,6 +57,22 @@ interface AnalyticsStore {
      * ときのみ非null）。
      */
     suspend fun recordAiWordingOutcome(domain: AnalyticsDomain, eventCategory: String, aiAdopted: Boolean, fallbackReason: String?)
+
+    /**
+     * Phase 10 C3（計画書§3.3、修正版計画コーディネーター指示）。[eventCategory]のPersonal
+     * Profileを返す。**返す型は`domain.model.PersonalExecutionProfile`であり、Room型ではない**
+     * （`PersonalExecutionProfile`自体はドメインモデルであり本メソッドを層規律違反にしない）。
+     *
+     * 対象カテゴリのイベントが1件もない（永続化された行自体が存在しない）場合は`null`を返す
+     * （計画書§3.3「イベント0件のカテゴリはPersonalExecutionProfileを返さない」、
+     * `PlanningContext.profile`の既存nullable設計・初回利用フローと整合）。行は存在するが
+     * 個別フィールドにサンプルがない場合（例: 対象カテゴリでTRANSITION種別のステップが
+     * まだ一度も完了していない）、および仕様上計測手段が存在しない3フィールド
+     * （`averageResponseDelay`／`averageDepartureDelay`／`preferredArrivalBuffer`）は
+     * `Duration.ZERO`をプレースホルダとして埋める（`PersonalExecutionProfileEntity`のKDoc
+     * 「C3で解消した設計テンション」参照）。
+     */
+    suspend fun getProfile(eventCategory: String): PersonalExecutionProfile?
 
     /**
      * 行動ログ・Personal Profileの全件を削除する。**失敗を握り潰さない**（計画書§8

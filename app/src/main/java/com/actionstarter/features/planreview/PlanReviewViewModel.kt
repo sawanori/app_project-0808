@@ -11,6 +11,7 @@ import com.actionstarter.analytics.AnalyticsDomain
 import com.actionstarter.analytics.AnalyticsStore
 import com.actionstarter.domain.model.ExecutionEvent
 import com.actionstarter.domain.model.ExecutionPlan
+import com.actionstarter.domain.model.PersonalExecutionProfile
 import com.actionstarter.domain.model.PlanningContext
 import com.actionstarter.domain.valueobject.TransportMode
 import com.actionstarter.navigation.SharedPlanViewModel
@@ -22,6 +23,7 @@ import com.actionstarter.services.location.LocationService
 import com.actionstarter.services.permission.PermissionGate
 import com.actionstarter.services.routing.RoutingException
 import com.actionstarter.services.routing.RoutingService
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -191,9 +193,18 @@ class PlanReviewViewModel(
                 // §4.3-2: 別イベント選択時の同期リセット（AI推論を起動する前）。
                 latestAiResponse.value = null
 
-                val initialContext = buildPlanningContext(event, travelEstimate = null)
+                // Phase 10 C3（計画書§3.3、実装時の回帰発見への対応）: [buildPlanningContext]は
+                // 同期関数のまま維持する（`profile`は都度の引数、既定`null`）——最初のBasic
+                // Plan即時表示は[analyticsStore]の応答を一切待たない（travelEstimateと同じ
+                // 「即時表示→非同期で精緻化」パターン、クラスKDoc「非同期化」参照）。
+                // 当初`buildPlanningContext`自体をsuspend化しProfile取得を同期パスへ直接
+                // 組み込んだが、`NavigationFlowTest`／`NotificationPermissionRequestTest`が
+                // 実機同然のRobolectric実DB経由で応答遅延の影響を受けPlanが表示されなくなる
+                // 回帰を実測で検出し、travelEstimateと同型の非同期精緻化へ設計を戻した。
+                val initialContext = buildPlanningContext(event, travelEstimate = null, profile = null)
                 val baseline = planningEngine.createPlan(initialContext)
                 latestBase.value = baseline
+                val category = eventCategoryClassifier.classify(event.title, initialContext.locale)
 
                 // §4.1: AIはlatencyの長いポーリングのため、travel取得と並行に早期起動する
                 // （travel待ちの後に直列起動しない）。coroutineScopeがAI launchの完了まで
@@ -216,7 +227,6 @@ class PlanReviewViewModel(
                                 // §19精神の徹底（RecoveryViewModelの同型注記参照）: 記録自体は
                                 // child launchへ切り離し、記録の遅延・失敗が本launch（latestAiResponse
                                 // 反映）の完了を待たせない。
-                                val category = eventCategoryClassifier.classify(event.title, initialContext.locale)
                                 when (result) {
                                     is ContextualizationResult.Applied -> launch {
                                         analyticsStore?.recordAiWordingOutcome(
@@ -239,9 +249,19 @@ class PlanReviewViewModel(
                         }
                     }
 
+                    // Phase 10 C3（計画書§3.3）: Personal Profile取得はtravelEstimate取得と
+                    // 並行に走らせる（asyncで先に起動してからfetchTravelEstimateを直列実行、
+                    // 両者のawaitで合流——travelEstimate自体が別サービス呼び出しの間、Profile
+                    // 取得は既に完了していることが多い設計）。
+                    val profileDeferred = async { analyticsStore?.getProfile(category) }
                     val travelEstimate = fetchTravelEstimate(event)
-                    if (travelEstimate != null && sharedPlanViewModel.selectedEvent.value?.id == event.id) {
-                        latestBase.value = planningEngine.createPlan(buildPlanningContext(event, travelEstimate))
+                    val profile = profileDeferred.await()
+                    if ((travelEstimate != null || profile != null) &&
+                        sharedPlanViewModel.selectedEvent.value?.id == event.id
+                    ) {
+                        latestBase.value = planningEngine.createPlan(
+                            buildPlanningContext(event, travelEstimate, profile)
+                        )
                     }
                 }
             }
@@ -297,7 +317,22 @@ class PlanReviewViewModel(
             gate.isGranted(Manifest.permission.ACCESS_COARSE_LOCATION)
     }
 
-    private fun buildPlanningContext(event: ExecutionEvent, travelEstimate: Duration?): PlanningContext = PlanningContext(
+    /**
+     * Phase 10 C3（計画書§3.3、修正版計画コーディネーター指示）: [profile]引数を新設した
+     * （既定`null`＝旧実装Phase 4〜9.5と同じ「Profileなし」構築、後方互換）。**本関数自体は
+     * 同期のまま維持し、Profile取得（`analyticsStore?.getProfile`、suspend）は呼び出し元
+     * （[init]）がtravelEstimateと同じ非同期精緻化パターンで行う**——`buildPlanningContext`
+     * 自身をsuspend化しProfile取得を内包させる設計は実装時に試したが、初回Basic Plan表示の
+     * 同期パスに新たな停止点を持ち込み、Robolectric実DB経由の応答遅延で`NavigationFlowTest`等が
+     * 破綻する回帰を実測で検出したため撤回した（[init]のコメント参照）。`BasicPlanningEngine`
+     * 側の既存フォールバック（`profile?.averageTransitionDuration ?: BasicPlanningDefaults.
+     * TRANSITION`等）は無変更のため、Profileが`null`のままでも挙動は後方互換（T-P10-12）。
+     */
+    private fun buildPlanningContext(
+        event: ExecutionEvent,
+        travelEstimate: Duration?,
+        profile: PersonalExecutionProfile? = null
+    ): PlanningContext = PlanningContext(
         event = event,
         now = Instant.now(),
         zoneId = ZoneId.systemDefault(),
@@ -305,7 +340,7 @@ class PlanReviewViewModel(
         transportMode = DEFAULT_TRANSPORT_MODE,
         travelEstimate = travelEstimate,
         arrivalBuffer = DEFAULT_ARRIVAL_BUFFER,
-        profile = null
+        profile = profile
     )
 
     private companion object {
