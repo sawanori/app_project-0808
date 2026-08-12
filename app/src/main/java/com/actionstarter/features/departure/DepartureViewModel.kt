@@ -132,9 +132,36 @@ class DepartureViewModel(
         }
     }
 
-    /** F28（S-2裁定）: 手動Travel Time入力値の反映のみを行う（[TravelTimeInput]が呼ぶ）。 */
+    /**
+     * F28（S-2裁定）是正（出発画面欠陥修正 `docs/plans/departure-screen-fixes.md`§3.1、
+     * 欠陥①、T-DEPFIX-1〜3）。[TravelTimeInput]が呼ぶ。当初実装は`manualTravelMinutes`の
+     * 保存のみで消費先が存在しなかった（KDoc「反映のみを行う」がこの未完了配線を恒久仕様
+     * であるかのように記録してしまっていた）。
+     *
+     * [minutes]が非nullの場合、[estimatedArrival]＝現在時刻＋[minutes]分として算出し、
+     * [arrivalBuffer]＝`eventStart − estimatedArrival`で連動更新する（[estimateAndApplyRoute]の
+     * `now.plus(estimate.duration)`と同型——手入力は自動ETA計算の代替、仕様§95.4
+     * `ACCESS_FINE_LOCATION`拒否時フォールバック行「Travel Timeの手動入力にフォールバック」の
+     * 実装）。[minutes]が`null`（空入力・不正入力、[TravelTimeInput]自身の契約）の場合は
+     * [estimatedArrival]／[arrivalBuffer]を`null`へ戻し、偽ETAを残さない
+     * （[estimateAndApplyRoute]の失敗時ハンドリングと同じ設計思想）。
+     */
     fun onManualTravelMinutesChanged(minutes: Int?) {
-        _uiState.value = _uiState.value.copy(manualTravelMinutes = minutes)
+        if (minutes != null) {
+            val estimatedArrival = clock.instant().plus(Duration.ofMinutes(minutes.toLong()))
+            val eventStart = _uiState.value.eventStart
+            _uiState.value = _uiState.value.copy(
+                manualTravelMinutes = minutes,
+                estimatedArrival = estimatedArrival,
+                arrivalBuffer = eventStart?.let { Duration.between(estimatedArrival, it) }
+            )
+        } else {
+            _uiState.value = _uiState.value.copy(
+                manualTravelMinutes = null,
+                estimatedArrival = null,
+                arrivalBuffer = null
+            )
+        }
     }
 
     /**
@@ -155,14 +182,24 @@ class DepartureViewModel(
      */
     private suspend fun recalculate(plan: ExecutionPlan, mode: TransportMode) {
         val locationName = plan.event.locationName
+
+        // 出発画面欠陥修正（`docs/plans/departure-screen-fixes.md`§3.2、欠陥②、T-DEPFIX-4/5）:
+        // 権限判定を行き先の空判定より前へ移動し、行き先の解決可否に関わらずpermissionStateを
+        // 常に確定させる（GRANTED／DENIED）。判定自体は同期関数（システム権限ダイアログを
+        // 起動しない純粋なチェック）のため、この並べ替えは§95.4「初回利用時に要求」という
+        // 取得タイミング規定と衝突しない。
+        val permissionGranted = hasAnyLocationPermission()
+        _uiState.value = _uiState.value.copy(
+            permissionState = if (permissionGranted) LocationPermissionState.GRANTED else LocationPermissionState.DENIED
+        )
+
         if (locationName.isNullOrBlank()) {
             markDestinationUnresolved()
             return
         }
 
-        if (!hasAnyLocationPermission()) {
+        if (!permissionGranted) {
             _uiState.value = _uiState.value.copy(
-                permissionState = LocationPermissionState.DENIED,
                 etaFailureReason = null,
                 isEtaStale = false
             )

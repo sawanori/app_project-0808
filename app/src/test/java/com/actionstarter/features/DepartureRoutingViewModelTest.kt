@@ -561,4 +561,158 @@ class DepartureRoutingViewModelTest {
                 routingService.callCount
             )
         }
+
+    // ------------------------------------------------------------------
+    // 出発画面欠陥修正（`docs/plans/departure-screen-fixes.md`§3.1・§3.2、T-DEPFIX-1〜5、
+    // Step 3 Red）。欠陥①（手入力Travel Timeが無反応）・欠陥②（権限カードの誤表示、
+    // permissionState反映漏れ）を対象とする。DepartureViewModel.onManualTravelMinutesChanged／
+    // recalculateは本ラウンドでは無変更のため、以下5件は現行の未修正コードに対して実行すると
+    // 正しくRedになる。
+    // ------------------------------------------------------------------
+
+    // T-DEPFIX-1: 正常 - 手入力Travel Time（例: 25分）→ estimatedArrival = now + 25分が反映される
+    // （計画書§0・§3.1、仕様§95.4「Travel Timeの手動入力にフォールバック」）。
+    @Test
+    fun tDepFix1_manualMinutesEntered_computesEstimatedArrivalFromNowPlusMinutes() = runTest(testDispatcher) {
+        val fixedNow = Instant.parse("2026-08-10T09:00:00Z")
+        val clock = Clock.fixed(fixedNow, ZoneOffset.UTC)
+        val eventStart = Instant.parse("2026-08-10T10:00:00Z")
+        val event = sampleEvent(startDate = eventStart, locationName = null)
+        val sharedPlanViewModel = confirmedSharedPlanViewModel(event)
+
+        val locationService = FakeLocationService(defaultLocationSuccess)
+        val geocodingService = FakeGeocodingService(defaultGeocodeSuccess)
+        val routingService = FakeRoutingService()
+
+        val viewModel =
+            createDepartureViewModel(sharedPlanViewModel, locationService, geocodingService, routingService, clock)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.onManualTravelMinutesChanged(25)
+
+        assertEquals(
+            "手入力25分はnow+25分としてestimatedArrivalへ反映されるべきです(T-DEPFIX-1、計画書§0)",
+            fixedNow.plus(Duration.ofMinutes(25)),
+            viewModel.uiState.value.estimatedArrival
+        )
+    }
+
+    // T-DEPFIX-2: 正常 - 手入力Travel Time反映時、arrivalBuffer = eventStart - estimatedArrivalが
+    // 連動して更新される。
+    @Test
+    fun tDepFix2_manualMinutesEntered_updatesArrivalBufferFromEventStart() = runTest(testDispatcher) {
+        val fixedNow = Instant.parse("2026-08-10T09:00:00Z")
+        val clock = Clock.fixed(fixedNow, ZoneOffset.UTC)
+        val eventStart = Instant.parse("2026-08-10T10:00:00Z")
+        val event = sampleEvent(startDate = eventStart, locationName = null)
+        val sharedPlanViewModel = confirmedSharedPlanViewModel(event)
+
+        val locationService = FakeLocationService(defaultLocationSuccess)
+        val geocodingService = FakeGeocodingService(defaultGeocodeSuccess)
+        val routingService = FakeRoutingService()
+
+        val viewModel =
+            createDepartureViewModel(sharedPlanViewModel, locationService, geocodingService, routingService, clock)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.onManualTravelMinutesChanged(25)
+
+        val expectedEstimatedArrival = fixedNow.plus(Duration.ofMinutes(25))
+        assertEquals(
+            "arrivalBufferはeventStart-estimatedArrivalとして連動更新されるべきです(T-DEPFIX-2)",
+            Duration.between(expectedEstimatedArrival, eventStart),
+            viewModel.uiState.value.arrivalBuffer
+        )
+    }
+
+    // T-DEPFIX-3: エッジケース - 手入力を空/不正値へ戻す（minutes=null）とestimatedArrival／
+    // arrivalBufferがnullへ戻る（偽ETA防止）。
+    @Test
+    fun tDepFix3_manualMinutesClearedToNull_revertsEstimatedArrivalAndBufferToNull() = runTest(testDispatcher) {
+        val fixedNow = Instant.parse("2026-08-10T09:00:00Z")
+        val clock = Clock.fixed(fixedNow, ZoneOffset.UTC)
+        val eventStart = Instant.parse("2026-08-10T10:00:00Z")
+        val event = sampleEvent(startDate = eventStart, locationName = null)
+        val sharedPlanViewModel = confirmedSharedPlanViewModel(event)
+
+        val locationService = FakeLocationService(defaultLocationSuccess)
+        val geocodingService = FakeGeocodingService(defaultGeocodeSuccess)
+        val routingService = FakeRoutingService()
+
+        val viewModel =
+            createDepartureViewModel(sharedPlanViewModel, locationService, geocodingService, routingService, clock)
+        testDispatcher.scheduler.advanceUntilIdle()
+        viewModel.onManualTravelMinutesChanged(25)
+
+        viewModel.onManualTravelMinutesChanged(null)
+
+        assertNull(
+            "空入力後は偽ETAを残さずestimatedArrivalをnullへ戻すべきです(T-DEPFIX-3)",
+            viewModel.uiState.value.estimatedArrival
+        )
+        assertNull(
+            "空入力後はarrivalBufferもnullへ戻すべきです(T-DEPFIX-3)",
+            viewModel.uiState.value.arrivalBuffer
+        )
+    }
+
+    // T-DEPFIX-4: 正常 - 行き先未解決かつ位置権限が実際には許可済みの場合、recalculate後に
+    // permissionState == GRANTEDになる（許可カードが出ない条件、欠陥②）。
+    @Test
+    fun tDepFix4_destinationUnresolvedWithPermissionGranted_setsPermissionStateGranted() = runTest(testDispatcher) {
+        val eventStart = Instant.parse("2026-08-10T10:00:00Z")
+        val event = sampleEvent(startDate = eventStart, locationName = null)
+        val sharedPlanViewModel = confirmedSharedPlanViewModel(event)
+
+        val locationService = FakeLocationService(defaultLocationSuccess)
+        val geocodingService = FakeGeocodingService(defaultGeocodeSuccess)
+        val routingService = FakeRoutingService()
+        val permissionGate = FakePermissionGate(granted = true)
+
+        val viewModel = createDepartureViewModel(
+            sharedPlanViewModel, locationService, geocodingService, routingService,
+            permissionGate = permissionGate
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(
+            "行き先未解決でも権限許可済みならpermissionStateはGRANTEDになるべきです(T-DEPFIX-4、欠陥②)",
+            LocationPermissionState.GRANTED,
+            viewModel.uiState.value.permissionState
+        )
+        assertTrue(
+            "isDestinationUnresolvedも同時にtrueのままであるべきです(T-DEPFIX-4)",
+            viewModel.uiState.value.isDestinationUnresolved
+        )
+    }
+
+    // T-DEPFIX-5: 異常 - 行き先未解決かつ権限拒否の場合、permissionState == DENIEDかつ
+    // isDestinationUnresolved == trueの両方が同時に成立する。
+    @Test
+    fun tDepFix5_destinationUnresolvedWithPermissionDenied_setsBothDeniedAndUnresolved() = runTest(testDispatcher) {
+        val eventStart = Instant.parse("2026-08-10T10:00:00Z")
+        val event = sampleEvent(startDate = eventStart, locationName = null)
+        val sharedPlanViewModel = confirmedSharedPlanViewModel(event)
+
+        val locationService = FakeLocationService(defaultLocationSuccess)
+        val geocodingService = FakeGeocodingService(defaultGeocodeSuccess)
+        val routingService = FakeRoutingService()
+        val permissionGate = FakePermissionGate(granted = false)
+
+        val viewModel = createDepartureViewModel(
+            sharedPlanViewModel, locationService, geocodingService, routingService,
+            permissionGate = permissionGate
+        )
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(
+            "権限拒否時はpermissionStateがDENIEDになるべきです(T-DEPFIX-5、欠陥②)",
+            LocationPermissionState.DENIED,
+            viewModel.uiState.value.permissionState
+        )
+        assertTrue(
+            "行き先未解決の状態も同時に成立するべきです(T-DEPFIX-5)",
+            viewModel.uiState.value.isDestinationUnresolved
+        )
+    }
 }
