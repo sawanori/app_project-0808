@@ -3,7 +3,7 @@
 > 対象仕様: `Action_Starter_Master_Specification_v2.0_Android.md`（本フェーズより採番判明済み、以後この版を「仕様」と呼ぶ）§74「Phase 10」（Personal Profile・履歴保存・次回Planへ反映）・§52「Personal Execution Profile」（Kotlin型定義）・§22/§23（Personal Profile構想・将来像）・§53「Analytics / Test Log」・§54「時刻ログ」・§55/§56（KPI定義）・§10「Local-first AI」・§58「Privacy」・§59「Local Data」・§60「Telemetry」・§32「Recovery Option」・§61「MVPに入れない機能」・§34「ユーザー最終決定」・§88「Developer UX Principle」
 > 前提基盤: 第1弾C-18（行動ログ、唯一の未達項目）・Phase 9/9.5（Recovery AI化・計測駆動改善、ADR-0063/0064）・既存scaffold `domain/model/PersonalExecutionProfile.kt`（Phase 8.5 C2で宣言のみ実装済み）・`persistence/ExecutionScheduleStore.kt`（Phase 5、ADR-0025）・ADR-0049決定5（`AnalyticsStore`をPhase 10/12で導入）
 > 種別: 機能実装フェーズ（A/B実測は伴わない。Phase 9.5と異なりRed→Green→実機受け入れの通常フローで進める）
-> 承認状態: **敵対的レビュー完了（§13、オーケストレーター9点＋Gemini 8件、CRITICAL2件は両者収束）・修正版確定。§12確認事項は委任フローどおり全8件確定。C1〜C4実装完了（Green、§11コミット粒度どおり）。ADR起票・実機受け入れへ進む。**
+> 承認状態: **敵対的レビュー完了（§13、オーケストレーター9点＋Gemini 8件、CRITICAL2件は両者収束）・修正版確定。§12確認事項は委任フローどおり全8件確定。C1〜C4実装完了（Green、§11コミット粒度どおり）。ADR-0065正式起票済み（`DECISIONS.md`）。A54実機受け入れ（§10）2026-08-12実施・合格（§14参照）。Phase 10完了（実機受け入れ合格・2026-08-12）**
 
 ---
 
@@ -214,3 +214,47 @@ Room自体はJVM（Robolectric）で完全にテスト可能なため、Phase 9.
 ### 棄却
 
 本ラウンドでオーケストレーター・Geminiより伝達された指摘は上記9件（一部は複数の下位指摘を束ねる）すべてが採用された。棄却として明示的に伝達された項目はない。
+
+## §14. A54実機受け入れ結果（2026-08-12実施・合格）
+
+オーケストレーターがA54（SCG21）実機で計画書§10の受け入れ手順を実施し、adb・sqlite3照会・スクリーンショットで直接取得した実測事実を以下に記録する（脚色禁止・観測されたとおりに記載）。
+
+**実施環境**: A54（SCG21）・ワイヤレスデバッグ接続・Phase 10ビルド（コミット`92d1d5c`時点のコード＋その後のアイコンコミット`06d21ce`）を`installDebug`。
+
+### 1. DB実機生成（§10「実デバイスのファイルシステム上でDBが正しく永続化されるか」）
+
+プラン生成操作後、`/data/data/com.actionstarter/databases/`に`behavior_log.db`＋WALサイドカー`behavior_log.db-wal`／`behavior_log.db-shm`の3ファイルが生成されていることを確認した。Roomのjournal_mode既定（WAL）によりDB本体だけでなくサイドカーファイルも同時生成されるという設計前提（C1でバックアップ除外を3ファイル指定した根拠、レビューCRITICAL・§13 No.2）が実機で裏付けられた。
+
+### 2. 行動ログ記録の実機確認
+
+ホストへDBを吸い出しPython sqlite3で照会した。テーブル名は`behavior_events`（複数形）。プラン生成操作により1件記録され、内容は`event_type=AI_WORDING_OUTCOME`・`domain=plan`・`event_category=unknown`・`ai_adopted=1`・`fallback_reason=null`だった。実際の予定名「北野さん」が`EventCategoryClassifier`のカテゴリ辞書に該当しないため`unknown`となった——これは正常な挙動である（T-P10-8「未知タイトルでもログ記録がクラッシュせず継続する」の実機成立）。
+
+### 3. プライバシー実機検証（最重要）
+
+`behavior_events`テーブルの全カラムを、実際の予定名文字列（「北野」「歯医者」「受け入れ」）で走査し、**漏洩ゼロ**を確認した。予定名そのものは一切保存されず、カテゴリ（`unknown`）のみが記録されている——タイトル生文非保存の設計（§12確認事項2、`EventCategoryClassifier`再利用によるpinning回帰テストT-P10-9が机上で保証していた設計）が実機でも成立することを確認した。
+
+### 4. 削除導線（C4）の実機確認
+
+Settings画面の「データ」節から「行動ログを削除」をタップすると、破壊的操作ガードの`AlertDialog`が表示された（タイトル「行動ログを削除しますか？」、本文「ローカルに保存されている行動ログとPersonal Profileのデータをすべて完全に削除します。この操作は取り消せません。」、ボタン「キャンセル」「削除」）。「削除」をタップした結果、DB件数は`behavior_events`が0件・`profiles`（`personal_execution_profiles`）が0件になった。削除後、非サイレントの結果バナー「行動ログを削除しました。」＋「閉じる」ボタンが表示された。誤タップ防止（確認ダイアログを経由した場合のみ削除APIへ到達する構造、T-P10-18）が実機で成立した。
+
+証拠: `docs/evidence/screenshots/phase10/a54-p10-settings.png`（Settings画面上部）・`a54-p10-settings-bottom.png`（スクロール後の「データ」節）・`a54-p10-delete-dialog.png`（確認ダイアログ）・`a54-p10-delete-result.png`（削除後の結果バナー）。`a54-p10-delete-done.png`は`a54-p10-delete-dialog.png`とバイト単位で同一内容の重複キャプチャだった（md5確認済み、実質的な追加証拠ではないが記録として残す）。
+
+### 5. バックアップ除外の実機確認
+
+`data_extraction_rules.xml`（API 31+）・`backup_rules.xml`（API 26-30）の両方に`behavior_log.db`／`behavior_log.db-wal`／`behavior_log.db-shm`の3ファイルが列挙されていることを確認した。`AndroidManifest.xml`は両XMLを参照しており、`installDebug`が成功したこと自体がこの配線の妥当性を裏付ける。
+
+### 6. アプリアイコンの実機描画（別コミット06d21ceの確認）
+
+同一の実機受け入れセッション内で、別コミット`06d21ce`（アイコンB「ドアと一歩」）のアイコンがアプリ情報画面でシステムマスク付きで正しく描画され、デフォルトアイコンからの置換が確認された。行動ログ機能自体とは独立した確認事項だが、同一ビルド・同一セッションで検証されたため本節に記録する。
+
+### 7. 既存機能の無傷確認
+
+プラン生成操作が正常に完走した（トップ画面→準備画面→プラン画面まで到達）。Phase 10の新規実装（Room導入・4ViewModelへの`AnalyticsStore`注入・Settings画面拡張）が既存のPlan生成フローを破壊していないことを実機確認した。
+
+証拠: `docs/evidence/screenshots/phase10/a54-p10-top.png`。
+
+### 8. 受け入れ判定
+
+**計画書§10が定める受け入れ観点（DBの実機永続化・WAL/SHMサイドカー生成・バックアップ除外ルールの実機確認・Settings削除導線の実機動作・既存Plan/Recovery生成の無傷確認）はすべて合格**。C-18（第1弾唯一の未達項目）とPersonal Profile永続化を統合したPhase 10（仕様§74）を完了と判定する。
+
+証拠一式（6枚、`docs/evidence/screenshots/phase10/`）: `a54-p10-top.png`・`a54-p10-settings.png`・`a54-p10-settings-bottom.png`・`a54-p10-delete-dialog.png`・`a54-p10-delete-done.png`（`delete-dialog`と同一内容の重複）・`a54-p10-delete-result.png`。
