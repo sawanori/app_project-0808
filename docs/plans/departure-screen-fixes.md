@@ -3,7 +3,7 @@
 > 対象仕様: `Action_Starter_Master_Specification_v2.0_Android.md`§29「Departure Mode」・§35 Screen4「Leave」・§95「Android固有のプラットフォーム制約とリスク」4節「権限一覧表」（本書では慣例に倣い「§95.4」と表記）
 > 前提基盤: `DepartureViewModel.kt`／`DepartureScreen.kt`／`DepartureUiState.kt`（P3-C5 Green実装済み）・`ActionStarterNavHost.kt`のDeparture route配線・既存テスト群（T-DEP-*／T-DEPVM-*／T-P4DEP-*／T-PERM3-*／T-DEP2-*）
 > 種別: 欠陥修正フェーズ（ユーザーが実機で発見した3件、オーケストレーターが実コードで根因診断済み。dev-workflow標準フロー: 計画→Red→Green）
-> 承認状態: **アーキテクトレビュー合格（Pass 1指摘1件を反映済み、§3.2参照）。ユーザー承認済み（確認事項は§11既定で確定）。Green検収合格・コミット済み（C1=`aa1e1a6`欠陥①②〔ViewModel〕・C2=`58cf799`欠陥②③〔Screen/NavHost/strings、DepartureScreen.ktが欠陥②③両方の変更を含むためファイル単位で分割）。全819件Green(skip1)・lint 0/23（MissingTranslation含む）。ADR起票中。実機受け入れはオーケストレーターが実施予定。**
+> 承認状態: **実機受け入れ合格・完了（2026-08-12）。C1=`aa1e1a6`・C2=`58cf799`・ADR-0066=`6e3cbaf`。全819件Green(skip1)・lint 0/23（MissingTranslation含む）。A54実機で3欠陥すべての解消を確認（§12参照）。**
 
 ---
 
@@ -131,3 +131,39 @@
 1. **ADR起票要否**（§9）: **する**（1本、C2完了後）。3設計判断（手入力ETA計算式・戻り先設計・権限判定順序＋カード表示条件）は非自明で将来の根拠として残す価値があるため。
 2. **手入力ETAの上限バリデーション**（§5）: **設けない**（既存Routing API実測値と同じ扱い）。ただし負値のみ防ぐ必要がないか実コードで確認した結果、`TravelTimeInput`の数値パース（`filter { it.isDigit() }`）が構造的に負値を生成しないことを確認したため、追加のクランプ処理も不要と判断した。
 3. **コミット粒度**（§8）: **提案どおり2コミット**（C1=欠陥①②・C2=欠陥③）で確定。
+
+---
+
+## §12. A54実機受け入れ結果（2026-08-12実施・合格）
+
+オーケストレーターがA54（SCG21）実機で計画書§10の受け入れ手順を実施し、直接操作・スクリーンショットで取得した実測事実を以下に記録する（脚色禁止・観測されたとおりに記載）。
+
+**実施環境**: A54（SCG21）・修正版ビルド（コミット`6e3cbaf`時点）を`installDebug`・ワイヤレスデバッグ接続。**再現手順**: 場所なしテスト予定「出発テスト_場所なし」（14:12開始）を作成→準備→プラン→開始→実行ステップを完了→出発画面へ到達（行き先未解決状態）。
+
+### 1. 欠陥③（戻れない）＝解消
+
+出発画面左上に「戻る」ボタンが表示された（修正前は皆無）。タップするとトップの「次の予定」（EventSelection）へ遷移し、完了済みの実行画面には戻らなかった——`popUpTo(EventSelection){inclusive=true}`設計どおりの挙動が実機で成立した。
+
+証拠: `docs/evidence/screenshots/departure-fix/a54-depfix-1-back-and-no-permcard.png`（戻るボタンが存在する状態）→`a54-depfix-3-back-to-eventselection.png`（EventSelectionへ戻った状態）。
+
+### 2. 欠陥②（権限カードの的外れ表示）＝解消
+
+行き先未解決かつ位置権限が付与済みの状態で、修正前に表示されていた「位置情報へのアクセスを許可」カードが表示されなかった。手入力導線（Travel Time入力欄）のみが表示され、`&& !isDestinationUnresolved`による抑止が実機で成立することを確認した。
+
+証拠: `docs/evidence/screenshots/departure-fix/a54-depfix-1-back-and-no-permcard.png`。
+
+### 3. 欠陥①（手入力ETA無反応）＝解消
+
+移動時間欄に「25」を入力した瞬間、カードの表示が「移動時間を取得できませんでした」から「到着予定時刻 13:59」へ変化し、余裕「12分」も算出された（現在時刻13:34＋25分＝13:59、`now + manualTravelMinutes分`の計算式が実機で成立）。修正前は入力しても完全に無反応だった。
+
+証拠: `docs/evidence/screenshots/departure-fix/a54-depfix-2-manual-eta.png`。
+
+### 4. 既存機能の無傷確認
+
+準備→プラン→実行のフローが正常に完走し出発画面まで到達した。「ナビを開始」ボタン（Phase 1から未実装、本修正のスコープ外）はdisabledのまま現状維持であることを確認した——本修正がこの既知の未実装箇所へ触れていないことの裏付け。
+
+### 5. 受け入れ判定
+
+**計画書§10が定める受け入れ手順(a)(b)(c)(d)の全項目が合格**。3欠陥（手入力ETA無反応・権限カードの的外れ表示・戻れない）はいずれも実機で解消を確認した。出発画面欠陥修正を完了と判定する。
+
+証拠一式（3枚、`docs/evidence/screenshots/departure-fix/`）: `a54-depfix-1-back-and-no-permcard.png`・`a54-depfix-2-manual-eta.png`・`a54-depfix-3-back-to-eventselection.png`。
