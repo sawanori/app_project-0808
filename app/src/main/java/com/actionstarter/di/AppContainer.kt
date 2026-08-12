@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.room.Room
 import com.actionstarter.ActionStarterApplication
 import com.actionstarter.BuildConfig
 import com.actionstarter.ai.AiPreferences
@@ -22,6 +23,8 @@ import com.actionstarter.ai.model.ModelSelectorImpl
 import com.actionstarter.ai.model.ModelStorage
 import com.actionstarter.ai.model.ModelStorageImpl
 import com.actionstarter.ai.model.ModelVerifierImpl
+import com.actionstarter.analytics.AnalyticsStore
+import com.actionstarter.analytics.RoomAnalyticsStore
 import com.actionstarter.features.departure.DepartureViewModel
 import com.actionstarter.features.eventselection.EventSelectionViewModel
 import com.actionstarter.features.execution.ExecutionViewModel
@@ -30,6 +33,7 @@ import com.actionstarter.features.recovery.RecoveryViewModel
 import com.actionstarter.features.settings.SettingsViewModel
 import com.actionstarter.navigation.SharedPlanViewModel
 import com.actionstarter.persistence.SharedPreferencesExecutionScheduleStore
+import com.actionstarter.persistence.room.BehaviorLogDatabase
 import com.actionstarter.planning.BasicPlanningEngine
 import com.actionstarter.planning.PlanningEngine
 import com.actionstarter.recovery.BasicRecoveryEngine
@@ -457,6 +461,44 @@ class AppContainer(
             localAiGateway
         } catch (e: LinkageError) {
             null
+        }
+    }
+
+    /**
+     * Phase 10 C1（計画書`docs/plans/phase10-behavior-log-profile.md`§5・§8、レビュー§13
+     * No.8・Gemini G8）。行動ログ・Personal Profile用DB（本プロジェクト初のDB）。
+     *
+     * **初期化失敗防御**: [localAiPlanContextualizer]等と**同型**の`by lazy`+try/catch→null
+     * パターンだが、捕捉範囲は[LinkageError]限定ではなく**[Throwable]全体**とする——Roomの
+     * 実際の失敗モード（スキーマ不整合・破損ファイル等の`IllegalStateException`／SQLite例外）は
+     * litertlmのJDKバージョン起因の[LinkageError]より広く、狭い捕捉では防御にならないため
+     * （計画書§8「DB初期化失敗」参照）。[analyticsStore]が`null`のとき、行動ログ呼び出し元は
+     * 全てno-opにフォールバックする（アプリ本体は継続動作、AI機能がOFF/未導入時にno-opになる
+     * のと同じ設計）。`fallbackToDestructiveMigration()`は**呼ばない**（計画書§12確認事項7
+     * 「確定: 既定で有効化しない」——データ消失を伴う自動復旧より、初期化失敗時のno-op縮退を
+     * 優先する）。
+     */
+    private val behaviorLogDatabase: BehaviorLogDatabase? by lazy {
+        try {
+            Room.databaseBuilder(
+                context,
+                BehaviorLogDatabase::class.java,
+                BehaviorLogDatabase.DATABASE_NAME
+            ).build()
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * Phase 10 C1（計画書§3・§5）。[AnalyticsStore]の唯一のインスタンス。features層は本
+     * プロパティ経由でのみ行動ログを記録する（`persistence.room`配下のRoom型を直接参照
+     * しない、[localAiGateway]と同型の層規律）。[behaviorLogDatabase]が`null`
+     * （初期化失敗）のときは[analyticsStore]も`null`——呼び出し元は`?.let { }`等でno-op化する。
+     */
+    val analyticsStore: AnalyticsStore? by lazy {
+        behaviorLogDatabase?.let { db ->
+            RoomAnalyticsStore(db.behaviorEventDao(), db.personalExecutionProfileDao())
         }
     }
 

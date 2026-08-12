@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Phase 10 C1（計画書§3.4、レビューCRITICAL・§13 No.2）。API 26-30向けの旧方式バックアップ
+  除外ルール（`android:fullBackupContent`、`data_extraction_rules.xml`が適用されないAPI
+  31未満の端末をカバーする。本アプリのminSdk=26のため両方式が必要）。
+
+  data_extraction_rules.xmlと同じ3ファイル（DB本体＋WAL＋SHMサイドカー）を除外する。
+-->
+<full-backup-content>
+    <exclude domain="database" path="behavior_log.db" />
+    <exclude domain="database" path="behavior_log.db-wal" />
+    <exclude domain="database" path="behavior_log.db-shm" />
+</full-backup-content>

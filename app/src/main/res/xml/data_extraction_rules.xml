@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Phase 10 C1（計画書`docs/plans/phase10-behavior-log-profile.md`§3.4、レビューCRITICAL・
+  §13 No.2）。Android 12+（API 31+）のバックアップ除外ルール。行動ログ・Personal Profileは
+  仕様§10「Behavioral Historyを外部へ送らない」の精神を継承し、クラウドバックアップ・
+  端末間移行のいずれからも除外する。
+
+  Roomの既定journal_mode（WAL）はDB本体に加え-wal/-shmサイドカーファイルを生成するため、
+  behavior_log.db本体のみの除外ではデータ漏出を防げない——3ファイルすべてを明記する
+  （`BehaviorLogDatabase.DATABASE_NAME`と手動同期、T-P10-9bがpinningテストで検証）。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="database" path="behavior_log.db" />
+        <exclude domain="database" path="behavior_log.db-wal" />
+        <exclude domain="database" path="behavior_log.db-shm" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="behavior_log.db" />
+        <exclude domain="database" path="behavior_log.db-wal" />
+        <exclude domain="database" path="behavior_log.db-shm" />
+    </device-transfer>
+</data-extraction-rules>

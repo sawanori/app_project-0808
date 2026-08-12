@@ -25,6 +25,16 @@ litertlmAndroid = "0.15.0"
 # Android SDK同梱のorg.jsonを使用し、本依存はtestImplementationのみに限定する（U-11裁定）。
 # バージョンはMaven Central実測（2026-08-10、search.maven.org）で確認した最新安定版。
 orgJson = "20250517"
+# Phase 10 C1（計画書`docs/plans/phase10-behavior-log-profile.md`§3.1・§6）: 本プロジェクト初のDB。
+# バージョンはContext7（developer.android.com公式ドキュメントscrape、High reputation source）で
+# 実測確認した最新安定版（2026-08-12）。
+room = "2.8.4"
+# Phase 10 C1: KSPコンパイラ処理。バージョンはKotlin本体（2.4.10）とは独立した番号体系（KSP2、
+# `<kotlin>-<ksp>`複合形式ではなくKSP自身の単独バージョン）。GitHub Releases実測（gh api、
+# 2026-08-12）時点の最新は2.3.11で、Kotlin 2.4.10向けの明示的な組は未公開——KSPがKotlinの
+# 最新マイナー版へ追従するまでにタイムラグがあるという既知パターン（計画書§6「未確定事項」
+# 参照）。ビルド実行時に非互換エラーが出た場合はKSPの新しいリリースを再確認する。
+ksp = "2.3.11"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -48,8 +58,13 @@ androidx-test-uiautomator = { group = "androidx.test.uiautomator", name = "uiaut
 google-play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
 google-ai-edge-litertlm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version.ref = "litertlmAndroid" }
 org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+androidx-room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

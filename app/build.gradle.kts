@@ -6,6 +6,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    // Phase 10 C1（計画書`docs/plans/phase10-behavior-log-profile.md`§3.1）: Room用KSP。
+    alias(libs.plugins.ksp)
 }
 
 // Phase 3 P3-C1（計画書§6.4#2・§7.3・F29）: local.properties（gitignore済み・.gitignoreで
@@ -81,6 +83,13 @@ kotlin {
     }
 }
 
+// Phase 10 C1（計画書§3.1・§12確認事項5「確定: app/schemas/へコミットしバージョン管理する」）:
+// Roomのスキーマexport先。v1時点では移行元スキーマが存在しないためmigrationテストは
+// 次回スキーマ変更時に追加する（本ブロックはそのための基盤のみ）。
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
@@ -99,12 +108,19 @@ dependencies {
     // カタログへ正式化した（計画書§7.2フットプリント）。廃止系`litertlm`ではなく
     // `litertlm-android`（現行AAR）を使用。バージョンは0.15.0に固定（R-2）。
     implementation(libs.google.ai.edge.litertlm.android)
+    // Phase 10 C1（計画書§3.1・§6）: 本プロジェクト初のDB。room-ktxはsuspend関数DAO・Flow対応の
+    // ため別アーティファクトとして必要（Context7実測確認、developer.android.com公式手順）。
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
 
     testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.junit4)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.compose.ui.test.junit4)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Phase 10 C1: Room in-memory DBのJVMテスト用（Robolectric経由、§6「JVMテスト可能性の根拠」）。
+    testImplementation(libs.androidx.room.testing)
     // Phase 7 P7-C2（計画書§7.2・§12.1・U-11・Gemini G1 CRITICAL #5）: SchemaValidatorTest等が
     // Robolectric非経由（E1・純JVM）でorg.jsonの実クラス（Android同梱スタブではなく）を使える
     // ようにする。本番実装（P7-C3）はAndroid SDK同梱のorg.jsonを使い続け、この依存はテスト
